@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+out/
+
+# logs
+*.log
+npm-debug.log*
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# local app data (runtime settings are stored in userData, not here)
+halo-settings.json
