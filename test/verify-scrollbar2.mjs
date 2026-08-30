@@ -5,6 +5,7 @@ for (let i = 0; i < 40; i++) {
   try { const l = await (await fetch("http://127.0.0.1:" + PORT + "/json")).json(); main = l.find((t) => t.type === "page" && t.url.endsWith("index.html")); if (main) break; } catch {}
   await sleep(500);
 }
+if (!main) { console.log("NO WINDOW"); process.exit(1); }
 const ws = new WebSocket(main.webSocketDebuggerUrl);
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
 let id = 0; const pending = new Map();
@@ -15,8 +16,13 @@ const ev = (expression) => send("Runtime.evaluate", { expression, awaitPromise: 
   return r.result?.result?.value;
 });
 await send("Runtime.enable");
-await sleep(3000);
-console.log(await ev('JSON.stringify({ pvModeEl: !!document.getElementById("pvMode"), btns: document.querySelectorAll("#pvMode button").length })'));
-console.log(await ev('document.getElementById("pvName").textContent'));
-console.log(await ev('typeof setPreview === "function"'));
+await sleep(3200);
+console.log("open:", await ev('(() => { const row = [...document.querySelectorAll("#wsTree .trow.file")].find((e) => e.querySelector(".fname") && /[.]html$/.test(e.querySelector(".fname").textContent)); if (!row) return "NOT FOUND"; row.click(); return "ok"; })()'));
+await sleep(2500);
+// 桌面模式：检查 iframe 内注入的滚动条样式
+const iframe = await ev('JSON.stringify({ iframe: !!document.querySelector("#pvBody iframe") })');
+console.log("desktop iframe:", iframe);
+// iframe 内部检查（同源 halo-preview 协议可直接访问 contentDocument）
+const inner = await ev('(() => { const f = document.querySelector("#pvBody iframe"); try { const st = f.contentDocument.getElementById("__halo-scrollbar"); return JSON.stringify({ injected: !!st, text: st ? st.textContent.slice(0, 80) : "" }); } catch (e) { return "CORS: " + e.message; } })()');
+console.log("scroll style:", inner);
 process.exit(0);

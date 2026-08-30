@@ -297,6 +297,30 @@ body.focus-mode #center { display: none; }
 
 /* sessions list */
 .session-list { display: flex; flex-direction: column; gap: 4px; }
+/* 项目列表（会话 tab 顶部）：一个项目 = 一个文件夹 + 各自的会话 */
+.proj-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 4px; }
+.proj-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--txt-dim);
+  transition: background 0.15s, color 0.15s;
+}
+.proj-row:hover { background: rgba(var(--ink-rgb), 0.05); color: var(--txt); }
+.proj-row.active { background: color-mix(in srgb, var(--acc) 12%, transparent); color: var(--acc); font-weight: 600; }
+.proj-row .pj-ic { font-size: 10px; opacity: 0.7; }
+.proj-row .pj-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-row .pj-cur { font-size: 10px; opacity: 0.85; flex: none; }
+.proj-row .pj-del {
+  flex: none;
+  width: 16px; height: 16px; line-height: 14px;
+  border: none; border-radius: 50%;
+  background: transparent; color: var(--txt-faint);
+  font-size: 13px; cursor: pointer; padding: 0;
+}
+.proj-row .pj-del:hover { background: rgba(var(--ink-rgb), 0.1); color: var(--err, #d55); }
 .session-item {
   display: flex; align-items: center; gap: 2px;
   border-radius: var(--r-md);
@@ -569,50 +593,41 @@ body.focus-mode #center { display: none; }
   width: 100%; height: 100%;
   border: none;
 }
-.pv-body iframe { background: #fff; }
+.pv-body iframe { background: var(--bg1); }
 .pv-body img.pv-img { object-fit: contain; background: var(--bg1); }
 
-/* 设备外壳：金属质感壳层（.dev-shell 包装 iframe）+ 屏幕内沿 + 玻璃反光 + 设备细节 */
-.pv-body {
-  --dev-shell: #1b1d21; --dev-shell2: #2e3138; --dev-shell3: #101114;
-  --dev-ring: rgba(255, 255, 255, 0.16); --dev-key: rgba(255, 255, 255, 0.24);
-}
+/* 设备视口：透明背景 + 细边框，只保留设备尺寸与圆角，颜色全部跟随主题 */
 .pv-body.dev-desktop, .pv-body.dev-tablet, .pv-body.dev-mobile {
   display: flex; justify-content: center;
 }
 
-/* 壳层通用：flex 容器，padding 即机身边框厚度 */
-.pv-body .dev-shell { position: relative; display: flex; min-height: 0; }
+/* 壳层：透明容器（无边框厚度、无底色、无投影、无装饰） */
+.pv-body .dev-shell { position: relative; display: flex; min-height: 0; background: transparent; box-shadow: none; }
 .pv-body.dev-desktop .dev-shell { flex: 1; }
 .pv-body.dev-tablet .dev-shell, .pv-body.dev-mobile .dev-shell { flex: 0 0 auto; }
 .pv-body .dev-shell iframe {
   position: relative; inset: auto;
   width: 100%; height: 100%;
   border: none;
-  background: #101318; /* 屏幕底色：未铺满时呈真机深色，不再透出浅色 */
-  /* 屏幕内沿：黑边 + 玻璃边缘反光 */
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.38), inset 0 2px 8px rgba(0, 0, 0, 0.16);
-}
-/* 屏幕内圆角：跟随壳层圆角（同心圆：壳圆角 − 边框厚度） */
-.pv-body.dev-desktop .dev-shell iframe { border-radius: 6px; }
-.pv-body.dev-tablet .dev-shell iframe { border-radius: 16px; }
-.pv-body.dev-mobile .dev-shell iframe { border-radius: 32px; }
-/* 玻璃反光：极淡的顶部高光（太强会被当成浅色背景） */
-.pv-body .dev-shell::before {
-  content: ""; position: absolute; z-index: 3; pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012) 24%, transparent 40%);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  background: transparent; /* 完全透明：页面未铺满/加载前直接露出主题背景 */
+  border-radius: inherit;
 }
 
-/* —— 电脑：金属显示器 + 颈部 + 椭圆底座 —— */
+/* —— 电脑：金属显示器 + 颈部 + 椭圆底座（拟物外壳保留） —— */
 .pv-body.dev-desktop { padding: 18px 30px 66px; }
 .pv-body.dev-desktop .dev-shell {
   padding: 12px 10px 16px; /* 上窄下宽的下巴 */
+  border: none;
   border-radius: 16px;
-  background: linear-gradient(145deg, var(--dev-shell2), var(--dev-shell3) 30%, #1e2026 62%, var(--dev-shell2));
-  box-shadow: 0 0 0 1.5px var(--dev-ring), 0 22px 55px rgba(0, 0, 0, 0.38), 0 5px 16px rgba(0, 0, 0, 0.28);
+  background: linear-gradient(145deg, #2e3138, #101114 30%, #1e2026 62%, #2e3138);
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.16), 0 22px 55px rgba(0, 0, 0, 0.38), 0 5px 16px rgba(0, 0, 0, 0.28);
 }
-.pv-body.dev-desktop .dev-shell::before { inset: 12px 10px 16px; border-radius: 6px; }
+.pv-body.dev-desktop .dev-shell iframe { background: var(--bg1); border-radius: 6px; }
+.pv-body.dev-desktop .dev-shell::before {
+  content: ""; position: absolute; z-index: 3; pointer-events: none;
+  inset: 12px 10px 16px; border-radius: 6px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012) 24%, transparent 40%);
+}
 .pv-body.dev-desktop .dev-shell::after {
   /* 顶部摄像头 */
   content: ""; position: absolute; z-index: 4;
@@ -638,17 +653,22 @@ body.focus-mode #center { display: none; }
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
-/* —— 平板：铝金属边框 + 前摄/听筒 + 侧键 —— */
+/* —— 平板：深色金属外壳（与电脑同材质）+ 前摄/听筒 + 音量键 —— */
 .pv-body.dev-tablet { padding: 28px 20px 42px; } /* 左右留白，不贴边 */
 .pv-body.dev-tablet .dev-shell {
   width: 768px; max-width: 100%;
   padding: 14px;
   border-radius: 30px;
-  background: linear-gradient(150deg, #3c4048, #17181c 38%, #2a2d34 78%, #3c4048);
-  box-shadow: 0 0 0 1.5px var(--dev-ring), 0 26px 60px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.28),
-    -3px 250px 0 -1px var(--dev-key), -3px 308px 0 -1px var(--dev-key); /* 左侧音量键 */
+  background: linear-gradient(145deg, #2e3138, #101114 30%, #1e2026 62%, #2e3138);
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.16), 0 26px 60px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.28),
+    -3px 250px 0 -1px rgba(255, 255, 255, 0.24), -3px 308px 0 -1px rgba(255, 255, 255, 0.24); /* 左侧音量键 */
 }
-.pv-body.dev-tablet .dev-shell::before { inset: 14px; border-radius: 16px; }
+.pv-body.dev-tablet .dev-shell iframe { border-radius: 16px; background: var(--bg1); }
+.pv-body.dev-tablet .dev-shell::before {
+  content: ""; position: absolute; z-index: 3; pointer-events: none;
+  inset: 14px; border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012) 24%, transparent 40%);
+}
 .pv-body.dev-tablet .dev-shell::after {
   /* 前置摄像头 + 听筒 */
   content: ""; position: absolute; z-index: 4;
@@ -660,29 +680,66 @@ body.focus-mode #center { display: none; }
   opacity: 0.92;
 }
 
-/* —— 手机：钛金属边框 + 灵动岛（含摄像头）+ 双侧按键 —— */
+/* —— 手机：深色金属外壳（与电脑同材质）+ 顶部状态栏（时间/信号/wifi/电池 + 打孔摄像头） —— */
 .pv-body.dev-mobile { padding: 26px 12px 36px; }
 .pv-body.dev-mobile .dev-shell {
   width: 390px; max-width: 100%;
+  flex-direction: column;
   padding: 12px;
   border-radius: 44px;
-  background: linear-gradient(150deg, #454952, #141519 34%, #31343b 70%, #454952);
-  box-shadow: 0 0 0 1.5px var(--dev-ring), 0 30px 65px rgba(0, 0, 0, 0.42), 0 8px 20px rgba(0, 0, 0, 0.3),
-    -3px 150px 0 -1px var(--dev-key), -3px 188px 0 -1px var(--dev-key),
-    3px 300px 0 -1px var(--dev-key); /* 左音量 +、音量 −，右电源 */
+  background: linear-gradient(145deg, #2e3138, #101114 30%, #1e2026 62%, #2e3138);
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.16), 0 30px 65px rgba(0, 0, 0, 0.42), 0 8px 20px rgba(0, 0, 0, 0.3),
+    -3px 150px 0 -1px rgba(255, 255, 255, 0.24), -3px 188px 0 -1px rgba(255, 255, 255, 0.24),
+    3px 300px 0 -1px rgba(255, 255, 255, 0.24); /* 左音量 +、音量 −，右电源 */
 }
-.pv-body.dev-mobile .dev-shell::before { inset: 12px; border-radius: 32px; }
-.pv-body.dev-mobile .dev-shell::after {
-  /* 灵动岛：深色胶囊 + 摄像头反光点 */
-  content: ""; position: absolute; z-index: 4;
-  top: 20px; left: 50%; transform: translateX(-50%);
-  width: 96px; height: 26px; border-radius: 13px;
-  background:
-    radial-gradient(circle at 76% 50%, #1d2b4d 0 2.4px, transparent 3.4px),
-    radial-gradient(circle at 68% 50%, rgba(120, 140, 190, 0.5) 0 1px, transparent 1.6px),
-    linear-gradient(180deg, #0b0d11, #191c22);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+.pv-body.dev-mobile .dev-shell iframe { flex: 1; min-height: 0; height: auto; border-radius: 0 0 32px 32px; background: var(--bg1); }
+.pv-body.dev-mobile .dev-shell::before {
+  content: ""; position: absolute; z-index: 3; pointer-events: none;
+  inset: 12px; border-radius: 32px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012) 24%, transparent 40%);
 }
+.pv-body.dev-mobile .dev-shell::after { content: none; }
+
+/* 手机状态栏：屏幕内顶部，透明底随主题 */
+.dev-statusbar { display: none; }
+.pv-body.dev-mobile .dev-statusbar {
+  display: flex; align-items: center;
+  flex: none;
+  height: 32px;
+  padding: 0 18px;
+  position: relative;
+  border-radius: 32px 32px 0 0;
+  color: var(--txt-dim);
+  background: var(--bg1);
+}
+.dsb-time { font-size: 11.5px; font-weight: 600; font-family: var(--mono); color: var(--txt-dim); }
+.dsb-cam {
+  /* 中央打孔摄像头 */
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 9px; height: 9px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 32%, #3a4a66 0 1.4px, #10131a 62%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0 0 1.5px rgba(0, 0, 0, 0.28);
+}
+.dsb-icons { margin-left: auto; display: flex; align-items: center; gap: 5px; color: var(--txt-dim); }
+.dsb-icons svg { width: 13px; height: 12px; fill: currentColor; }
+
+/* 设置面板：默认智能体选择列表 */
+.agent-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.agent-row:hover { background: var(--panel-2); }
+.agent-row.on { border-color: var(--acc); background: color-mix(in srgb, var(--acc) 7%, transparent); }
+.agent-row .pkg-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.agent-row .agent-desc { font-size: 12px; color: var(--txt-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; }
+.agent-row .agent-cur { display: none; font-size: 11px; color: var(--acc); flex: none; }
+.agent-row.on .agent-cur { display: block; }
+.set-note { font-size: 12px; color: var(--txt-dim); margin: -4px 0 10px; line-height: 1.6; }
+#defModelList .model-group-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--txt-dim); padding: 8px 4px 4px; }
 
 /* 设备切换栏（预览底部） */
 .pv-devices {
@@ -1311,8 +1368,9 @@ body.focus-mode #btnFocus { color: var(--acc); }
   font-size: 11px; color: var(--txt-faint); font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.06em;
   margin: 14px 0 8px;
-  display: flex; align-items: baseline; gap: 6px;
+  display: flex; align-items: center; gap: 8px;
 }
+.set-sec h4 #pkgUpdateAll { margin-left: auto; font-size: 10.5px; padding: 3px 10px; }
 .set-count { color: var(--txt-faint); font-weight: 400; }
 .pkg-list { display: flex; flex-direction: column; gap: 6px; }
 .pkg-empty { color: var(--txt-faint); font-size: 12px; padding: 18px 0; text-align: center; }
@@ -1335,6 +1393,11 @@ body.focus-mode #btnFocus { color: var(--acc); }
   border: 1px solid var(--hair); border-radius: 5px;
   padding: 1px 5px; background: var(--bg1);
 }
+.pkg-ver {
+  flex: none; font-size: 9.5px; color: var(--txt-faint);
+  font-family: var(--mono);
+}
+.pkg-ver.upd { color: #d9a163; }
 .pkg-off-badge {
   flex: none; font-size: 9.5px; color: var(--txt-faint);
   border-radius: 5px; padding: 1px 6px;
@@ -1452,7 +1515,19 @@ body.focus-mode #btnFocus { color: var(--acc); }
 .model-item.current { background: rgba(var(--ink-rgb), 0.08); color: var(--txt); }
 .model-item .mi-name { font-size: 12.5px; color: var(--txt); }
 .model-item .mi-id { font-family: var(--mono); font-size: 10px; color: var(--txt-faint); }
-.model-item .mi-meta { margin-left: auto; font-size: 10px; color: var(--txt-faint); font-family: var(--mono); white-space: nowrap; }
+.model-item .mi-meta { margin-left: auto; font-size: 10px; color: var(--txt-faint); font-family: var(--mono); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.model-item .mi-def {
+  font: inherit; font-family: inherit;
+  padding: 2px 8px;
+  border: 1px solid var(--hair);
+  border-radius: 99px;
+  background: transparent;
+  color: var(--txt-dim);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.model-item .mi-def:hover { border-color: var(--acc); color: var(--acc); }
+.model-item .mi-def.on { border-color: var(--acc); color: var(--acc); background: color-mix(in srgb, var(--acc) 10%, transparent); font-weight: 600; }
 .model-item .mi-check { width: 16px; color: var(--txt); font-size: 12px; }
 .model-empty { padding: 26px 10px; text-align: center; color: var(--txt-faint); font-size: 12px; line-height: 1.8; }
 

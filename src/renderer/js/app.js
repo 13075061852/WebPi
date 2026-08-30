@@ -86,10 +86,14 @@ document.addEventListener("DOMContentLoaded", () => {
 async function refreshAll() {
   const st = await window.halo.getState();
   applyState(st?.data || st);
+  loadProjects();
   await Promise.all([loadSessions(), loadResources()]);
   // 等核心 ready 后再恢复工作区（bridge 未就绪时 openSession 会被忽略）
-  if ((st?.data || st)?.ready) restoreWorkspace();
-  else S.pendingRestore = true;
+  if ((st?.data || st)?.ready) {
+    await restoreWorkspace();
+    // 无论是否走了恢复分支，都按当前 cwd 强刷一次文件树（冷启动时没人加载过它）
+    await loadTree(true);
+  } else S.pendingRestore = true;
 }
 
 /* ============================================================
@@ -930,8 +934,9 @@ function renderResources() {
 
 /* ---- models ---- */
 async function loadModels() {
-  const r = await window.halo.listModels();
+  const [r, dr] = await Promise.all([window.halo.listModels(), window.halo.defaultModelGet().catch(() => ({}))]);
   S.models = (r?.data || []).filter((m) => !m.error);
+  S.defaultModel = dr?.data || "";
   renderModelList("");
 }
 function renderModelList(q) {
@@ -956,13 +961,27 @@ function renderModelList(q) {
     list.appendChild(g);
     for (const m of ms) {
       const cur = S.state?.model;
+      const key = m.provider + "/" + m.id;
       const isCur = cur && cur.provider === m.provider && cur.id === m.id;
+      const isDef = S.defaultModel === key;
       const b = document.createElement("button");
       b.className = "model-item" + (isCur ? " current" : "");
       b.innerHTML = `
         <span class="mi-check">${isCur ? "●" : ""}</span>
         <span><div class="mi-name">${esc(m.name)}</div><div class="mi-id">${esc(m.provider)}/${esc(m.id)}</div></span>
-        <span class="mi-meta">${m.reasoning ? "reasoning · " : ""}${fmtTokens(m.contextWindow)}</span>`;
+        <span class="mi-meta">${m.reasoning ? "reasoning · " : ""}${fmtTokens(m.contextWindow)}
+          <button class="mi-def${isDef ? " on" : ""}" data-key="${esc(key)}" title="设为默认模型（新会话自动使用）">${isDef ? "★ 默认" : "☆ 设默认"}</button>
+        </span>`;
+      b.querySelector(".mi-def").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const key = e.currentTarget.dataset.key; // await 前同步取值（await 后 currentTarget 为 null）
+        const r = await window.halo.defaultModelSet(key);
+        if (r?.ok) {
+          S.defaultModel = key;
+          renderModelList($("#modelSearch").value || "");
+          toast(`默认模型已设置：${m.name}`, "ok");
+        } else toast(`设置失败：${r?.error || ""}`, "err");
+      });
       b.addEventListener("click", async () => {
         const r = await window.halo.setModel(m.provider, m.id);
         if (r?.ok) { applyState(r.data); closeModal(); toast(`已切换到 ${m.name}`, "ok"); }
@@ -995,12 +1014,8 @@ function wireUI() {
     $$(".side-section").forEach((p) => p.classList.toggle("active", p.dataset.pane === tab));
   }));
 
-  // quick actions
-  $("#qNew").addEventListener("click", newSession);
+  // quick actions（快捷操作已移除，功能入口：新会话在会话页 / 模型在输入框旁 / compact、help 走斜杠命令）
   $("#btnNewSession").addEventListener("click", newSession);
-  $("#qModel").addEventListener("click", () => { loadModels(); openModal("modelModal"); });
-  $("#qCompact").addEventListener("click", () => { $("#input").value = "/compact"; send(); });
-  $("#qHelp").addEventListener("click", () => openModal("helpModal"));
 
   // auth card
   $("#authBtn").addEventListener("click", openAuthModal);
@@ -1020,8 +1035,10 @@ function wireUI() {
     loadMarket(true);
   });
   $("#pkgMore").addEventListener("click", () => loadMarket(false));
+  $("#pkgUpdateAll").addEventListener("click", updateAllPkgs);
   $("#pkgApply").addEventListener("click", applyPkgChanges);
   $("#pkgInstalled").addEventListener("click", onInstalledClick);
+  $("#agentList").addEventListener("click", onAgentClick);
   $("#pkgMarket").addEventListener("click", onMarketClick);
   $("#authSearch").addEventListener("input", () => renderAuthRows());
   $("#authFilters").addEventListener("click", (e) => {
@@ -1042,6 +1059,7 @@ function wireUI() {
   // attachments & project
   $("#btnAttach").addEventListener("click", attachImages);
   $("#projectChip").addEventListener("click", pickProject);
+  $("#projAdd").addEventListener("click", pickProject);
 
   // chat header
   $("#btnFocus").addEventListener("click", () => {
@@ -1353,7 +1371,15 @@ async function setPreview(p, force) {
       const nums = Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
       body.innerHTML = `<div class="file-view"><div class="fv-code"><div class="fvc-ln">${nums}</div><pre class="fvc-body">${hlFile(content, "html")}</pre></div></div>`;
     } else {
-      body.innerHTML = `<div class="dev-shell"><iframe src="${previewURL(p)}"></iframe></div>`;
+      // 手机状态栏：实时时间 + 信号/wifi/电池 + 中央打孔摄像头（仅手机模式显示，CSS 控制）
+      const now = new Date();
+      const timeStr = now.getHours() + ":" + String(now.getMinutes()).padStart(2, "0");
+      const statusbar = `<div class="dev-statusbar"><span class="dsb-time">${timeStr}</span><span class="dsb-cam"></span><span class="dsb-icons">` +
+        `<svg viewBox="0 0 16 12"><rect x="0" y="7" width="2.5" height="5" rx="0.8"/><rect x="4" y="5" width="2.5" height="7" rx="0.8"/><rect x="8" y="3" width="2.5" height="9" rx="0.8"/><rect x="12" y="1" width="2.5" height="11" rx="0.8" opacity="0.4"/></svg>` +
+        `<svg viewBox="0 0 16 12"><path d="M8 10.8a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8Z"/><path d="M3.6 7.2a6.2 6.2 0 0 1 8.8 0l-1.4 1.4a4.2 4.2 0 0 0-6 0Z"/><path d="M1.2 4.8a9.6 9.6 0 0 1 13.6 0l-1.4 1.4a7.6 7.6 0 0 0-10.8 0Z"/></svg>` +
+        `<svg viewBox="0 0 22 12"><rect x="0.5" y="1.5" width="18" height="9" rx="2.5" fill="none" stroke="currentColor" stroke-width="1"/><rect x="2.2" y="3.2" width="11" height="5.6" rx="1.2"/><rect x="19.8" y="4" width="2" height="4" rx="1"/></svg>` +
+        `</span></div>`;
+      body.innerHTML = `<div class="dev-shell">${statusbar}<iframe src="${previewURL(p)}"></iframe></div>`;
       window.halo.previewTouch?.(currentPreviewDevice() !== "desktop");
     }
   } else {
@@ -1494,14 +1520,79 @@ async function applyProjectReset() {
 
 async function pickProject() {
   if (S.streaming) return toast("任务进行中，无法切换项目", "err");
-  const r = await window.halo.pickProject(S.state?.cwd);
+  const prev = S.state?.cwd || ""; // 必须在对话框之前保存：主进程选完目录会立即切换并推送状态
+  const r = await window.halo.pickProject(prev);
   const dir = r?.data;
-  if (!dir || dir === S.state?.cwd) return;
-  await applyProjectReset();
-  await loadTree(true);
-  await loadSessions();
-  await loadResources();
-  toast(`已切换项目 · ${dir.split(/[\\/]/).pop()}`, "ok");
+  if (!dir) return;
+  // 注意：此刻 S.state.cwd 已被主进程更新为新目录，不能再拿它做比较，
+  // 否则守卫恒真、switchProjectViaAdd 永不执行，左侧列表永远不刷新
+  if (normPath(dir) === normPath(prev)) return; // 选的是当前项目 → 无操作
+  // projectAdd 内部去重：已在列表只切换，新目录加入列表后切换
+  await switchProjectViaAdd(dir);
+}
+async function switchProjectViaAdd(dir) {
+  toast(`正在添加项目 · ${String(dir).split(/[\\/]/).pop()}…`, "");
+  const box = $("#projList");
+  if (box) box.style.opacity = "0.5";
+  const r = await window.halo.projectAdd(dir);
+  if (box) box.style.opacity = "";
+  if (!r?.ok) return toast(`添加失败：${r?.error || ""}`, "err");
+  applyProjectReset();
+  await Promise.all([loadTree(true), loadSessions(), loadResources()]);
+  loadProjects();
+  await restoreHistory();
+  saveWorkspace();
+  toast(`已添加项目 · ${String(dir).split(/[\\/]/).pop()}`, "ok");
+}
+
+/* ---- 项目：一个项目 = 一个文件夹，各自记住上一个对话 ---- */
+async function loadProjects() {
+  const box = $("#projList");
+  if (!box) return;
+  const r = await window.halo.projectsList();
+  const list = r?.data || [];
+  box.innerHTML = "";
+  if (!list.length) {
+    box.innerHTML = `<div class="res-empty">还没有项目，点上方“＋ 添加”</div>`;
+    return;
+  }
+  for (const p of list) {
+    const row = document.createElement("div");
+    row.className = "proj-row" + (p.active ? " active" : "");
+    row.title = p.cwd;
+    row.innerHTML = `
+      <span class="pj-ic">▸</span>
+      <span class="pj-name">${esc(p.name)}</span>
+      ${p.active ? `<span class="pj-cur">当前</span>` : ""}
+      ${p.active ? "" : `<button class="pj-del" title="从列表移除（不删除文件夹）">×</button>`}`;
+    row.addEventListener("click", () => {
+      if (p.active) return;
+      switchProject(p.cwd);
+    });
+    const del = row.querySelector(".pj-del");
+    if (del) del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await window.halo.projectRemove(p.cwd);
+      loadProjects();
+      toast(`已从列表移除 ${p.name}`, "ok");
+    });
+    box.appendChild(row);
+  }
+}
+async function switchProject(cwd) {
+  if (S.streaming) return toast("任务进行中，无法切换项目", "err");
+  toast(`正在切换项目 · ${String(cwd).split(/[\\/]/).pop()}…`, "");
+  const box = $("#projList");
+  if (box) box.style.opacity = "0.5";
+  const r = await window.halo.projectSwitch(cwd);
+  if (box) box.style.opacity = "";
+  if (!r?.ok) return toast(`切换失败：${r?.error || ""}`, "err");
+  applyProjectReset();
+  await Promise.all([loadTree(true), loadSessions(), loadResources()]);
+  loadProjects();
+  await restoreHistory();
+  saveWorkspace();
+  toast(`已切换项目 · ${String(cwd).split(/[\\/]/).pop()}`, "ok");
 }
 
 /* ============================================================
@@ -1748,12 +1839,99 @@ const relTime = (iso) => {
 };
 function openSettings() {
   openModal("settingsModal");
+  loadAgents();
+  loadDefaultModels();
   if (!S.pkgLoaded) {
     S.pkgLoaded = true;
-    loadInstalled();
-    loadMarket(true);
+    loadInstalled().then(() => loadMarket(true));
   } else {
     loadInstalled();
+  }
+}
+async function loadDefaultModels() {
+  const list = $("#defModelList");
+  if (!list) return;
+  list.innerHTML = `<div class="pkg-empty">读取模型列表…</div>`;
+  const [mr, dr] = await Promise.all([window.halo.listModels(), window.halo.defaultModelGet()]);
+  const models = (mr?.data || []).filter((m) => !m.error);
+  const cur = dr?.data || "";
+  const nameEl = $("#defModelName");
+  if (nameEl) nameEl.textContent = cur ? cur.split("/").pop() : "跟随上次使用";
+  if (!models.length) {
+    list.innerHTML = `<div class="pkg-empty">尚未发现可用模型，请先通过 pi 登录</div>`;
+    return;
+  }
+  const groups = new Map();
+  for (const m of models) {
+    if (!groups.has(m.provider)) groups.set(m.provider, []);
+    groups.get(m.provider).push(m);
+  }
+  list.innerHTML = "";
+  for (const [prov, ms] of groups) {
+    const g = document.createElement("div");
+    g.className = "model-group-label";
+    g.textContent = prov;
+    list.appendChild(g);
+    for (const m of ms) {
+      const key = m.provider + "/" + m.id;
+      const isCur = cur === key;
+      const row = document.createElement("div");
+      row.className = "agent-row" + (isCur ? " on" : "");
+      row.dataset.key = key;
+      row.innerHTML = `
+        <div class="pkg-main">
+          <span class="pkg-name">${esc(m.name)}</span>
+          <span class="agent-desc">${esc(m.provider)}/${esc(m.id)}${m.reasoning ? " · reasoning" : ""} · ${fmtTokens(m.contextWindow)}</span>
+        </div>
+        <div class="pkg-ops"><span class="agent-cur">默认</span></div>`;
+      row.addEventListener("click", async () => {
+        const r = await window.halo.defaultModelSet(key);
+        if (r?.ok) {
+          list.querySelectorAll(".agent-row").forEach((x) => x.classList.toggle("on", x === row));
+          if (nameEl) nameEl.textContent = m.id;
+          toast(`默认模型已设置：${m.name}`, "ok");
+        } else toast(`设置失败：${r?.error || ""}`, "err");
+      });
+      list.appendChild(row);
+    }
+  }
+}
+async function loadAgents() {
+  const box = $("#agentList");
+  if (!box) return;
+  box.innerHTML = `<div class="pkg-empty">读取中…</div>`;
+  const [lr, dr] = await Promise.all([window.halo.agentList(), window.halo.agentDefaultGet()]);
+  const list = (lr?.data || []);
+  const cur = dr?.data || "";
+  if (!list.length) {
+    box.innerHTML = `<div class="pkg-empty">未发现智能体定义（用户级 ~/.pi/agent/agents 或项目 .pi/agents 下没有 *.md）</div>`;
+    return;
+  }
+  box.innerHTML = [`
+    <div class="agent-row${cur === "" ? " on" : ""}" data-name="">
+      <div class="pkg-main"><span class="pkg-name">默认（pi 编程助手）</span></div>
+      <div class="pkg-ops"><span class="agent-cur">使用中</span></div>
+    </div>`]
+    .concat(list.map((a) => `
+    <div class="agent-row${cur === a.name ? " on" : ""}" data-name="${esc(a.name)}" title="${esc(a.path)}">
+      <div class="pkg-main">
+        <span class="pkg-name">${esc(a.name)}</span>
+        ${a.desc ? `<span class="agent-desc">${esc(a.desc)}</span>` : ""}
+        <span class="pkg-kind">${a.scope === "user" ? "用户级" : a.scope === "project" ? "项目级" : "内置"}</span>
+      </div>
+      <div class="pkg-ops"><span class="agent-cur">使用中</span></div>
+    </div>`)).join("");
+}
+async function onAgentClick(e) {
+  const row = e.target.closest(".agent-row");
+  if (!row) return;
+  const name = row.dataset.name || "";
+  const r = await window.halo.agentDefaultSet(name);
+  if (r?.ok) {
+    document.querySelectorAll("#agentList .agent-row").forEach((x) => x.classList.toggle("on", x === row));
+    toast(name ? `默认智能体已切换：${name}（下一条消息生效）` : "已恢复默认 pi 编程助手", "ok");
+  } else {
+    toast(`设置失败：${r?.error || ""}`, "err");
   }
 }
 async function loadInstalled() {
@@ -1763,25 +1941,53 @@ async function loadInstalled() {
   const list = r?.data || [];
   S.pkgInstalledList = list;
   $("#pkgInstalledCount").textContent = list.length ? list.length + " 个" : "";
+  const upd = list.filter((p) => p.update).length;
+  const updBtn = $("#pkgUpdateAll");
+  updBtn.hidden = !upd;
+  updBtn.textContent = `一键更新 (${upd})`;
+  updBtn.disabled = false;
   if (!list.length) {
     box.innerHTML = `<div class="pkg-empty">尚未安装任何包</div>`;
     return;
   }
   box.innerHTML = list.map((p, i) => {
     const name = esc(p.raw.replace(/^npm:/, ""));
+    const ver = p.update ? `<span class="pkg-ver upd" title="${esc(p.version)} → ${esc(p.latest)}">${esc(p.version)} → ${esc(p.latest)}</span>` : p.version ? `<span class="pkg-ver">v${esc(p.version)}</span>` : "";
     return `<div class="pkg-row${p.disabled ? " off" : ""}" data-i="${i}">
       <div class="pkg-main">
         <span class="pkg-name">${name}</span>
+        ${ver}
         <span class="pkg-kind">${p.kind === "npm" ? "npm" : p.kind === "git" ? "git" : "本地"}</span>
         ${p.disabled ? `<span class="pkg-off-badge">已停用</span>` : ""}
       </div>
       <div class="pkg-ops">
         <button class="ext-switch${p.disabled ? "" : " on"}" data-act="toggle" title="${p.disabled ? "启用" : "停用"}"></button>
-        ${p.kind !== "本地" ? `<button class="mini-btn" data-act="update">更新</button>` : ""}
+        ${p.update ? `<button class="mini-btn accent" data-act="update">更新</button>` : ""}
         <button class="mini-btn danger" data-act="remove">卸载</button>
       </div>
     </div>`;
   }).join("");
+}
+async function updateAllPkgs() {
+  const btn = $("#pkgUpdateAll");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = "更新中…";
+  try {
+    const r = await window.halo.pkgUpdateAll();
+    const d = r?.data || {};
+    if (d.total) {
+      showPending();
+      if (d.failed?.length) toast(`已更新 ${d.updated.length} 个，${d.failed.length} 个失败`, "err");
+      else toast(`已更新 ${d.updated.length} 个包（新会话生效）`, "ok");
+    } else {
+      toast("所有包均已是最新", "ok");
+    }
+  } catch (e) {
+    toast(`一键更新失败：${e?.message || e}`, "err");
+  }
+  await loadInstalled();
+  if (S.pkgLoaded) loadMarket(true);
 }
 async function loadMarket(reset) {
   if (reset) {
@@ -1802,11 +2008,14 @@ async function loadMarket(reset) {
   S.pkgTotal = r.data?.total || 0;
   $("#pkgTotal").textContent = all.length ? `${all.length} / ${S.pkgTotal}` : "";
   const installedNorm = new Set((S.pkgInstalledList || []).map((p) => normPkgSource(p.raw)));
+  const notInstalled = all.filter((p) => !installedNorm.has(normPkgSource("npm:" + p.name)));
   const filtered = S.pkgType && S.pkgType !== "all"
-    ? all.filter((p) => p.types?.includes(S.pkgType))
-    : all;
+    ? notInstalled.filter((p) => p.types?.includes(S.pkgType))
+    : notInstalled;
   if (!filtered.length) {
-    box.innerHTML = `<div class="pkg-empty">${reset ? "没有匹配的包" : "没有更多了"}</div>`;
+    // 当前页全是已安装的包：还有下一页就自动续拉
+    if (all.length < S.pkgTotal) return loadMarket(false);
+    box.innerHTML = `<div class="pkg-empty">没有更多未安装的包</div>`;
     $("#pkgMore").hidden = true;
     return;
   }
@@ -1852,16 +2061,28 @@ async function onInstalledClick(e) {
   const act = btn.dataset.act;
   if (act === "toggle") {
     btn.disabled = true;
-    const r = await window.halo.pkgToggle(p.raw, !p.disabled);
+    // on 参数 = 目标启用态：当前停用中 → on=true 启用；当前启用中 → on=false 停用
+    const r = await window.halo.pkgToggle(p.raw, p.disabled);
     if (r?.ok) {
       p.disabled = !p.disabled;
       showPending();
-      loadInstalled();
+      // 就地更新该行，不重载列表（避免闪烁）
+      row.classList.toggle("off", p.disabled);
+      btn.classList.toggle("on", !p.disabled);
+      btn.title = p.disabled ? "启用" : "停用";
+      const main = row.querySelector(".pkg-main");
+      let badge = main.querySelector(".pkg-off-badge");
+      if (p.disabled && !badge) {
+        badge = document.createElement("span");
+        badge.className = "pkg-off-badge";
+        badge.textContent = "已停用";
+        main.appendChild(badge);
+      } else if (!p.disabled && badge) badge.remove();
       toast(p.disabled ? "已停用（新会话生效）" : "已启用（新会话生效）", "ok");
     } else {
-      btn.disabled = false;
       toast(`操作失败：${r?.error || ""}`, "err");
     }
+    btn.disabled = false;
   } else if (act === "remove") {
     if (!row.classList.contains("confirm")) {
       row.classList.add("confirm");
@@ -1875,7 +2096,14 @@ async function onInstalledClick(e) {
     if (r?.ok) {
       toast("已卸载（新会话生效）", "ok");
       showPending();
-      await loadInstalled();
+      // 就地移除该行，不重载列表
+      const idx = S.pkgInstalledList.indexOf(p);
+      if (idx >= 0) S.pkgInstalledList.splice(idx, 1);
+      row.remove();
+      [...$("#pkgInstalled").querySelectorAll(".pkg-row")].forEach((el, i) => { el.dataset.i = i; });
+      const list = S.pkgInstalledList;
+      $("#pkgInstalledCount").textContent = list.length ? list.length + " 个" : "";
+      if (!list.length) $("#pkgInstalled").innerHTML = `<div class="pkg-empty">尚未安装任何包</div>`;
       if (S.pkgLoaded) loadMarket(true);
     } else {
       btn.disabled = false;

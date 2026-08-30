@@ -45,6 +45,54 @@ export async function loadPi() {
 }
 
 /* ------------------------------------------------------------------ */
+/* 智能体（agent）扫描：用户级 / 项目级 *.md（frontmatter + 系统提示） */
+/* ------------------------------------------------------------------ */
+
+const listAgentFiles = (dir, out, scope, depth = 0) => {
+  if (depth > 3) return;
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) listAgentFiles(full, out, scope, depth + 1);
+    else if (e.isFile() && e.name.endsWith(".md") && !e.name.endsWith(".chain.md")) out.push({ file: full, scope });
+  }
+};
+
+export async function scanAgents(cwd) {
+  const { getAgentDir } = await loadPi();
+  const roots = [
+    { dir: path.join(getAgentDir(), "extensions", "subagent", "agents"), scope: "builtin" },
+    { dir: path.join(getAgentDir(), "agents"), scope: "user" },
+    { dir: path.join(cwd || process.cwd(), ".pi", "agents"), scope: "project" },
+    { dir: path.join(cwd || process.cwd(), ".agents"), scope: "project" },
+  ];
+  const files = [];
+  for (const r of roots) listAgentFiles(r.dir, files, r.scope);
+  const out = [];
+  for (const { file, scope } of files) {
+    try {
+      const raw = fs.readFileSync(file, "utf8");
+      const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+      const fm = fmMatch ? fmMatch[1] : "";
+      const name = ((fm.match(/^name:\s*(.+)$/m) || [])[1] || "").trim().replace(/^"|"$/g, "") || path.basename(file, ".md");
+      const desc = ((fm.match(/^description:\s*(.+)$/m) || [])[1] || "").trim().replace(/^"|"$/g, "");
+      // runner.type 非 pi 的是外部 CLI 子运行器（codex/claude 等），不能作为默认人设，跳过
+      const runnerBlock = fm.match(/^runner:\s*\r?\n((?:[ \t]+.*\r?\n?)+)/m);
+      const runnerType = runnerBlock ? (((runnerBlock[1].match(/type:\s*(\S+)/) || [])[1]) || "") : "";
+      if (runnerType && runnerType !== "pi") continue;
+      const prompt = (fmMatch ? raw.slice(fmMatch[0].length) : raw).trim();
+      if (!prompt) continue;
+      out.push({ name, desc, scope, path: file, prompt });
+    } catch {}
+  }
+  // 同名去重：后扫的优先级高（项目级覆盖用户级）
+  const byName = new Map();
+  for (const a of out) byName.set(a.name, a);
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/* ------------------------------------------------------------------ */
 /* app settings (small JSON store in userData)                         */
 /* ------------------------------------------------------------------ */
 
@@ -80,6 +128,11 @@ export class PiBridge {
     this.unsubscribe = null;
     this.modelRuntime = null;
     this.cwd = store.data.cwd || null;
+    // 项目列表：一个项目 = 一个文件夹，记住各自的 lastSession（首次从现有 cwd 迁移）
+    if (!Array.isArray(store.data.projects)) {
+      store.data.projects = this.cwd ? [{ cwd: this.cwd, lastSession: null }] : [];
+      store.save();
+    }
     this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     this.emitter = null;      // (channel, payload) => void
     this.startingPromise = null;
@@ -118,8 +171,8 @@ export class PiBridge {
 
   async start(cwd) {
     if (this.startingPromise) { try { await this.startingPromise; } catch {} }
-    if (cwd) this.cwd = cwd;
-    if (!this.cwd) this.cwd = path.join(os.homedir(), "Desktop");
+    if (cwd) this.cwd = String(cwd).replace(/\\/g, "/");
+    if (!this.cwd) this.cwd = path.join(os.homedir(), "Desktop").replace(/\\/g, "/");
     this.store.set("cwd", this.cwd);
 
     this.startingPromise = this._doStart();
@@ -165,7 +218,40 @@ export class PiBridge {
               path: x.path || "",
             }));
             const disabled = new Set(this.store.data.disabledExtensions || []);
-            return { ...base, extensions: base.extensions.filter((x) => !disabled.has(x.path)) };
+            const extensions = base.extensions.filter((x) => !disabled.has(x.path));
+            // Halo 默认智能体：完整 Extension 对象（path 指向真实存在的文件，loader stat 需要）；
+            // handler 在每轮 agent 启动前实时读 store，把选中智能体的提示追加到系统提示
+            try {
+              const extFile = path.join(path.dirname(this.store.file), "halo-default-agent-ext.mjs");
+              if (fs.existsSync(extFile)) {
+                const self = this;
+                extensions.push({
+                  path: extFile,
+                  resolvedPath: extFile,
+                  hidden: true,
+                  sourceInfo: { path: extFile, source: "halo", scope: "temporary", origin: "top-level" },
+                  handlers: new Map([
+                    ["before_agent_start", [async (event) => {
+                      const want = self.store.data.defaultAgent;
+                      if (!want) return undefined;
+                      try {
+                        const agents = await scanAgents(self.cwd);
+                        const ag = agents.find((a) => a.name === want);
+                        if (!ag || !ag.prompt) return undefined;
+                        const basePrompt = event.systemPrompt || "";
+                        return { systemPrompt: basePrompt + "\n\n# 当前智能体设定：" + ag.name + "\n\n" + ag.prompt };
+                      } catch { return undefined; }
+                    }]],
+                  ]),
+                  tools: new Map(),
+                  messageRenderers: new Map(),
+                  commands: new Map(),
+                  flags: new Map(),
+                  shortcuts: new Map(),
+                });
+              }
+            } catch {}
+            return { ...base, extensions };
           },
         },
       });
@@ -184,20 +270,126 @@ export class PiBridge {
     });
 
     this._bindSession();
-
-    // restore last model / thinking if saved
+    await this.restoreModel();
+    this._noteSession();
     try {
       const saved = this.store.data;
-      if (saved.modelKey && this.session && !this.session.model) {
-        const [provider, ...rest] = saved.modelKey.split("/");
-        const id = rest.join("/");
-        const m = this.modelRuntime.getModel(provider, id);
-        if (m) await this.session.setModel(m);
-      }
       if (saved.thinkingLevel && this.session) {
         this.session.setThinkingLevel(saved.thinkingLevel);
       }
     } catch {}
+  }
+
+  /* 默认模型恢复：defaultModel 显式设置时总是应用；无默认则用上次使用（modelKey，仅当会话无模型） */
+  async restoreModel() {
+    try {
+      const saved = this.store.data;
+      const key = saved.defaultModel || saved.modelKey;
+      if (!key || !this.session || !this.modelRuntime) return;
+      if (!saved.defaultModel && this.session.model) return; // 无显式默认：尊重会话自带模型
+      const [provider, ...rest] = key.split("/");
+      const id = rest.join("/");
+      const m = this.modelRuntime.getModel(provider, id);
+      if (!m) return;
+      const cur = this.session.model;
+      if (cur && cur.provider === m.provider && cur.id === m.id) return;
+      await this.session.setModel(m);
+      this.pushState();
+    } catch {}
+  }
+
+  /* ---------------- 项目（一个项目 = 一个文件夹 + 各自的会话与 lastSession） ---------------- */
+
+  static normPath(p) {
+    return String(p || "").replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
+  }
+
+  _findProject(cwd) {
+    const key = PiBridge.normPath(cwd);
+    return (this.store.data.projects || []).find((x) => PiBridge.normPath(x.cwd) === key);
+  }
+
+  /* 会话变化时自动记录到所属项目的 lastSession（未持久化的会话不记，落盘后由 agent_settled 补记） */
+  _noteSession() {
+    try {
+      const sf = this.session?.sessionFile;
+      if (!sf || !this.cwd || !fs.existsSync(sf)) return;
+      const p = this._findProject(this.cwd);
+      if (p && p.lastSession !== sf) {
+        p.lastSession = sf;
+        this.store.save();
+      }
+    } catch {}
+  }
+
+  async projectsList() {
+    return (this.store.data.projects || []).map((p) => ({
+      cwd: p.cwd,
+      name: path.basename(p.cwd),
+      lastSession: p.lastSession || null,
+      active: PiBridge.normPath(p.cwd) === PiBridge.normPath(this.cwd || ""),
+    }));
+  }
+
+  async addProject(dir) {
+    if (!dir || !fs.existsSync(dir)) throw new Error("目录不存在：" + dir);
+    if (!this._findProject(dir)) {
+      (this.store.data.projects = this.store.data.projects || []).push({ cwd: dir, lastSession: null });
+      this.store.save();
+    }
+    return this.switchProject(dir);
+  }
+
+  async removeProject(cwd) {
+    const key = PiBridge.normPath(cwd);
+    this.store.data.projects = (this.store.data.projects || []).filter((x) => PiBridge.normPath(x.cwd) !== key);
+    this.store.save();
+    return this.projectsList();
+  }
+
+  /* 切换项目：优先快路径（直接 switchSession 到该项目的上一个会话，cwdOverride 让 services 重建到目标目录，
+     一次重建完成“切目录+恢复会话”）；无会话可恢复时才完整 start（慢路径） */
+  async switchProject(cwd) {
+    const target = String(cwd || "").replace(/\\/g, "/");
+    let prev = this._findProject(target);
+    // 防御：目标目录不在项目列表（旧路径切换/手工迁移残留）—— 自动补录
+    if (!prev) {
+      (this.store.data.projects = this.store.data.projects || []).push({ cwd: target, lastSession: null });
+      this.store.save();
+      prev = this._findProject(target);
+    }
+    const last = prev?.lastSession && fs.existsSync(prev.lastSession) ? prev.lastSession : null;
+    if (last && this.runtime) {
+      try {
+        await this.runtime.switchSession(last, { cwdOverride: target });
+        this.cwd = target;
+        this.store.set("cwd", target);
+        this._bindSession();
+        await this.restoreModel();
+        this._noteSession();
+        this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+        this.pushState();
+        return this.publicState();
+      } catch (e) {
+        console.error("[halo] fast project switch failed, fallback to full start:", e);
+      }
+    }
+    if (PiBridge.normPath(target) !== PiBridge.normPath(this.cwd || "")) {
+      await this.start(target);
+    }
+    if (last && this.runtime) {
+      try {
+        await this.runtime.switchSession(last);
+        this._bindSession();
+        await this.restoreModel();
+      } catch (e) {
+        console.error("[halo] restore project lastSession failed:", last, e);
+      }
+    }
+    this._noteSession();
+    this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    this.pushState();
+    return this.publicState();
   }
 
   _bindSession() {
@@ -208,6 +400,7 @@ export class PiBridge {
       this.emit("pi:event", { sessionId: this.session?.sessionId, event });
       // A6: keep renderer state fresh at every meaningful boundary
       if (event?.type === "message_end" || event?.type === "agent_end" || event?.type === "agent_settled") {
+        this._noteSession();
         this.pushState();
       }
     });
@@ -412,6 +605,20 @@ export class PiBridge {
         });
       }
     } catch {}
+    // 当前会话若尚未落盘（没发过消息），目录里扫不到 —— 手动补进列表，否则新建会话不显示
+    try {
+      const sf = this.session?.sessionFile;
+      if (sf && !out.some((s) => PiBridge.normPath(s.file) === PiBridge.normPath(sf))) {
+        const st = this.publicState();
+        out.unshift({
+          file: sf,
+          id: st.sessionId || "",
+          name: "新会话",
+          modified: Date.now(),
+          messageCount: st.messageCount ?? 0,
+        });
+      }
+    } catch {}
     out.sort((a, b) => new Date(b.modified || 0) - new Date(a.modified || 0));
     return out.slice(0, 40);
   }
@@ -419,6 +626,8 @@ export class PiBridge {
   async openSession(file) {
     await this.runtime.switchSession(file);
     this._bindSession();
+    await this.restoreModel();
+    this._noteSession();
     this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     this.pushState();
     return this.publicState();
@@ -427,6 +636,8 @@ export class PiBridge {
   async newSession() {
     await this.runtime.newSession();
     this._bindSession();
+    await this.restoreModel();
+    this._noteSession();
     this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     this.pushState();
     return this.publicState();
@@ -510,6 +721,7 @@ export class PiBridge {
       try {
         await this.runtime.switchSession(sf);
         this._bindSession();
+        await this.restoreModel();
         this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
       } catch (e) {
         return { error: String(e?.message || e) };
