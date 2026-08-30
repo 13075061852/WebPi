@@ -629,20 +629,27 @@ export class PiBridge {
       // {path,id,cwd,name,created,modified,messageCount,firstMessage,...}
       const all = await SessionManager.list(this.cwd);
       for (const s of Array.isArray(all) ? all : []) {
+        const f = s.path || s.file || s.sessionFile || "";
+        const mc = s.messageCount ?? null;
+        // 空会话（0 条消息）不进列表：新会话在发出第一条消息前不显示，
+        // 否则每次删除当前会话都会冒出一个删不掉的“新会话”
+        if (f && mc === 0) continue;
+        if (f && mc == null && !fs.existsSync(f)) continue; // 失效条目（文件已不存在）
         out.push({
-          file: s.path || s.file || s.sessionFile || "",
+          file: f,
           id: s.id || "",
           name: s.name || s.firstMessage || "",
           modified: s.modified || s.mtime || null,
-          messageCount: s.messageCount ?? null,
+          messageCount: mc,
         });
       }
     } catch {}
-    // 当前会话若尚未落盘（没发过消息），目录里扫不到 —— 手动补进列表，否则新建会话不显示
+    // 当前会话若尚未落盘但已有消息，目录里扫不到 —— 手动补进列表
+    // （空会话不补：新建/删除后的空会话不显示，避免“总出现一个新会话”）
     try {
       const sf = this.session?.sessionFile;
-      if (sf && !out.some((s) => PiBridge.normPath(s.file) === PiBridge.normPath(sf))) {
-        const st = this.publicState();
+      const st = this.publicState();
+      if (sf && (st.messageCount ?? 0) > 0 && !out.some((s) => PiBridge.normPath(s.file) === PiBridge.normPath(sf))) {
         out.unshift({
           file: sf,
           id: st.sessionId || "",
@@ -680,10 +687,20 @@ export class PiBridge {
   async deleteSession(file) {
     const abs = path.resolve(file);
     if (!/\.jsonl$/i.test(abs)) throw new Error("不是会话记录文件");
-    if (!fs.existsSync(abs)) throw new Error("会话记录不存在");
     let switched = false;
     const current = this.session?.sessionFile;
-    if (current && path.resolve(current) === abs) {
+    const isCurrent = current && path.resolve(current) === abs;
+    if (!fs.existsSync(abs)) {
+      // 文件不存在：若是当前空会话（尚未落盘的幽灵条目），视为“丢弃”直接开新会话
+      if (!isCurrent) throw new Error("会话记录不存在");
+      if (this.session?.isStreaming) throw new Error("任务进行中，先中止再删除");
+      await this.runtime.newSession();
+      this._bindSession();
+      this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+      this.pushState();
+      return { switched: true };
+    }
+    if (isCurrent) {
       if (this.session?.isStreaming) throw new Error("任务进行中，先中止再删除");
       await this.runtime.newSession();
       this._bindSession();

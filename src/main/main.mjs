@@ -36,7 +36,9 @@ let quitting = false;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  app.quit();
+  // 已有实例在跑：干净退出（exit 0），避免 npm start 报 “exited with code 127”；
+  // first 实例会收到 second-instance 事件并聚焦已有窗口
+  app.exit(0);
 } else {
   bootstrap();
 }

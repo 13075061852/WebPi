@@ -138,19 +138,22 @@ function renderStats(u = {}) {
   const win = st.model?.contextWindow || 0;
   const allZero = !u.input && !u.output && !u.cacheRead && !u.cacheWrite && !u.cost;
   if (allZero) {
-    $("#chatStats").innerHTML = `<span title="当前网关未返回用量统计">— tokens</span><span title="花费">— $</span>`;
+    $("#chatStats").innerHTML = `<span title="当前网关未返回用量统计">— tokens</span>`;
     return;
   }
   const ctxPart = win
-    ? `上下文 ${fmtTokens(ctx)}/${fmtTokens(win)} · ${((ctx / win) * 100).toFixed(1)}%`
-    : `上下文 ${fmtTokens(ctx)}`;
+    ? `${fmtTokens(ctx)}/${fmtTokens(win)} · ${((ctx / win) * 100).toFixed(1)}%`
+    : `${fmtTokens(ctx)}`;
+  // CH = 缓存命中率：缓存读取占全部提示 tokens（输入+缓存读+缓存写）的比例
+  const promptAll = (u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
+  const ch = promptAll > 0 ? ((u.cacheRead || 0) / promptAll * 100).toFixed(1) + "%" : "—";
+  // 用户要求：去掉 W（缓存写入）、费用，上下文不写字
   $("#chatStats").innerHTML =
     `<span title="输入 tokens（累计）">↑ ${fmtTokens(u.input)}</span>` +
     `<span title="输出 tokens（累计）">↓ ${fmtTokens(u.output)}</span>` +
     `<span title="缓存读取（累计）">R ${fmtTokens(u.cacheRead)}</span>` +
-    `<span title="缓存写入（累计）">W ${fmtTokens(u.cacheWrite)}</span>` +
-    `<span title="上下文占用（当前会话 / 模型窗口）">${esc(ctxPart)}</span>` +
-    `<span title="花费（累计）">$${(u.cost || 0).toFixed(4)}</span>`;
+    `<span title="缓存命中率（缓存读取 / 全部提示 tokens）">CH ${ch}</span>` +
+    `<span title="上下文占用（当前会话 / 模型窗口）">${esc(ctxPart)}</span>`;
 }
 
 const THINK_LABELS = {
@@ -206,14 +209,7 @@ function stopStallWatchdog() {
   hideStallHint();
 }
 function showStallHint(sec) {
-  let el = $("#stallHint");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "stallHint";
-    el.className = "stall-hint";
-    (S.turn || $("#messages")).appendChild(el);
-  }
-  el.innerHTML = `<span class="s-dot"></span>网关已 ${sec}s 无响应 · 仍在等待，可按 Esc 中止`;
+  // 用户要求：不再显示“网关无响应”停滞提示（工具执行/长思考静默均属正常）
 }
 function hideStallHint() { const el = $("#stallHint"); if (el) el.remove(); }
 
@@ -641,18 +637,7 @@ function onToolEnd(ev) {
   scrollDown();
 }
 
-/* ---- notices / queue ---- */
-function notice(text, kind = "") {
-  // 重复消息过滤：与上一条提示文案相同时不再重复展示
-  const all = $$("#messages .notice");
-  const last = all[all.length - 1];
-  if (last && last.textContent === text) return;
-  const n = document.createElement("div");
-  n.className = `notice ${kind}`;
-  n.textContent = text;
-  $("#messages").appendChild(n);
-  scrollDown();
-}
+/* ---- queue ---- */
 
 function renderQueue() {
   const row = $("#queueRow");
@@ -835,6 +820,7 @@ async function restoreHistory() {
 async function loadSessions() {
   const r = await window.halo.listSessions();
   S.sessions = r?.data || [];
+  const cur = normPath(S.state?.sessionFile || "");
   const list = $("#sessionList");
   if (!S.sessions.length) {
     list.innerHTML = `<div class="res-empty">当前项目还没有会话</div>`;
@@ -844,10 +830,13 @@ async function loadSessions() {
   for (const s of S.sessions) {
     const item = document.createElement("div");
     item.className = "session-item";
+    // 右侧正在显示的会话在左侧高亮标记，避免分不清当前处于哪个对话
+    const isCur = cur && normPath(s.file || "") === cur;
+    if (isCur) item.classList.add("active");
     const file = (s.file || "").split(/[\\/]/).pop().replace(/\.jsonl$/, "");
     const main = document.createElement("button");
     main.className = "s-main";
-    main.innerHTML = `<span class="s-name">${esc(s.name || friendlySession(file))}</span>
+    main.innerHTML = `<span class="s-name">${isCur ? '<span class="s-cur">当前</span>' : ""}${esc(s.name || friendlySession(file))}</span>
       <span class="s-meta">${s.modified ? new Date(s.modified).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}${s.messageCount != null ? " · " + s.messageCount + "条" : ""}</span>`;
     main.addEventListener("click", () => {
       if (S.streaming) return toast("任务进行中，无法切换会话", "err");
@@ -893,10 +882,7 @@ function requestDeleteSession(s, item, del) {
       }
       loadSessions();
     })
-    .catch((e) => {
-      del.disabled = false;
-      toast(`删除失败：${e?.message || e}`, "err");
-    });
+    .catch(() => loadSessions()); // 静默处理：失效条目直接刷新列表清掉，不再弹提示
 }
 
 const normPath = (p) => String(p || "").replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
@@ -937,9 +923,10 @@ async function restoreWorkspace() {
 async function openSession(file) {
   try {
     clearChat();
-    await window.halo.openSession(file);
+    const r = await window.halo.openSession(file);
+    if (r?.data) applyState(r.data); // 同步 sessionFile，左侧“当前”标记立刻跟上
     await restoreHistory();
-    toast("已切换会话", "ok");
+    loadSessions();
   } catch (e) {
     toast(`打开失败：${e?.message || e}`, "err");
   }
@@ -1687,20 +1674,8 @@ function closeModal(m) {
 }
 
 function toast(text, kind = "") {
-  // 用户要求：任何操作都不再弹消息提示。仅保留错误/警告类（操作失败时需要知道原因），
-  // 成功、进行中、信息类一律静默丢弃。
-  if (kind !== "err" && kind !== "warn") return;
-  // 重复消息过滤：屏幕上已有相同文案且未消失的 toast 时不再追加
-  if ($$("#toasts .toast:not(.out)").some((t) => t.dataset.text === text)) return;
-  const t = document.createElement("div");
-  t.className = `toast ${kind}`;
-  t.dataset.text = text;
-  t.innerHTML = `<span class="t-dot"></span><span>${esc(text)}</span>`;
-  $("#toasts").appendChild(t);
-  setTimeout(() => {
-    t.classList.add("out");
-    setTimeout(() => t.remove(), 420);
-  }, 2600);
+  // 用户要求：所有操作提示（含错误/警告）一律不再弹出；函数保留以兼容调用点的提前返回
+  return;
 }
 
 function autoGrow() {

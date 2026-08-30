@@ -328,7 +328,24 @@ body.focus-mode #center { display: none; }
   transition: background 0.22s, border-color 0.22s, transform 0.22s;
 }
 .session-item:hover { background: rgba(var(--ink-rgb), 0.045); transform: translateX(3px); }
-.session-item.active { background: var(--panel-2); border-color: var(--hair-2); }
+.session-item.active {
+  background: var(--panel-2);
+  border-color: var(--hair-2);
+  box-shadow: inset 2.5px 0 0 var(--acc); /* 左侧白色高亮条：标记当前会话 */
+}
+.session-item.active .s-name { color: var(--txt); font-weight: 600; }
+.session-item .s-cur {
+  display: inline-block;
+  margin-right: 7px;
+  padding: 1.5px 6px;
+  border-radius: 999px;
+  background: var(--acc);
+  color: var(--acc-ink);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  vertical-align: 1.5px;
+}
 .session-item .s-main {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column; gap: 3px;
