@@ -152,6 +152,18 @@ export class PiBridge {
 
   publicState() {
     const s = this.session;
+    // 当前上下文占用：最后一条 assistant 消息的用量 ≈ 本轮请求的完整上下文（输入+缓存读写+输出）
+    let contextTokens = 0;
+    try {
+      const msgs = s?.messages || [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const u = msgs[i]?.role === "assistant" ? msgs[i].usage : null;
+        if (u) {
+          contextTokens = (u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0) + (u.output || 0);
+          break;
+        }
+      }
+    } catch {}
     return {
       ready: !!s,
       cwd: this.cwd,
@@ -163,6 +175,7 @@ export class PiBridge {
       thinkingLevel: s?.thinkingLevel ?? null,
       isStreaming: !!s?.isStreaming,
       usage: this.usage,
+      contextTokens,
       messageCount: s?.messages?.length ?? 0,
     };
   }
@@ -367,7 +380,7 @@ export class PiBridge {
         this._bindSession();
         await this.restoreModel();
         this._noteSession();
-        this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+        this._recomputeUsageFromSession();
         this.pushState();
         return this.publicState();
       } catch (e) {
@@ -387,7 +400,7 @@ export class PiBridge {
       }
     }
     this._noteSession();
-    this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    this._recomputeUsageFromSession();
     this.pushState();
     return this.publicState();
   }
@@ -417,6 +430,26 @@ export class PiBridge {
       this.usage.cacheWrite += u.cacheWrite || 0;
       this.usage.cost += u.cost?.total || 0;
       this.pushState();
+    }
+  }
+
+  /* 从会话历史消息恢复用量统计：切换会话/项目后，顶部 tokens 应显示该会话的真实累计值，
+     而不是清零成 “— tokens” 占位符 */
+  _recomputeUsageFromSession() {
+    try {
+      const u = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+      for (const m of this.session?.messages || []) {
+        const s = m?.role === "assistant" ? m.usage : null;
+        if (!s) continue;
+        u.input += s.input || 0;
+        u.output += s.output || 0;
+        u.cacheRead += s.cacheRead || 0;
+        u.cacheWrite += s.cacheWrite || 0;
+        u.cost += s.cost?.total || 0;
+      }
+      this.usage = u;
+    } catch {
+      this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     }
   }
 
@@ -628,7 +661,7 @@ export class PiBridge {
     this._bindSession();
     await this.restoreModel();
     this._noteSession();
-    this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    this._recomputeUsageFromSession();
     this.pushState();
     return this.publicState();
   }
@@ -670,14 +703,25 @@ export class PiBridge {
 
   snapshotMessages() {
     // shallow, UI-safe copy of history for restoring chat view
+    // 包含 thinking / toolCall / toolResult，恢复后思考与工具调用记录才能完整回放
     const msgs = this.session?.messages || [];
     return msgs.map((m) => ({
       role: m.role,
+      toolCallId: m.toolCallId || null,
+      toolName: m.toolName || null,
+      isError: !!m.isError,
+      timestamp: m.timestamp || null,
       content: typeof m.content === "string"
         ? [{ type: "text", text: m.content }]
         : Array.isArray(m.content)
-          ? m.content.filter((c) => c && (c.type === "text" || c.type === "image")).map((c) =>
-              c.type === "text" ? { type: "text", text: c.text } : { type: "image" })
+          ? m.content.map((c) => {
+              if (!c) return null;
+              if (c.type === "text") return { type: "text", text: c.text };
+              if (c.type === "image") return { type: "image" };
+              if (c.type === "thinking") return { type: "thinking", thinking: c.thinking || "" };
+              if (c.type === "toolCall") return { type: "toolCall", id: c.id, name: c.name, arguments: c.arguments };
+              return null;
+            }).filter(Boolean)
           : [],
       usage: m.usage || null,
     }));
@@ -722,7 +766,7 @@ export class PiBridge {
         await this.runtime.switchSession(sf);
         this._bindSession();
         await this.restoreModel();
-        this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+        this._recomputeUsageFromSession();
       } catch (e) {
         return { error: String(e?.message || e) };
       }

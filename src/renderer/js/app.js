@@ -133,14 +133,24 @@ function applyState(st) {
 }
 
 function renderStats(u = {}) {
+  const st = S.state || {};
+  const ctx = st.contextTokens || 0;
+  const win = st.model?.contextWindow || 0;
   const allZero = !u.input && !u.output && !u.cacheRead && !u.cacheWrite && !u.cost;
-  $("#chatStats").innerHTML = allZero
-    ? `<span title="当前网关未返回用量统计">— tokens</span><span title="花费">— $</span>`
-    : `<span title="输入 tokens">↑ ${fmtTokens(u.input)}</span>` +
-      `<span title="输出 tokens">↓ ${fmtTokens(u.output)}</span>` +
-      `<span title="缓存读取">R ${fmtTokens(u.cacheRead)}</span>` +
-      `<span title="缓存写入">W ${fmtTokens(u.cacheWrite)}</span>` +
-      `<span title="花费">$${(u.cost || 0).toFixed(4)}</span>`;
+  if (allZero) {
+    $("#chatStats").innerHTML = `<span title="当前网关未返回用量统计">— tokens</span><span title="花费">— $</span>`;
+    return;
+  }
+  const ctxPart = win
+    ? `上下文 ${fmtTokens(ctx)}/${fmtTokens(win)} · ${((ctx / win) * 100).toFixed(1)}%`
+    : `上下文 ${fmtTokens(ctx)}`;
+  $("#chatStats").innerHTML =
+    `<span title="输入 tokens（累计）">↑ ${fmtTokens(u.input)}</span>` +
+    `<span title="输出 tokens（累计）">↓ ${fmtTokens(u.output)}</span>` +
+    `<span title="缓存读取（累计）">R ${fmtTokens(u.cacheRead)}</span>` +
+    `<span title="缓存写入（累计）">W ${fmtTokens(u.cacheWrite)}</span>` +
+    `<span title="上下文占用（当前会话 / 模型窗口）">${esc(ctxPart)}</span>` +
+    `<span title="花费（累计）">$${(u.cost || 0).toFixed(4)}</span>`;
 }
 
 const THINK_LABELS = {
@@ -184,7 +194,11 @@ function startStallWatchdog() {
   S.lastEventAt = Date.now();
   S.stallTimer = setInterval(() => {
     const idle = Date.now() - S.lastEventAt;
-    if (idle >= STALL_MS) showStallHint(Math.floor(idle / 1000));
+    if (idle < STALL_MS) return;
+    // 工具执行中（web_search 等网络 I/O）静默是正常现象，可能持续几十秒，
+    // 不显示“网关无响应”警告以免误报（回合状态行已有“正在执行 X”提示）
+    if (S.streamingTool) { hideStallHint(); return; }
+    showStallHint(Math.floor(idle / 1000));
   }, 1000);
 }
 function stopStallWatchdog() {
@@ -400,6 +414,7 @@ function finalizeMessage() {
 function onMessageStart(msg) {
   if (!msg || msg.role !== "assistant") return; // user messages are rendered locally
   S.assistantText = "";
+  S.thinkStreamed = false; // 本条消息是否流式收到过思考 delta（防止单尾重复恢复）
   collapseThink(); // 上一条消息残留的思考阶段收起，不能直接丢弃
 }
 
@@ -411,6 +426,7 @@ function onMessageUpdate(ev) {
     S.assistantText += ev.delta || "";
     scheduleRender();
   } else if (ev.type === "thinking_delta") {
+    S.thinkStreamed = true;
     const t = ensureThink();
     t.buf += ev.delta || "";
     t.body.innerHTML = rich(t.buf);
@@ -432,7 +448,9 @@ function onMessageEnd(msg) {
   }
 
   // restore thinking from the final message when the stream never sent deltas
-  if (!S.thinking && Array.isArray(msg.content)) {
+  // 注意：不能用 !S.thinking 判断 —— 正文开始时思考块已折叠、S.thinking 已置 null，
+  // 但 DOM 里还在；再用 !S.thinkStreamed 区分“真没流式发过”和“发过但已折叠”，否则会重复
+  if (!S.thinkStreamed && !S.thinking && Array.isArray(msg.content)) {
     const think = msg.content.filter((c) => c.type === "thinking").map((c) => c.thinking).join("");
     if (think.trim()) {
       const t = ensureThink();
@@ -736,18 +754,75 @@ async function restoreHistory() {
   const r = await window.halo.snapshotMessages();
   const msgs = r?.data || [];
   if (!msgs.length) return;
+  const toolCards = new Map(); // toolCallId -> 卡片引用，用于回填 toolResult
   for (const m of msgs) {
-    const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
-    if (!text.trim()) continue;
-    if (m.role === "user") { finalizeTurn(); renderUserMsg(text, []); }
-    else if (m.role === "assistant") {
-      // 连续的 assistant 消息合入同一个回合块，与实时渲染保持一致
-      const turn = ensureTurn();
-      const md = document.createElement("div");
-      md.className = "md";
-      md.innerHTML = rich(text);
-      turn.appendChild(md);
-      turn.__texts.push(text);
+    if (m.role === "user") {
+      const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+      if (text.trim()) { finalizeTurn(); renderUserMsg(text, []); }
+      continue;
+    }
+    if (m.role === "toolResult") {
+      // 回填到对应工具卡片：状态点/耗时/输出
+      const rec = toolCards.get(m.toolCallId);
+      if (rec) {
+        const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+        rec.out.dataset.has = "1";
+        rec.out.textContent = text ? trunc(text, 4000) : (m.isError ? "（无输出）" : "（完成）");
+        if (m.isError) rec.out.hidden = false;
+        rec.card.classList.remove("running");
+        rec.card.classList.add(m.isError ? "error" : "done");
+        if (m.timestamp && rec.startedAt) {
+          const secs = (new Date(m.timestamp) - rec.startedAt) / 1000;
+          if (secs >= 0.5) rec.elapsedEl.textContent = `${secs.toFixed(1)}s`;
+        }
+      }
+      continue;
+    }
+    if (m.role !== "assistant") continue;
+    const turn = ensureTurn();
+    for (const c of m.content || []) {
+      if (c.type === "thinking") {
+        if (!c.thinking || !c.thinking.trim()) continue;
+        // 与实时渲染一致：折叠的思考块，点开看全文
+        const d = document.createElement("details");
+        d.className = "think";
+        d.innerHTML = `<summary><span class="diamond">◆</span><span class="think-label">思考过程</span><span class="think-preview"></span></summary><div class="think-body"></div>`;
+        turn.appendChild(d);
+        $(".think-body", d).innerHTML = rich(c.thinking);
+        $(".think-preview", d).textContent = thinkPreviewText(c.thinking);
+      } else if (c.type === "toolCall") {
+        // 与实时渲染一致的工具行，输出区待对应 toolResult 回填
+        const card = document.createElement("div");
+        card.className = "tool running";
+        card.innerHTML = `
+          <div class="tool-line">
+            <span class="tool-dot"></span>
+            <span class="tool-name">${esc(c.name)}</span>
+            <span class="tool-arg">${esc(trunc(toolDesc(c.name, c.arguments), 120))}</span>
+            <span class="tool-elapsed"></span>
+          </div>
+          <div class="tool-out" hidden></div>`;
+        const out = $(".tool-out", card);
+        $(".tool-line", card).addEventListener("click", () => { if (out.dataset.has) out.hidden = !out.hidden; });
+        turn.appendChild(card);
+        toolCards.set(c.id, { card, out, elapsedEl: $(".tool-elapsed", card), startedAt: m.timestamp ? new Date(m.timestamp).getTime() : 0 });
+      } else if (c.type === "text") {
+        if (!c.text || !c.text.trim()) continue;
+        const md = document.createElement("div");
+        md.className = "md";
+        md.innerHTML = rich(c.text);
+        turn.appendChild(md);
+        turn.__texts.push(c.text);
+      }
+    }
+  }
+  // 没等到结果的工具调用（会话中断残留）标成完成，避免永久转动
+  for (const rec of toolCards.values()) {
+    if (rec.card.classList.contains("running")) {
+      rec.card.classList.remove("running");
+      rec.card.classList.add("done");
+      rec.out.dataset.has = "1";
+      rec.out.textContent = "（无结果记录）";
     }
   }
   finalizeTurn();
@@ -1210,7 +1285,7 @@ function findParentDirPath(nodes, target, parent = null) {
   return undefined;
 }
 const normSlashes = (p) => String(p || "").replace(/\\/g, "/");
-const PV_EMPTY = `<div class="pv-empty"><div class="pv-ghost"><div class="pv-gscreen"><div class="pv-empty-ico">◇</div><p>agent 生成的 HTML / 图片 / Markdown 会在这里实时预览</p><p class="dim">在左下角文件列表点击文件，或让 agent 生成页面后自动打开</p></div><div class="pv-gneck"></div><div class="pv-gbase"></div></div></div>`;
+const PV_EMPTY = `<div class="pv-empty"><div class="pv-ghost"><div class="pv-gscreen"><div class="pv-empty-ico">◇</div><p>实时预览</p><p class="dim">点击文件查看</p></div><div class="pv-gneck"></div><div class="pv-gbase"></div></div></div>`;
 
 function renderTree() {
   const el = $("#wsTree");
@@ -1612,6 +1687,9 @@ function closeModal(m) {
 }
 
 function toast(text, kind = "") {
+  // 用户要求：任何操作都不再弹消息提示。仅保留错误/警告类（操作失败时需要知道原因），
+  // 成功、进行中、信息类一律静默丢弃。
+  if (kind !== "err" && kind !== "warn") return;
   // 重复消息过滤：屏幕上已有相同文案且未消失的 toast 时不再追加
   if ($$("#toasts .toast:not(.out)").some((t) => t.dataset.text === text)) return;
   const t = document.createElement("div");

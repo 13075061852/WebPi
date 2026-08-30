@@ -1,6 +1,8 @@
-/* 修复后端到端验证：真实点击“＋ 添加” → 真实原生目录对话框（CDP 点击后由 PowerShell 键入路径）→ 断言左侧列表刷新 */
+/* 修复后端到端验证（干净环境版）：真实点击“＋ 添加” → 原生目录对话框 → 键入路径 → 轮询断言左侧刷新 */
 const PORT = "9371";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { execSync } = await import("node:child_process");
+const PS = "C:/Users/13087/AppData/Local/Temp/ps";
 let main;
 for (let i = 0; i < 40; i++) {
   try { const l = await (await fetch("http://127.0.0.1:" + PORT + "/json")).json(); main = l.find((t) => t.type === "page" && t.url.endsWith("index.html")); if (main) break; } catch {}
@@ -29,36 +31,44 @@ const snap = () => ev(`JSON.stringify({
   toasts: [...document.querySelectorAll("#toasts .toast")].map(t => t.textContent.trim()).slice(-3)
 })`);
 
+const dialogOpen = () => {
+  try {
+    const out = execSync(`powershell -ExecutionPolicy Bypass -File ${PS}/listwins2.ps1`, { timeout: 10000 }).toString();
+    return out.includes("选择项目目录");
+  } catch { return false; }
+};
+
 console.log("== 添加前 ==");
 console.log(await snap());
 
-// 1) 点击“＋ 添加”按钮 → 弹出原生目录对话框
+// 聚焦主窗口 → 点击“＋ 添加” → 对话框应弹出
+execSync(`powershell -ExecutionPolicy Bypass -File ${PS}/focus.ps1`, { timeout: 10000 });
+await sleep(800);
 await ev(`document.getElementById("projAdd").click(); "clicked"`);
-await sleep(1500);
-console.log("== 对话框已弹出，通过 PowerShell 输入路径 ==");
-// 2) 在原生对话框里 Ctrl+L 打开地址栏 → 输入 WebPi 路径 → Enter
-const typePath = `
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.SendKeys]::SendWait("^l")
-Start-Sleep -Milliseconds 600
-[System.Windows.Forms.SendKeys]::SendWait("D:/GitHub/WebPi")
-Start-Sleep -Milliseconds 300
-[System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
-`;
-const { execSync } = await import("node:child_process");
-await new Promise((r) => setTimeout(r, 400));
-execSync(`powershell -ExecutionPolicy Bypass -File C:/Users/13087/AppData/Local/Temp/ps/pick-webpi.ps1`, { timeout: 20000 });
-await sleep(6000); // 等 agent 核心重建 + 列表刷新
+await sleep(2000);
+console.log("对话框已弹出:", dialogOpen());
 
+// 键入 WebPi 路径
+execSync(`powershell -ExecutionPolicy Bypass -File ${PS}/pick-webpi.ps1`, { timeout: 20000 });
+console.log("已键入路径，等待切换完成…");
+
+// 轮询等待：chip 变成 WebPi（agent 核心重建可能较慢）
+let final = null;
+for (let i = 0; i < 30; i++) {
+  await sleep(1000);
+  const s = JSON.parse(await snap());
+  if (s.chip === "WebPi" && s.wsPath.includes("WebPi")) { final = s; break; }
+  final = s;
+}
 console.log("== 添加后 ==");
-console.log(await snap());
+console.log(JSON.stringify(final));
 
-// 3) 取消场景：再点添加，然后 Esc 关闭对话框，确认无副作用
+// 取消场景：再点添加 → Esc → 列表应保持不变
 await ev(`document.getElementById("projAdd").click(); "clicked"`);
 await sleep(1500);
-try { execSync(`powershell -ExecutionPolicy Bypass -File C:/Users/13087/AppData/Local/Temp/ps/esc.ps1`, { timeout: 8000 }); } catch {}
-await sleep(1500);
-console.log("== 取消后（列表不应变化）==");
+execSync(`powershell -ExecutionPolicy Bypass -File ${PS}/esc.ps1`, { timeout: 8000 });
+await sleep(1200);
+console.log("== 取消后（应与添加后一致）==");
 console.log(await snap());
 
 process.exit(0);
