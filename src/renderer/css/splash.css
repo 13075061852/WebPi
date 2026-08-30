@@ -15,7 +15,7 @@ html, body {
   width: 100vw;
   height: 100vh;
   background:
-    radial-gradient(120% 90% at 50% 8%, #0b0c14 0%, #060609 55%, #030305 100%);
+    radial-gradient(120% 90% at 50% 8%, #121214 0%, #0a0a0b 55%, #050506 100%);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -36,13 +36,13 @@ html, body {
 .aurora-a {
   width: 420px; height: 300px;
   left: 8%; top: 4%;
-  background: radial-gradient(closest-side, rgba(96,165,250,.16), transparent 70%);
+  background: radial-gradient(closest-side, rgba(255,255,255,.07), transparent 70%);
   animation: auroraIn 2.4s ease .5s forwards, auroraDrift 9s ease-in-out 1s infinite alternate;
 }
 .aurora-b {
   width: 460px; height: 320px;
   right: 6%; bottom: 6%;
-  background: radial-gradient(closest-side, rgba(167,139,250,.15), transparent 70%);
+  background: radial-gradient(closest-side, rgba(255,255,255,.05), transparent 70%);
   animation: auroraIn 2.6s ease .8s forwards, auroraDrift 11s ease-in-out 1.4s infinite alternate-reverse;
 }
 @keyframes auroraIn { to { opacity: 1; } }
@@ -64,7 +64,7 @@ html, body {
 
 .halo-ring {
   fill: none;
-  stroke: rgba(148,163,255,.20);
+  stroke: rgba(255,255,255,.18);
   stroke-width: 1;
   opacity: 0;
   animation: ringIn 1.4s ease 1.25s forwards;
@@ -76,7 +76,7 @@ html, body {
   stroke-linecap: round;
   stroke-dasharray: 210 318;  /* arc segment of r=84 circle */
   opacity: 0;
-  filter: drop-shadow(0 0 6px rgba(139,233,255,.8));
+  filter: drop-shadow(0 0 6px rgba(255,255,255,.5));
   animation: ringIn 1.2s ease 1.45s forwards, spinArc 6s linear 1.45s infinite;
   transform-origin: 100px 100px;
 }
@@ -91,7 +91,7 @@ html, body {
   stroke-linejoin: round;
   stroke-dasharray: 220;
   stroke-dashoffset: 220;
-  filter: drop-shadow(0 0 10px rgba(167,139,250,.55));
+  filter: drop-shadow(0 0 10px rgba(255,255,255,.3));
 }
 .pi-bar { animation: draw 1s cubic-bezier(.6,0,.2,1) 1.15s forwards; }
 .pi-leg.l { animation: draw .8s cubic-bezier(.6,0,.2,1) 1.45s forwards; }
@@ -105,14 +105,14 @@ html, body {
   width: 130px; height: 130px;
   margin: -65px 0 0 -65px;
   border-radius: 50%;
-  border: 1.5px solid rgba(167,199,255,.85);
+  border: 1.5px solid rgba(255,255,255,.8);
   opacity: 0;
   pointer-events: none;
   transform: scale(.2);
   z-index: 2;
 }
 .s1 { animation: shock 1.5s cubic-bezier(.16,.84,.44,1) 1.9s; }
-.s2 { animation: shock 1.8s cubic-bezier(.16,.84,.44,1) 2.25s; border-color: rgba(240,166,255,.7); }
+.s2 { animation: shock 1.8s cubic-bezier(.16,.84,.44,1) 2.25s; border-color: rgba(255,255,255,.45); }
 @keyframes shock {
   0%   { opacity: .9; transform: scale(.2); }
   100% { opacity: 0;  transform: scale(2.6); }
@@ -129,14 +129,14 @@ html, body {
   font-weight: 200;
   letter-spacing: .5em;
   text-indent: .5em;
-  color: #e8ecf8;
+  color: #f4f4f3;
 }
 .wordmark span {
   opacity: 0;
   transform: translateY(16px);
   filter: blur(6px);
   animation: letterIn .9s cubic-bezier(.22,1,.36,1) forwards;
-  background: linear-gradient(180deg, #f2f5ff 0%, #c9d2ff 60%, #9aa8ff 100%);
+  background: linear-gradient(180deg, #ffffff 0%, #e4e4e7 60%, #a1a1a6 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -145,11 +145,11 @@ html, body {
 .wordmark span:nth-child(2) { animation-delay: 2.45s; }
 .wordmark i {
   width: 7px; height: 7px; border-radius: 50%;
-  background: radial-gradient(circle, #8be9ff, rgba(139,233,255,0) 70%);
+  background: radial-gradient(circle, #ffffff, rgba(255,255,255,0) 70%);
   margin: 0 -2px;
   opacity: 0;
   animation: letterIn .8s ease 2.55s forwards;
-  box-shadow: 0 0 12px 2px rgba(139,233,255,.5);
+  box-shadow: 0 0 12px 2px rgba(255,255,255,.4);
 }
 .wordmark span:nth-child(4) { animation-delay: 2.62s; }
 .wordmark span:nth-child(5) { animation-delay: 2.72s; }
@@ -165,7 +165,7 @@ html, body {
   font-weight: 400;
   letter-spacing: .58em;
   text-indent: .58em;
-  color: rgba(190,200,230,.55);
+  color: rgba(255,255,255,.45);
   opacity: 0;
   animation: subIn 1.2s ease 3.15s forwards;
 }

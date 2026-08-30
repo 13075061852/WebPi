@@ -9,6 +9,13 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
+// 预览帧触摸脚本回报滚动位置（调试/验证用）
+window.addEventListener("message", (e) => {
+  const d = e.data;
+  if (d && d.__haloScroll) window.__haloTouchState = d.__haloScroll;
+  if (d && d.__haloOs) window.__haloOs = d.__haloOs;
+});
+
 const S = {
   state: null,
   streaming: false,
@@ -18,14 +25,19 @@ const S = {
   lastUserPrompt: null,       // for retry button
   models: [],
   resources: { skills: [], prompts: [], extensions: [] },
-  assistant: null,            // current assistant DOM container
+  assistant: null,            // current per-message body inside the turn container
+  turn: null,                 // Claude-style turn block: one avatar, content flows downward
   assistantText: "",
   thinking: null,
   toolCards: new Map(),       // toolCallId -> {card, outEl, descEl, path, startedAt, toolName}
   queued: { steering: [], followUp: [] },
+  pkgQuery: "", pkgType: "all", pkgFrom: 0, pkgItems: [], pkgTotal: 0, pkgLoaded: false, pkgInstalledList: [],
+  previewMode: "render", // 预览模式：render（渲染页面）| source（源代码）
   sessions: [],
   renderQueued: false,
   agentStartedAt: 0,
+  lastEventAt: 0,             // stall watchdog: last pi event timestamp
+  stallTimer: null,
   /* workspace / preview */
   activity: [],               // [{path, tool, time, diff}]
   treeData: null,
@@ -33,7 +45,7 @@ const S = {
   selectedFile: null,
   previewFile: null,
   treeTimer: null,
-  detailMode: "activity",     // activity | file | diff
+  creating: null,             // { parent: string|null, kind: "file"|"dir" } 行内新建状态
 };
 
 const TOOL_ICONS = {
@@ -41,29 +53,43 @@ const TOOL_ICONS = {
   grep: "⌕", find: "⌕", ls: "▤", todo: "☑",
 };
 const TOOL_COLORS = {
-  read: "#8be9ff", bash: "#fcd34d", powershell: "#fcd34d", edit: "#a78bfa",
-  write: "#6ee7b7", grep: "#f0a6ff", find: "#93c5fd", ls: "#94a3b8",
+  read: "var(--txt-dim)", bash: "var(--txt)", powershell: "var(--txt)", edit: "var(--txt-dim)",
+  write: "var(--txt)", grep: "var(--txt-dim)", find: "var(--txt-dim)", ls: "var(--txt-faint)",
 };
-const copyCache = new WeakMap(); // assistant container -> text (for copy button)
+
+/* ---------- theme: 黑 / 白 ---------- */
+function applyTheme(t, { persist = true } = {}) {
+  document.documentElement.dataset.theme = t === "light" ? "light" : "dark";
+  if (persist) { try { localStorage.setItem("halo-theme", document.documentElement.dataset.theme); } catch {} }
+  document.dispatchEvent(new CustomEvent("themechange"));
+}
 
 /* ============================================================
    boot
    ============================================================ */
 document.addEventListener("DOMContentLoaded", () => {
   requestAnimationFrame(() => document.body.classList.add("enter"));
-  Nebula.init($("#nebulaCanvas"));
   wireUI();
   wirePi();
   refreshAll();
+  updateAuthSummary();
   loadTree();
-  renderActivity();
-  setInterval(updateZoomLabel, 200);
+  // 对齐分割线：sidebar 登录区顶线与预览区下方设备切换条顶线在同一水平线
+  const devicesBar = document.querySelector(".pv-devices"), modelCard = $("#modelCard");
+  if (devicesBar && modelCard && window.ResizeObserver) {
+    const syncFoot = () => { modelCard.style.minHeight = devicesBar.offsetHeight + "px"; };
+    new ResizeObserver(syncFoot).observe(devicesBar);
+    syncFoot();
+  }
 });
 
 async function refreshAll() {
   const st = await window.halo.getState();
   applyState(st?.data || st);
   await Promise.all([loadSessions(), loadResources()]);
+  // 等核心 ready 后再恢复工作区（bridge 未就绪时 openSession 会被忽略）
+  if ((st?.data || st)?.ready) restoreWorkspace();
+  else S.pendingRestore = true;
 }
 
 /* ============================================================
@@ -72,27 +98,20 @@ async function refreshAll() {
 function applyState(st) {
   if (!st) return;
   S.state = st;
+  if (st.sessionFile) saveWorkspace();
   if (st.cwd) {
     const name = st.cwd.split(/[\\/]/).filter(Boolean).pop() || st.cwd;
     $("#projectName").textContent = name;
     $("#projectChip").title = st.cwd;
   }
   const m = st.model;
-  $("#modelName").textContent = m ? m.name : "未配置模型";
-  $("#modelMeta").textContent = m ? `${m.provider} · ${fmtTokens(m.contextWindow)} ctx` : "点击选择模型";
+  $("#modelChipName").textContent = m ? m.name : "模型";
 
   const tl = st.thinkingLevel || "off";
-  $("#thinkLabel").textContent = THINK_LABELS[tl] || tl;
+
   $("#thinkChip").textContent = THINK_LABELS[tl] || tl;
 
   renderStats(st.usage);
-  $("#ctxBadge").textContent = `${st.messageCount || 0} 条`;
-
-  const file = st.sessionFile ? st.sessionFile.split(/[\\/]/).pop().replace(/\.jsonl$/, "") : null;
-  const label = file ? friendlySession(file) : "新会话";
-  $("#nebSessionName").textContent = label;
-  $("#chatTitle").textContent = label;
-  $("#nebSessionName").parentElement.title = st.sessionFile || "";
 
   const ready = !!st.ready;
   $("#input").placeholder = ready
@@ -102,6 +121,11 @@ function applyState(st) {
   $("#btnSend").classList.toggle("dim", !ready);
 
   setStreamingUI(st.isStreaming || S.streaming);
+
+  if (st.ready && S.pendingRestore) {
+    S.pendingRestore = false;
+    restoreWorkspace();
+  }
 }
 
 function renderStats(u = {}) {
@@ -140,42 +164,40 @@ function fmtTokens(n) {
   return String(n);
 }
 
-function agentStatusText() {
-  const secs = S.agentStartedAt ? Math.floor((Date.now() - S.agentStartedAt) / 1000) : 0;
-  const t = secs > 0 ? ` · ${secs}s` : "";
-  if (S.retrying) return `自动重试中 (${S.retrying.attempt}/${S.retrying.maxAttempts})`;
-  if (S.streamingTool) return `正在调用 ${S.streamingTool}`;
-  if (S.streaming) return `正在思考…${t}`;
-  return "Agent 已就绪";
-}
-
-let _statusTimer = null;
-function startStatusTicker() {
-  stopStatusTicker();
-  _statusTimer = setInterval(() => {
-    $("#agentSub").textContent = agentStatusText();
-    // also refresh the nebula pill status (was static before)
-    $("#nebStatus").textContent = S.retrying ? "重试中" : S.streamingTool ? S.streamingTool : "思考中";
-  }, 500);
-}
-function stopStatusTicker() {
-  if (_statusTimer) { clearInterval(_statusTimer); _statusTimer = null; }
-}
-
 function setStreamingUI(v) {
   S.streaming = v;
   $("#btnSend").classList.toggle("streaming", v);
   $("#btnSend").title = v ? "中止 (Esc)" : "发送";
-  $("#nebPulse").parentElement.classList.toggle("busy", v);
-  $("#agentOrb").classList.toggle("busy", v);
-  $("#agentTitle").textContent = v ? "核心运转中" : "核心待命";
-  $("#agentSub").textContent = agentStatusText();
-  // pill status now tracks the real phase instead of a static "就绪"
-  $("#nebStatus").textContent = v ? (S.retrying ? "重试中" : S.streamingTool ? S.streamingTool : "思考中") : "就绪";
-  if (v && !_statusTimer) startStatusTicker();
-  if (!v) stopStatusTicker();
-  Nebula.setBusy(v);
+  if (v) { startStallWatchdog(); startStatusTicker(); }
+  else { stopStallWatchdog(); stopStatusTicker(); }
+  updateTurnStatus();
 }
+
+/* ---- stall watchdog: surface silent gateways instead of looking frozen ---- */
+const STALL_MS = 10000;
+function startStallWatchdog() {
+  stopStallWatchdog();
+  S.lastEventAt = Date.now();
+  S.stallTimer = setInterval(() => {
+    const idle = Date.now() - S.lastEventAt;
+    if (idle >= STALL_MS) showStallHint(Math.floor(idle / 1000));
+  }, 1000);
+}
+function stopStallWatchdog() {
+  if (S.stallTimer) { clearInterval(S.stallTimer); S.stallTimer = null; }
+  hideStallHint();
+}
+function showStallHint(sec) {
+  let el = $("#stallHint");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "stallHint";
+    el.className = "stall-hint";
+    (S.turn || $("#messages")).appendChild(el);
+  }
+  el.innerHTML = `<span class="s-dot"></span>网关已 ${sec}s 无响应 · 仍在等待，可按 Esc 中止`;
+}
+function hideStallHint() { const el = $("#stallHint"); if (el) el.remove(); }
 
 /* ============================================================
    pi event stream -> UI
@@ -193,6 +215,8 @@ function wirePi() {
   });
   // debug/test hook: inject synthetic events without the main process
   window.__haloDispatch = handlePiEvent;
+  window.__renderUserMsg = renderUserMsg;
+  window.__mdRender = mdRender; // 调试/验证钩子
   window.halo.onState((st) => applyState(st));
   window.halo.onError?.((e) => toast(e?.message || "发生错误", "err"));
   window.halo.onWinState?.(({ maximized }) => {
@@ -203,6 +227,8 @@ function wirePi() {
 
 function handlePiEvent(event) {
   if (!event) return;
+  S.lastEventAt = Date.now();
+  hideStallHint();
   switch (event.type) {
       case "message_start": onMessageStart(event.message); break;
       case "message_update": onMessageUpdate(event.assistantMessageEvent); break;
@@ -216,24 +242,20 @@ function handlePiEvent(event) {
         S.retrying = null;
         S.streamingTool = null;
         S.agentStartedAt = Date.now();
-        hideHero();
         setStreamingUI(true);
-        // immediate "process" feedback: thinking shell with breathing
-        // placeholder, so silent gateways (e.g. buffered GLM) still feel alive
-        ensureAssistantContainer();
-        showThinkingPlaceholder();
+        ensureTurn(); // Claude 式回合块立即出现，头像只出现一次
         break;
       case "agent_end":
         S.streamingTool = null;
-        if (!event.willRetry) setStreamingUI(false);
+        finalizeMessage();
+        if (!event.willRetry) { setStreamingUI(false); finalizeTurn(); }
         else setStreamingUI(true); // keep busy visual during retry gap
-        finalizeAssistant();
         refreshState();
         break;
 
       case "auto_retry_start":
         S.retrying = { attempt: event.attempt, maxAttempts: event.maxAttempts };
-        notice(`请求失败，自动重试中 (${event.attempt}/${event.maxAttempts}) …`, "warn");
+        toast(`请求失败，自动重试中 (${event.attempt}/${event.maxAttempts})`, "warn");
         setStreamingUI(true);
         break;
       case "auto_retry_end":
@@ -247,7 +269,8 @@ function handlePiEvent(event) {
       case "agent_settled":
         S.retrying = null;
         setStreamingUI(false);
-        finalizeAssistant();
+        finalizeMessage();
+        finalizeTurn();
         refreshState();
         loadSessions();
         break;
@@ -259,8 +282,9 @@ function handlePiEvent(event) {
         if (S.queued.steering.length > had) toast("已入队引导消息", "ok");
         break;
       }
-      case "compaction_start": notice("正在压缩上下文…", ""); break;
-      case "compaction_end": notice("上下文已压缩 ✓", "ok"); break;
+      case "compaction_start": toast("正在压缩上下文…", ""); break;
+      case "compaction_end": toast("上下文已压缩 ✓", "ok"); break;
+      case "auth_event": onAuthEvent(event); break;
     }
   }
 
@@ -269,57 +293,126 @@ function handlePiEvent(event) {
   if (st?.data) applyState(st.data);
 }
 
-/* ---- assistant message bubbles ---- */
-function ensureAssistantContainer() {
+/* ---- Claude-style turn block ----
+ * 一轮回答一个块：头像只出现一次，正文（无气泡）/ 思考（折叠行）/ 工具（轻量行）
+ * 按时间顺序连排向下。 */
+function ensureTurn() {
+  if (S.turn) return S.turn;
+  const wrap = document.createElement("div");
+  wrap.className = "turn";
+  wrap.__texts = []; // 本轮各段原始文本
+  wrap.innerHTML = `
+    <div class="turn-status" hidden>
+      <span class="pi-orb">π</span>
+      <span class="turn-status-text">正在思考…</span>
+      <span class="turn-status-hint">Esc 中止</span>
+    </div>`;
+  $("#messages").appendChild(wrap);
+  S.turn = wrap;
+  scrollDown();
+  return wrap;
+}
+
+function finalizeTurn() {
+  const turn = S.turn;
+  S.turn = null;
+  if (!turn) return;
+  // 回合结束，等待动画随之消失
+  $(".turn-status", turn)?.remove();
+  // 空回合（没有任何实质内容）直接移除
+  if (!$(".md, .think, .tool, .error-card, .stall-hint", turn)) { turn.remove(); return; }
+}
+
+/* 回合内等待状态：π 动画图标 + 当前动作 + Esc 提示（行首，替代文末光标） */
+let _statusTimer = null;
+function turnStatusText() {
+  if (S.retrying) return `自动重试中 (${S.retrying.attempt}/${S.retrying.maxAttempts})`;
+  if (S.streamingTool) return `正在执行 ${S.streamingTool}`;
+  if (S.assistant) return "正在回复…";
+  if (S.streaming) return "正在思考…";
+  return "";
+}
+function updateTurnStatus() {
+  const row = S.turn && $(".turn-status", S.turn);
+  if (!row) return;
+  const txt = turnStatusText();
+  row.hidden = !txt;
+  if (txt) $(".turn-status-text", row).textContent = txt;
+}
+function startStatusTicker() {
+  if (_statusTimer) return;
+  _statusTimer = setInterval(updateTurnStatus, 500);
+}
+function stopStatusTicker() {
+  if (_statusTimer) { clearInterval(_statusTimer); _statusTimer = null; }
+}
+
+/* 思考过程：折叠为一行「◆ 思考 Ns」，点击展开斜体浅色内容 */
+function ensureThink() {
+  if (S.thinking) return S.thinking;
+  const d = document.createElement("details");
+  d.className = "think";
+  d.innerHTML = `<summary><span class="diamond">◆</span><span class="think-label">思考中…</span><span class="think-preview"></span></summary><div class="think-body"></div>`;
+  ensureTurn().appendChild(d);
+  d.open = true;
+  S.thinking = { el: d, body: $(".think-body", d), label: $(".think-label", d), preview: $(".think-preview", d), buf: "", t0: Date.now() };
+  return S.thinking;
+}
+
+const thinkPreviewText = (buf) =>
+  String(buf).replace(/[*_#`>]/g, "").replace(/\s+/g, " ").trim().slice(0, 260);
+
+function collapseThink() {
+  const t = S.thinking;
+  if (!t) return;
+  const secs = Math.max(1, Math.round((Date.now() - t.t0) / 1000));
+  t.label.textContent = `思考 ${secs}s`;
+  t.preview.textContent = thinkPreviewText(t.buf);
+  t.el.open = false;
+  S.thinking = null;
+}
+
+/* 正文块：第一条文本到达时才创建 —— 没有空气泡、没有占位符 */
+function ensureTextBlock() {
   if (S.assistant) return S.assistant;
-  S.assistant = buildAssistantContainer();
-  S.assistantText = S.assistantText || "";
-  return S.assistant;
+  const md = document.createElement("div");
+  md.className = "md";
+  ensureTurn().appendChild(md);
+  S.assistant = md;
+  return md;
 }
 
-/* breathing placeholder inside the bubble until the first real delta lands */
-function showThinkingPlaceholder() {
-  if (!S.assistant) return;
-  const bubble = $(".bubble", S.assistant);
-  if ($(".ph-line", bubble)) return;
-  const ph = document.createElement("div");
-  ph.className = "ph-line";
-  ph.innerHTML = `<span class="ph-bar" style="width:72%"></span><span class="ph-bar" style="width:48%"></span><span class="ph-bar" style="width:60%"></span>`;
-  bubble.appendChild(ph);
-}
-
-function removeThinkingPlaceholder() {
-  if (!S.assistant) return;
-  $(".ph-line", S.assistant)?.remove();
+function finalizeMessage() {
+  collapseThink();
+  if (S.assistant) {
+    // 最终渲染：去掉流式光标
+    S.assistant.innerHTML = rich(S.assistantText);
+    if (S.assistantText.trim() && S.turn) S.turn.__texts.push(S.assistantText);
+  }
+  S.assistant = null;
+  S.assistantText = "";
 }
 
 function onMessageStart(msg) {
   if (!msg || msg.role !== "assistant") return; // user messages are rendered locally
-  ensureAssistantContainer();
-  const tb = $(".think-block", S.assistant);
-  tb.hidden = true;
-  S.thinking = { el: $(".think-body", S.assistant), buf: "" };
+  S.assistantText = "";
+  collapseThink(); // 上一条消息残留的思考阶段收起，不能直接丢弃
 }
 
 function onMessageUpdate(ev) {
   if (!ev) return;
   if (ev.type === "text_delta") {
-    if (!S.assistant) ensureAssistantContainer(); // A3 fallback
-    removeThinkingPlaceholder();
+    collapseThink(); // 文本开始输出时把思考折叠为一行
+    ensureTextBlock();
     S.assistantText += ev.delta || "";
     scheduleRender();
   } else if (ev.type === "thinking_delta") {
-    if (!S.assistant) ensureAssistantContainer();
-    removeThinkingPlaceholder();
-    const tb = $(".think-block", S.assistant);
-    tb.hidden = false;
-    if (!tb.open) tb.open = true; // keep the detailed thinking visible while streaming
-    const body = $(".think-body", S.assistant);
-    body.classList.add("streaming");
-    S.thinking = S.thinking || { buf: "" };
-    S.thinking.buf += ev.delta || "";
-    body.textContent = S.thinking.buf;
-    body.scrollTop = body.scrollHeight;
+    const t = ensureThink();
+    t.buf += ev.delta || "";
+    t.body.innerHTML = rich(t.buf);
+    t.preview.textContent = thinkPreviewText(t.buf); // 收起后单行预览实时跟随
+    t.body.scrollTop = t.body.scrollHeight;
+    scrollDown();
   }
 }
 
@@ -328,55 +421,32 @@ function onMessageEnd(msg) {
 
   // A1: surface model errors that pi reports on the message itself
   if (msg.stopReason === "error" && msg.errorMessage) {
-    // discard the empty assistant shell entirely, then show the error card
-    S.assistant?.remove();
-    S.assistant = null;
-    S.assistantText = "";
+    finalizeMessage();
     renderModelError(msg.errorMessage, { provider: msg.provider, model: msg.model });
     refreshState();
     return;
   }
 
-  removeThinkingPlaceholder();
-  if (S.assistant) $(".think-body", S.assistant)?.classList.remove("streaming");
   // restore thinking from the final message when the stream never sent deltas
-  if (S.assistant && !S.thinking?.buf && Array.isArray(msg.content)) {
+  if (!S.thinking && Array.isArray(msg.content)) {
     const think = msg.content.filter((c) => c.type === "thinking").map((c) => c.thinking).join("");
-    if (think) {
-      const tb = $(".think-block", S.assistant);
-      tb.hidden = false;
-      S.thinking = S.thinking || {};
-      S.thinking.buf = think;
-      $(".think-body", S.assistant).textContent = think;
+    if (think.trim()) {
+      const t = ensureThink();
+      t.buf = think;
+      t.body.innerHTML = rich(think);
+      t.label.textContent = "思考过程";
+      t.preview.textContent = thinkPreviewText(think);
+      t.el.open = false;
+      S.thinking = null;
     }
   }
 
   // A3: rebuild from final content if we never streamed
-  if (S.assistant && !S.assistantText && Array.isArray(msg.content)) {
+  if (!S.assistant && Array.isArray(msg.content)) {
     const text = msg.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
-    if (text) { S.assistantText = text; scheduleRender(); }
+    if (text.trim()) { S.assistantText = text; ensureTextBlock(); }
   }
-  renderAssistant();
-  finalizeAssistant();
-}
-
-function buildAssistantContainer() {
-  const wrap = document.createElement("div");
-  wrap.className = "msg assistant";
-  wrap.innerHTML = `
-    <div class="who"><span class="avatar">π</span><span>星环</span></div>
-    <details class="think-block" hidden>
-      <summary class="think-head"><span class="diamond">◆</span><span>思考过程</span></summary>
-      <div class="think-body"></div>
-    </details>
-    <div class="bubble"><span class="txt"></span><span class="caret"></span></div>
-    <button class="copy-btn" title="复制回复">⧉ 复制</button>`;
-  $(".copy-btn", wrap).addEventListener("click", () => {
-    navigator.clipboard.writeText(copyCache.get(wrap) || "").then(() => toast("已复制到剪贴板", "ok"));
-  });
-  $("#messages").appendChild(wrap);
-  scrollDown();
-  return wrap;
+  finalizeMessage();
 }
 
 function scheduleRender() {
@@ -389,25 +459,10 @@ function scheduleRender() {
 }
 
 function renderAssistant() {
-  if (!S.assistant) return;
-  const txt = $(".txt", S.assistant);
-  txt.innerHTML = rich(S.assistantText);
-  if (S.assistant) copyCache.set(S.assistant, S.assistantText);
+  const el = S.assistant;
+  if (!el) return;
+  el.innerHTML = rich(S.assistantText);
   scrollDown();
-}
-
-function finalizeAssistant(skipCleanup = false) {
-  if (!S.assistant) return;
-  removeThinkingPlaceholder();
-  $(".caret", S.assistant)?.remove();
-  if (!S.assistantText.trim()) {
-    // empty prose: drop the bubble (keep the thinking block if present)
-    $(".bubble", S.assistant)?.remove();
-    const hasThink = !$(".think-block", S.assistant).hidden;
-    if (!hasThink && !skipCleanup) S.assistant.remove();
-  }
-  S.assistant = null;
-  S.assistantText = "";
 }
 
 /* ---- error cards ---- */
@@ -441,7 +496,7 @@ function renderModelError(raw, meta = {}) {
   });
   const mb = $(".ec-model", n);
   if (mb) mb.addEventListener("click", () => { loadModels(); openModal("modelModal"); });
-  $("#messages").appendChild(n);
+  (S.turn || $("#messages")).appendChild(n);
   scrollDown();
 }
 
@@ -456,7 +511,7 @@ async function retryLast() {
   renderUserMsg(text, images);
   try {
     await window.halo.prompt(text, images.length ? { images: images.map(toPiImage) } : {});
-  } catch (e) { notice(`发送失败：${e?.message || e}`, "err"); }
+  } catch (e) { toast(`发送失败：${e?.message || e}`, "err"); }
 }
 
 /* ---- tool cards ---- */
@@ -472,51 +527,51 @@ function toolDesc(toolName, args = {}) {
   }
 }
 const trunc = (s, n) => (s && s.length > n ? s.slice(0, n) + "…" : s || "");
+function debounce(fn, ms) {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
 
 function onToolStart(ev) {
   const { toolCallId, toolName, args } = ev;
+  collapseThink(); // 工具开跑前收起思考阶段，只留一行摘要
   S.streamingTool = toolName;
   setStreamingUI(true);
-  hideHero();
 
-  const color = TOOL_COLORS[toolName] || "#a5b4fc";
-  const icon = TOOL_ICONS[toolName] || "✦";
+  // 轻量工具行：状态点 + 工具名 + 参数摘要 + 耗时，点击展开输出
   const card = document.createElement("div");
-  card.className = "tool-card";
+  card.className = "tool running";
   card.innerHTML = `
-    <div class="tool-head">
-      <span class="tool-ico" style="color:${color}">${icon}</span>
+    <div class="tool-line">
+      <span class="tool-dot"></span>
       <span class="tool-name">${esc(toolName)}</span>
-      <span class="tool-desc">${esc(trunc(toolDesc(toolName, args), 90))}</span>
+      <span class="tool-arg">${esc(trunc(toolDesc(toolName, args), 120))}</span>
       <span class="tool-elapsed"></span>
-      <span class="tool-state"><span class="spin"></span><span class="label">运行中</span></span>
     </div>
     <div class="tool-out" hidden></div>`;
-  $(".tool-head", card).addEventListener("click", () => {
+  $(".tool-line", card).addEventListener("click", () => {
     const out = $(".tool-out", card);
     if (out.dataset.has) out.hidden = !out.hidden;
   });
-  $("#messages").appendChild(card);
+  ensureTurn().appendChild(card);
   S.toolCards.set(toolCallId, {
     card,
     out: $(".tool-out", card),
-    desc: $(".tool-desc", card),
+    arg: $(".tool-arg", card),
     elapsedEl: $(".tool-elapsed", card),
     path: (args && (args.path || args.file)) || "",
     command: (args && (args.command || args.cmd)) || "",
     toolName,
     startedAt: Date.now(),
   });
-  Nebula.addToolNode({ id: toolCallId, toolName });
   scrollDown();
 }
 
 function onToolUpdate(ev) {
   const rec = S.toolCards.get(ev.toolCallId);
-  Nebula.updateToolNode(ev.toolCallId);
   if (!rec) return;
   const args = ev.partial?.args || ev.args;
-  if (args) rec.desc.textContent = trunc(toolDesc(rec.toolName, args), 90);
+  if (args) rec.arg.textContent = trunc(toolDesc(rec.toolName, args), 120);
 }
 
 function onToolEnd(ev) {
@@ -524,23 +579,13 @@ function onToolEnd(ev) {
   const rec = S.toolCards.get(toolCallId);
   S.streamingTool = null;
   setStreamingUI(true);
-  Nebula.endToolNode(toolCallId, isError);
 
   if (!rec) return;
-
-  // A8: artifact filename from cached args
-  const base = rec.path ? rec.path.split(/[\\/]/).pop() : "";
-  if (!isError && base && /\.[a-z0-9]{1,6}$/i.test(base) && (rec.toolName === "write" || rec.toolName === "edit")) {
-    Nebula.addArtifact({ name: base });
-  }
-
-  // elapsed badge
+  // elapsed + 状态点
   const secs = (Date.now() - rec.startedAt) / 1000;
-  rec.elapsedEl.textContent = secs >= 1 ? `${secs.toFixed(1)}s` : "";
-
-  const state = $(".tool-state", rec.card);
-  state.classList.add(isError ? "error" : "done");
-  state.innerHTML = `<span class="mark">${isError ? "✕" : "✓"}</span><span class="label">${isError ? "失败" : "完成"}</span>`;
+  rec.elapsedEl.textContent = secs >= 0.5 ? `${secs.toFixed(1)}s` : "";
+  rec.card.classList.remove("running");
+  rec.card.classList.add(isError ? "error" : "done");
 
   let text = "";
   const contents = result?.content || [];
@@ -555,7 +600,6 @@ function onToolEnd(ev) {
     const ext = rec.path.split(".").pop().toLowerCase();
     if (ext === "html" || ext === "htm") {
       setPreview(rec.path);
-      switchCenter("preview");
       toast("已生成页面，已切换到预览", "ok");
     }
   }
@@ -577,6 +621,10 @@ function onToolEnd(ev) {
 
 /* ---- notices / queue ---- */
 function notice(text, kind = "") {
+  // 重复消息过滤：与上一条提示文案相同时不再重复展示
+  const all = $$("#messages .notice");
+  const last = all[all.length - 1];
+  if (last && last.textContent === text) return;
   const n = document.createElement("div");
   n.className = `notice ${kind}`;
   n.textContent = text;
@@ -598,7 +646,13 @@ function renderQueue() {
 /* ============================================================
    user input / sending
    ============================================================ */
-const toPiImage = (i) => ({ type: "image", source: { type: "base64", mediaType: i.mediaType, data: i.data } });
+const toPiImage = (i) => ({
+  // pi SDK 的规范图片形状是扁平的 {type, mimeType, data}（与 CLI 附件一致）。
+  // 千万不能用 {source:{mediaType,data}} 嵌套形状 —— 适配器读 item.mimeType 会拿到 undefined。
+  type: "image",
+  mimeType: normImageMime(i.mediaType) || sniffImageMime(i.data) || "image/png",
+  data: i.data,
+});
 
 async function send() {
   const input = $("#input");
@@ -624,7 +678,7 @@ async function send() {
     input.value = "";
     toast("压缩上下文中…");
     const r = await window.halo.compact(text.slice(8).trim() || undefined);
-    if (r?.ok) notice("上下文已压缩 ✓", "ok");
+    if (r?.ok) toast("上下文已压缩 ✓", "ok");
     return;
   }
   if (lc === "/help") { input.value = ""; return openModal("helpModal"); }
@@ -637,12 +691,11 @@ async function send() {
   renderAttachments();
   input.value = "";
   autoGrow();
-  hideHero();
 
   try {
     await window.halo.prompt(text, sentImages.length ? { images: sentImages.map(toPiImage) } : {});
   } catch (e) {
-    notice(`发送失败：${e?.message || e}`, "err");
+    toast(`发送失败：${e?.message || e}`, "err");
     // A4: rollback so the user doesn't lose their text
     input.value = text;
     S.images = sentImages;
@@ -653,6 +706,8 @@ async function send() {
 }
 
 function renderUserMsg(text, images) {
+  // 对话开始后清掉遗留的系统提示，保持对话流只包含当前对话内容
+  $$("#messages > .notice").forEach((n) => n.remove());
   const wrap = document.createElement("div");
   wrap.className = "msg user";
   const imgs = (images || []).map((i) =>
@@ -680,15 +735,18 @@ async function restoreHistory() {
   for (const m of msgs) {
     const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
     if (!text.trim()) continue;
-    if (m.role === "user") renderUserMsg(text, []);
+    if (m.role === "user") { finalizeTurn(); renderUserMsg(text, []); }
     else if (m.role === "assistant") {
-      const c = buildAssistantContainer();
-      $(".caret", c)?.remove();
-      $(".txt", c).innerHTML = rich(text);
-      copyCache.set(c, text);
+      // 连续的 assistant 消息合入同一个回合块，与实时渲染保持一致
+      const turn = ensureTurn();
+      const md = document.createElement("div");
+      md.className = "md";
+      md.innerHTML = rich(text);
+      turn.appendChild(md);
+      turn.__texts.push(text);
     }
   }
-  notice(`已载入历史 · ${msgs.length} 条消息`, "");
+  finalizeTurn();
   scrollDown();
 }
 
@@ -705,16 +763,95 @@ async function loadSessions() {
   }
   list.innerHTML = "";
   for (const s of S.sessions) {
-    const b = document.createElement("button");
-    b.className = "session-item";
+    const item = document.createElement("div");
+    item.className = "session-item";
     const file = (s.file || "").split(/[\\/]/).pop().replace(/\.jsonl$/, "");
-    b.innerHTML = `<span class="s-name">${esc(s.name || friendlySession(file))}</span>
+    const main = document.createElement("button");
+    main.className = "s-main";
+    main.innerHTML = `<span class="s-name">${esc(s.name || friendlySession(file))}</span>
       <span class="s-meta">${s.modified ? new Date(s.modified).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}${s.messageCount != null ? " · " + s.messageCount + "条" : ""}</span>`;
-    b.addEventListener("click", () => {
+    main.addEventListener("click", () => {
       if (S.streaming) return toast("任务进行中，无法切换会话", "err");
       openSession(s.file);
     });
-    list.appendChild(b);
+    const del = document.createElement("button");
+    del.className = "s-del";
+    del.title = "删除会话";
+    del.innerHTML = `<svg viewBox="0 0 24 24" class="ic"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>`;
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      requestDeleteSession(s, item, del);
+    });
+    item.append(main, del);
+    list.appendChild(item);
+  }
+}
+
+/* 删除会话：两步确认，避免误删；删除当前会话时先切到新会话 */
+function requestDeleteSession(s, item, del) {
+  if (!item.classList.contains("confirm")) {
+    item.classList.add("confirm");
+    del.title = "再次点击确认删除";
+    clearTimeout(item._confirmTimer);
+    item._confirmTimer = setTimeout(() => {
+      item.classList.remove("confirm");
+      del.title = "删除会话";
+    }, 2600);
+    return;
+  }
+  clearTimeout(item._confirmTimer);
+  const isCurrent = normPath(S.state?.sessionFile || "") === normPath(s.file || "");
+  if (isCurrent && S.streaming) return toast("任务进行中，先按 Esc 中止再删除", "err");
+  del.disabled = true;
+  window.halo.deleteSession(s.file)
+    .then((r) => {
+      if (!r?.ok) throw new Error(r?.error || "删除失败");
+      if (r.data?.switched) {
+        clearChat();
+        toast("已删除当前会话，已开启新会话", "ok");
+      } else {
+        toast("会话已删除", "ok");
+      }
+      loadSessions();
+    })
+    .catch((e) => {
+      del.disabled = false;
+      toast(`删除失败：${e?.message || e}`, "err");
+    });
+}
+
+const normPath = (p) => String(p || "").replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
+
+/* ---- 工作区记忆：关闭时记住项目 + 当前会话，下次启动恢复到关闭时状态 ---- */
+function saveWorkspace() {
+  try {
+    localStorage.setItem("halo-workspace", JSON.stringify({
+      cwd: S.state?.cwd || "",
+      session: S.state?.sessionFile || "",
+    }));
+  } catch {}
+}
+async function restoreWorkspace() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem("halo-workspace") || "null"); } catch {}
+  if (!saved || !saved.cwd) return;
+  // 恢复项目目录
+  if (normPath(saved.cwd) !== normPath(S.state?.cwd || "")) {
+    const r = await window.halo.useProject(saved.cwd);
+    if (!r?.ok) return;
+    await applyProjectReset();
+    await loadTree(true);
+    await loadSessions();
+    await loadResources();
+  }
+  // 恢复上次会话
+  if (saved.session && normPath(saved.session) !== normPath(S.state?.sessionFile || "")) {
+    const hit = S.sessions.find((s) => normPath(s.file) === normPath(saved.session));
+    if (hit) {
+      await window.halo.openSession(hit.file);
+      await restoreHistory();
+      toast("已恢复上次的会话", "ok");
+    }
   }
 }
 
@@ -733,7 +870,7 @@ async function newSession() {
   if (S.streaming) return toast("任务进行中，先按 Esc 中止", "err");
   clearChat();
   await window.halo.newSession();
-  notice("新会话已开启 ✦", "ok");
+  toast("新会话已开启", "ok");
   loadSessions();
 }
 
@@ -741,19 +878,19 @@ function clearChat() {
   $("#messages").innerHTML = "";
   S.toolCards.clear();
   S.assistant = null;
+  S.turn = null;
   S.assistantText = "";
   S.lastUserPrompt = null;
   S.activity = [];
-  S.detailMode = "activity";
-  renderActivity();
-  Nebula.reset();
-  Nebula.setZoom(1);
-  showHero();
 }
 
 async function loadResources() {
   const r = await window.halo.listResources();
   S.resources = r?.data || { skills: [], prompts: [], extensions: [] };
+  renderResources();
+}
+
+function renderResources() {
   const fill = (sel, arr, fmt) => {
     const el = $(sel);
     if (!arr.length) { el.innerHTML = `<div class="res-empty">—</div>`; return; }
@@ -761,11 +898,33 @@ async function loadResources() {
   };
   fill("#skillList", S.resources.skills, (s) => `<button class="res-chip" title="${esc(s.description || s.name)}" data-skill="${esc(s.name)}">✦ ${esc(s.name)}</button>`);
   fill("#promptList", S.resources.prompts, (p) => `<button class="res-chip" data-prompt="${esc(p.name)}" title="${esc(p.description || "")}">◈ ${esc(p.name)}</button>`);
-  fill("#extList", S.resources.extensions, (x) => `<span class="res-chip" title="已加载扩展">⬡ ${esc(x.name)}</span>`);
+  const extEl = $("#extList");
+  const exts = S.resources.extensions || [];
+  if (!exts.length) { extEl.innerHTML = `<div class="res-empty">—</div>`; }
+  else {
+    extEl.innerHTML = exts.map((x) => `
+      <div class="ext-row" title="${esc(x.path)}">
+        <span class="ext-name">⬡ ${esc(x.name)}</span>
+        <button class="ext-switch${x.disabled ? "" : " on"}" data-ext-toggle="${esc(x.path)}" aria-label="扩展开关"></button>
+      </div>`).join("");
+  }
+  extEl.querySelectorAll("[data-ext-toggle]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const p = b.dataset.extToggle;
+      const on = !b.classList.contains("on");
+      b.disabled = true;
+      const r = await window.halo.extToggle(p, on).catch((e) => ({ error: String(e) }));
+      if (r?.error) { toast(`切换失败：${r.error}`, "err"); b.disabled = false; return; }
+      S.resources = r?.data || S.resources;
+      renderResources();
+      clearChat();
+      await restoreHistory();
+      toast(on ? "扩展已开启（会话已重载）" : "扩展已关闭（会话已重载）", "ok");
+    }));
 
-  $$("#skillList [data-skill]").forEach((b) =>
+  $("#skillList").querySelectorAll("[data-skill]").forEach((b) =>
     b.addEventListener("click", () => { $("#input").value = `/skill:${b.dataset.skill} `; $("#input").focus(); }));
-  $$("#promptList [data-prompt]").forEach((b) =>
+  $("#promptList").querySelectorAll("[data-prompt]").forEach((b) =>
     b.addEventListener("click", () => { $("#input").value = `/${b.dataset.prompt} `; $("#input").focus(); }));
 }
 
@@ -822,6 +981,12 @@ function wireUI() {
   $("#winMin").addEventListener("click", () => window.halo.minimize());
   $("#winMax").addEventListener("click", () => window.halo.maximize());
   $("#winClose").addEventListener("click", () => window.halo.close());
+  $("#themeToggle").addEventListener("click", () => {
+    const root = document.documentElement;
+    root.classList.add("theme-x");
+    applyTheme(root.dataset.theme === "light" ? "dark" : "light");
+    setTimeout(() => root.classList.remove("theme-x"), 320);
+  });
 
   // sidebar tabs
   $$(".nav-item").forEach((btn) => btn.addEventListener("click", () => {
@@ -837,34 +1002,52 @@ function wireUI() {
   $("#qCompact").addEventListener("click", () => { $("#input").value = "/compact"; send(); });
   $("#qHelp").addEventListener("click", () => openModal("helpModal"));
 
-  // model card
-  $("#modelBtn").addEventListener("click", () => { loadModels(); openModal("modelModal"); });
-  $("#thinkBtn").addEventListener("click", () => { renderThinkList(); openModal("thinkModal"); });
+  // auth card
+  $("#authBtn").addEventListener("click", openAuthModal);
+
+  // settings
+  $("#btnSettings").addEventListener("click", openSettings);
+  $$("#settingsModal .set-nav").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("#settingsModal .set-nav").forEach((x) => x.classList.toggle("active", x === b));
+    document.querySelectorAll("#settingsModal .set-pane").forEach((p) => p.classList.toggle("active", p.id === "setPane-" + b.dataset.pane));
+  }));
+  $("#pkgSearchInput").addEventListener("input", debounce(() => { S.pkgQuery = $("#pkgSearchInput").value.trim(); loadMarket(true); }, 350));
+  $("#pkgTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".ptab");
+    if (!b) return;
+    S.pkgType = b.dataset.t;
+    $$("#pkgTabs .ptab").forEach((x) => x.classList.toggle("active", x === b));
+    loadMarket(true);
+  });
+  $("#pkgMore").addEventListener("click", () => loadMarket(false));
+  $("#pkgApply").addEventListener("click", applyPkgChanges);
+  $("#pkgInstalled").addEventListener("click", onInstalledClick);
+  $("#pkgMarket").addEventListener("click", onMarketClick);
+  $("#authSearch").addEventListener("input", () => renderAuthRows());
+  $("#authFilters").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-af]");
+    if (!b) return;
+    authFilter = b.dataset.af;
+    document.querySelectorAll("#authFilters .af-chip").forEach((x) => x.classList.toggle("active", x === b));
+    renderAuthRows();
+  });
+  $("#authList").addEventListener("click", onAuthListClick);
+  $("#authList").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.matches("[data-auth-prompt-input]")) window.halo.authRespond(e.target.value.trim());
+    if (e.key === "Enter" && e.target.matches("[data-auth-input]")) saveApiKey(e.target.dataset.authInput);
+  });
+
   $("#modelSearch").addEventListener("input", (e) => renderModelList(e.target.value));
 
-  // nebula toolbar
-  $("#toolNew").addEventListener("click", newSession);
-  $("#toolImage").addEventListener("click", attachImages);
+  // attachments & project
   $("#btnAttach").addEventListener("click", attachImages);
-  $("#toolFolder").addEventListener("click", pickProject);
   $("#projectChip").addEventListener("click", pickProject);
-  $("#toolHelp").addEventListener("click", () => openModal("helpModal"));
-
-  // zoom + toggles (B3: dblclick resets)
-  $("#zoomIn").addEventListener("click", () => Nebula.setZoom(Nebula.getZoom() * 1.18));
-  $("#zoomOut").addEventListener("click", () => Nebula.setZoom(Nebula.getZoom() / 1.18));
-  $("#zoomVal").addEventListener("dblclick", () => Nebula.setZoom(1));
-  $("#orbitsToggle").addEventListener("click", (e) => {
-    const on = e.currentTarget.classList.toggle("on");
-    Nebula.toggleOrbits(on);
-  });
-  $("#labelsToggle").addEventListener("click", (e) => {
-    const on = e.currentTarget.classList.toggle("on");
-    Nebula.toggleLabels(on);
-  });
 
   // chat header
-  $("#btnCompact").addEventListener("click", () => { $("#input").value = "/compact"; send(); });
+  $("#btnFocus").addEventListener("click", () => {
+    const on = document.body.classList.toggle("focus-mode");
+    $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
+  });
 
   // composer
   const input = $("#input");
@@ -931,20 +1114,34 @@ function wireUI() {
 }
 
 /* ============================================================
-   center: workspace / preview / nebula
+   center: preview（唯一面板，文件列表已移至侧栏底部）
    ============================================================ */
-function switchCenter(pane) {
-  $$(".ctab").forEach((b) => b.classList.toggle("active", b.dataset.cpane === pane));
-  $$(".cpane").forEach((p) => p.classList.toggle("active", p.id === "cpane-" + pane));
-  if (pane === "nebula") requestAnimationFrame(() => Nebula.resize());
-  if (pane === "workspace") loadTree();
-}
-
 function wireCenter() {
-  $$(".ctab").forEach((b) => b.addEventListener("click", () => switchCenter(b.dataset.cpane)));
   $("#treeRefresh").addEventListener("click", () => loadTree(true));
+  $("#btnNewFile").addEventListener("click", () => startCreate("file"));
+  $("#btnNewDir").addEventListener("click", () => startCreate("dir"));
   $("#pvReload").addEventListener("click", () => setPreview(S.previewFile, true));
+  // 预览模式切换：渲染 / 源码
+  $("#pvMode").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-m]");
+    if (!b || b.dataset.m === S.previewMode) return;
+    S.previewMode = b.dataset.m;
+    $$("#pvMode [data-m]").forEach((x) => x.classList.toggle("active", x === b));
+    if (S.previewFile) setPreview(S.previewFile, true);
+  });
   $("#pvOpen").addEventListener("click", () => { if (S.previewFile) window.halo.openPath(S.previewFile); });
+
+  // 预览设备切换：电脑 / 平板 / 手机
+  const devSize = { desktop: "100%", tablet: "768px", mobile: "390px" };
+  $$(".pvdev").forEach((b) => b.addEventListener("click", () => {
+    $$(".pvdev").forEach((x) => x.classList.toggle("active", x === b));
+    const body = $("#pvBody");
+    body.classList.remove("dev-desktop", "dev-tablet", "dev-mobile");
+    body.classList.add("dev-" + b.dataset.dev);
+    window.halo.previewTouch?.(b.dataset.dev !== "desktop"); // 平板/手机模式：隐藏滚动条 + 触摸式拖动
+    const size = $("#pvDevSize");
+    if (size) size.textContent = devSize[b.dataset.dev] || "100%";
+  }));
 }
 
 /* ---- file tree ---- */
@@ -969,41 +1166,126 @@ function scheduleTreeRefresh() {
 
 const fmtSize = (n) => (n >= 1024 * 1024 ? (n / 1048576).toFixed(1) + "M" : n >= 1024 ? (n / 1024).toFixed(1) + "k" : n + "B");
 
+/* 树行图标 */
+const FOLDER_IC = `<svg viewBox="0 0 24 24" class="ic f-ic dir-ic"><path d="M4 6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg>`;
+const FILE_IC = `<svg viewBox="0 0 24 24" class="ic f-ic"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>`;
+const TRASH_IC = `<svg viewBox="0 0 24 24" class="ic"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>`;
+const EXT_COLORS = { html: "#e8622d", htm: "#e8622d", css: "#3b82c4", js: "#c4a13b", mjs: "#c4a13b", ts: "#3b76c4", py: "#3b76c4", md: "#6b7f96", json: "#8a8f3a", svg: "#9a5fc4" };
+const fileIconFor = (name) => {
+  const ext = name.split(".").pop().toLowerCase();
+  const col = EXT_COLORS[ext];
+  return col ? FILE_IC.replace("class=\"ic f-ic\"", `class=\"ic f-ic\" style=\"color:${col}\"`) : FILE_IC;
+};
+
+function findNodeByPath(nodes, p) {
+  for (const n of nodes) {
+    if (n.path === p) return n;
+    if (n.children?.length) { const r = findNodeByPath(n.children, p); if (r) return r; }
+  }
+  return null;
+}
+function findParentDirPath(nodes, target, parent = null) {
+  for (const n of nodes) {
+    if (n.path === target) return parent;
+    if (n.children?.length) { const r = findParentDirPath(n.children, target, n.path); if (r !== undefined) return r; }
+  }
+  return undefined;
+}
+const normSlashes = (p) => String(p || "").replace(/\\/g, "/");
+const PV_EMPTY = `<div class="pv-empty"><div class="pv-ghost"><div class="pv-gscreen"><div class="pv-empty-ico">◇</div><p>agent 生成的 HTML / 图片 / Markdown 会在这里实时预览</p><p class="dim">在左下角文件列表点击文件，或让 agent 生成页面后自动打开</p></div><div class="pv-gneck"></div><div class="pv-gbase"></div></div></div>`;
+
 function renderTree() {
   const el = $("#wsTree");
   if (!S.treeData) { el.innerHTML = `<div class="res-empty">无法读取目录</div>`; return; }
   el.innerHTML = "";
   const norm = (p) => String(p).replace(/\\/g, "/").toLowerCase();
   const changedSet = new Set(S.activity.map((a) => norm(a.path)));
-  const build = (nodes, depth, container) => {
+  const addCreateRow = (container, depth, dirPath) => {
+    if (!S.creating || (S.creating.parent || null) !== (dirPath || null)) return;
+    const crow = document.createElement("div");
+    crow.className = "trow trow-create";
+    crow.style.paddingLeft = 8 + depth * 14 + "px";
+    crow.innerHTML = `<span class="fic">${S.creating.kind === "dir" ? FOLDER_IC : FILE_IC}</span><input class="create-input" placeholder="${S.creating.kind === "dir" ? "文件夹名称" : "文件名称"}" />`;
+    container.appendChild(crow);
+    const inp = $(".create-input", crow);
+    let done = false;
+    const commit = async () => {
+      if (done) return;
+      const name = inp.value.trim();
+      if (!name) { done = true; S.creating = null; renderTree(); return; }
+      const r = await window.halo.createEntry({ parent: S.creating.parent, name, kind: S.creating.kind }).catch((e) => ({ error: String(e?.message || e).replace(/^Error: /, "") }));
+      if (r?.error) { toast(r.error, "err"); inp.focus(); inp.select(); return; }
+      done = true;
+      toast("已创建 ✓", "ok");
+      const created = r.data?.path;
+      S.creating = null;
+      await loadTree(true);
+      if (created) {
+        S.selectedFile = created;
+        const node = findNodeByPath(S.treeData?.tree || [], created);
+        if (node && !node.dir) setPreview(created);
+        renderTree();
+      }
+    };
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") commit();
+      else if (e.key === "Escape") { done = true; S.creating = null; renderTree(); }
+    });
+    inp.addEventListener("blur", () => setTimeout(() => { if (!done && !inp.value.trim()) { done = true; S.creating = null; renderTree(); } }, 160));
+    setTimeout(() => inp.focus(), 0);
+  };
+  const build = (nodes, depth, container, dirPath) => {
+    addCreateRow(container, depth, dirPath);
     for (const n of nodes) {
       const row = document.createElement("div");
       row.className = "trow" + (n.dir ? " dir" : " file") + (S.expanded.has(n.path) ? " open" : "") + (changedSet.has(norm(n.path)) ? " changed" : "") + (S.selectedFile === n.path ? " selected" : "");
       row.style.paddingLeft = 8 + depth * 14 + "px";
       row.innerHTML = n.dir
-        ? `<span class="arrow">▶</span><span class="fic">▸</span><span class="fname">${esc(n.name)}</span>`
-        : `<span class="arrow"></span><span class="fic">·</span><span class="fname">${esc(n.name)}</span><span class="fsize">${fmtSize(n.size || 0)}</span>`;
+        ? `<span class="arrow">▶</span><span class="fic">${FOLDER_IC}</span><span class="fname">${esc(n.name)}</span><button class="trow-del" title="删除">${TRASH_IC}</button>`
+        : `<span class="arrow"></span><span class="fic">${fileIconFor(n.name)}</span><span class="fname">${esc(n.name)}</span><span class="fsize">${fmtSize(n.size || 0)}</span><button class="trow-del" title="删除">${TRASH_IC}</button>`;
       row.title = n.path;
       row.addEventListener("click", () => {
+        S.selectedFile = n.path;
         if (n.dir) {
           S.expanded.has(n.path) ? S.expanded.delete(n.path) : S.expanded.add(n.path);
           renderTree();
         } else {
-          S.selectedFile = n.path;
           renderTree();
-          openInDetail(n.path);
+          setPreview(n.path);
         }
       });
+      const del = $(".trow-del", row);
+      del.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!del.classList.contains("confirm")) {
+          del.classList.add("confirm");
+          del.title = "再次点击确认删除";
+          clearTimeout(row._delT);
+          row._delT = setTimeout(() => { del.classList.remove("confirm"); del.title = "删除"; }, 2600);
+          return;
+        }
+        clearTimeout(row._delT);
+        del.disabled = true;
+        const r = await window.halo.deleteEntry(n.path).catch((err) => ({ error: String(err?.message || err).replace(/^Error: /, "") }));
+        if (r?.error) { del.disabled = false; toast(r.error, "err"); return; }
+        toast("已删除 ✓", "ok");
+        const d = normSlashes(n.path);
+        if (S.previewFile && normSlashes(S.previewFile).startsWith(d)) { S.previewFile = null; $("#pvName").textContent = "未选择文件"; $("#pvBody").innerHTML = PV_EMPTY; }
+        if (S.selectedFile && normSlashes(S.selectedFile).startsWith(d)) S.selectedFile = null;
+        if (S.creating?.parent && normSlashes(S.creating.parent).startsWith(d)) S.creating = null;
+        await loadTree(true);
+      });
       container.appendChild(row);
-      if (n.dir && S.expanded.has(n.path) && n.children?.length) {
+      if (n.dir && S.expanded.has(n.path)) {
+        // 空文件夹也构建子容器，便于行内新建
         const kid = document.createElement("div");
         kid.className = "tree-kids";
-        build(n.children, depth + 1, kid);
+        build(n.children || [], depth + 1, kid, n.path);
         container.appendChild(kid);
       }
     }
   };
-  build(S.treeData.tree, 0, el);
+  build(S.treeData.tree, 0, el, null);
   if (S.treeData.truncated) {
     const tip = document.createElement("div");
     tip.className = "res-empty";
@@ -1012,106 +1294,43 @@ function renderTree() {
   }
 }
 
-/* ---- detail pane: activity (default) / file / diff ---- */
-function renderDetail() {
-  const el = $("#wsDetail");
-  if (S.detailMode === "file" && S.selectedFile) return showFileViewer(S.selectedFile);
-  if (S.detailMode === "diff" && S.diffItem) return showDiffView(S.diffItem);
-  renderActivity();
-}
-
-function renderActivity() {
-  const el = $("#wsDetail");
-  el.innerHTML = `
-    <div class="ws-detail-head"><b>本次会话改动</b><span class="chat-badge">${S.activity.length} 个文件</span></div>
-    ${S.activity.length === 0
-      ? `<div class="act-empty">
-           <div class="big">⌘</div>
-           <p>agent 写入 / 编辑的文件会出现在这里</p>
-           <p class="dim">左侧是项目文件树，点击文件可查看内容；HTML / 图片 / Markdown 会在预览页打开</p>
-         </div>`
-      : `<div class="act-list">${S.activity.map((a, i) => `
-          <button class="act-item ${a.diff ? "hasdiff" : ""}" data-i="${i}">
-            <span class="aic" style="color:${TOOL_COLORS[a.tool] || "#a5b4fc"}">${TOOL_ICONS[a.tool] || "✦"}</span>
-            <span><div class="aname">${esc(a.path.split(/[\\\\/]/).pop())}</div>
-            <div class="atool">${a.tool === "write" ? "新建" : "编辑"}${a.diff ? " · 含 diff" : ""}</div></span>
-            <span class="atime">${new Date(a.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
-          </button>`).join("")}</div>`}`;
-  $$("#wsDetail .act-item").forEach((b) => b.addEventListener("click", () => {
-    const a = S.activity[+b.dataset.i];
-    if (a?.diff) showDiffView(a); else openInDetail(a.path);
-  }));
+/* 新建文件/文件夹：行内输入，默认建在选中目录（或其父目录），否则建在根目录 */
+function startCreate(kind) {
+  if (!S.treeData) return toast("文件树未就绪", "err");
+  const selNode = S.selectedFile ? findNodeByPath(S.treeData.tree, S.selectedFile) : null;
+  let parent = null;
+  if (selNode?.dir) parent = selNode.path;
+  else if (selNode) parent = findParentDirPath(S.treeData.tree, selNode.path) ?? null;
+  S.creating = { parent, kind };
+  if (parent) S.expanded.add(parent);
+  renderTree();
 }
 
 const PREVIEWABLE = ["html", "htm", "png", "jpg", "jpeg", "gif", "webp", "svg", "md", "markdown"];
 
-async function openInDetail(p) {
-  S.detailMode = "file";
-  S.selectedFile = p;
-  const ext = p.split(".").pop().toLowerCase();
-  if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) return setPreview(p);
-  if (["html", "htm"].includes(ext)) { setPreview(p); switchCenter("preview"); return; }
-  if (["md", "markdown"].includes(ext)) { setPreview(p); switchCenter("preview"); return; }
-  switchCenter("workspace");
-  const el = $("#wsDetail");
-  el.innerHTML = `<div class="ws-detail-head"><b>${esc(p.split(/[\\\\/]/).pop())}</b><span class="dim-path">${esc(p)}</span>
-    <span class="ct-spacer"></span><button class="mini-btn" id="dvPreview">◇ 预览</button>
-    <button class="mini-btn" id="dvOpen">↗ 编辑器</button></div>
-    <div class="file-view"><div class="fv-note">加载中…</div></div>`;
-  $("#dvPreview").addEventListener("click", () => { setPreview(p); switchCenter("preview"); });
-  $("#dvOpen").addEventListener("click", () => window.halo.openPath(p));
-  const r = await window.halo.readFile(p);
-  const data = r?.data;
-  if (!data) {
-    $(".file-view", el).innerHTML = `<div class="fv-note">无法读取：${esc(r?.error || "")}（二进制或超出大小限制）</div>`;
-    return;
-  }
-  const lines = data.content.split("\n");
-  $(".file-view", el).innerHTML =
-    lines.slice(0, 2000).map((l, i) =>
-      `<div class="fv-line"><span class="ln">${i + 1}</span><span class="lc">${esc(l) || " "}</span></div>`).join("") +
-    (data.truncated || lines.length > 2000 ? `<div class="fv-note">文件过长，仅显示前 2000 行${data.truncated ? "（且已截断）" : ""}</div>` : "");
-}
-
-function showDiffView(item) {
-  S.detailMode = "diff";
-  S.diffItem = item;
-  switchCenter("workspace");
-  const el = $("#wsDetail");
-  el.innerHTML = `
-    <div class="ws-detail-head"><b>${esc(item.path.split(/[\\\\/]/).pop())}</b>
-      <span class="dim-path">${esc(item.path)}</span>
-      <span class="ct-spacer"></span>
-      <button class="mini-btn" id="diffBack">← 返回列表</button>
-      <button class="mini-btn" id="diffFile">查看全文</button></div>
-    <div class="file-view">${esc(item.diff).split("\n").map((l) => {
-      let cls = "";
-      if (l.startsWith("+") && !l.startsWith("+++")) cls = "diff-add";
-      else if (l.startsWith("-") && !l.startsWith("---")) cls = "diff-del";
-      else if (l.startsWith("@@")) cls = "diff-hunk";
-      return `<div class="fv-line"><span class="ln"> </span><span class="lc ${cls}">${l || " "}</span></div>`;
-    }).join("")}</div>`;
-  $("#diffBack").addEventListener("click", () => { S.detailMode = "activity"; renderActivity(); });
-  $("#diffFile").addEventListener("click", () => openInDetail(item.path));
-}
-
 function recordActivity(rec) {
+  // 仅记录：文件树用 .changed 标记新改动文件
   S.activity.unshift(rec);
   if (S.activity.length > 60) S.activity.pop();
-  if (S.detailMode !== "activity") return; // don't yank the user out of a viewer
-  renderActivity();
 }
 
 /* ---- preview ---- */
 const previewURL = (p) => "halo-preview://local/" + encodeURI(p.replace(/\\/g, "/")).replace(/^([A-Za-z]:)/, "$1");
+const currentPreviewDevice = () => {
+  const c = $("#pvBody").classList;
+  return c.contains("dev-tablet") ? "tablet" : c.contains("dev-mobile") ? "mobile" : "desktop";
+};
 
 async function setPreview(p, force) {
   if (!p) return;
-  if (!force && S.previewFile === p) { switchCenter("preview"); return; }
+  if (!force && S.previewFile === p) return;
   S.previewFile = p;
   const ext = p.split(".").pop().toLowerCase();
   $("#pvName").textContent = p.split(/[\\\\/]/).pop();
   const body = $("#pvBody");
+  const isHtml = ext === "html" || ext === "htm";
+  const modeCtl = $("#pvMode");
+  if (modeCtl) modeCtl.hidden = !isHtml;
   if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) {
     body.innerHTML = `<img class="pv-img" src="${previewURL(p)}" />`;
   } else if (["md", "markdown"].includes(ext)) {
@@ -1120,8 +1339,45 @@ async function setPreview(p, force) {
     body.innerHTML = r?.data
       ? `<div class="md-view">${rich(r.data.content)}</div>`
       : `<div class="pv-empty"><p>无法读取：${esc(r?.error || "")}</p></div>`;
+  } else if (["html", "htm"].includes(ext) || ext === "htm") {
+    if (S.previewMode === "source") {
+      // 源码模式：语法高亮 + 行号（HTML 源码可读）
+      body.innerHTML = `<div class="file-view"><div class="fv-note">加载中…</div></div>`;
+      const r = await window.halo.readFile(p);
+      if (!r?.data) {
+        body.innerHTML = `<div class="file-view"><div class="fv-note">无法读取：${esc(r?.error || "")}</div></div>`;
+        return;
+      }
+      const content = r.data.truncated ? r.data.content.slice(0, 300000) : r.data.content;
+      const lineCount = content.split("\n").length;
+      const nums = Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
+      body.innerHTML = `<div class="file-view"><div class="fv-code"><div class="fvc-ln">${nums}</div><pre class="fvc-body">${hlFile(content, "html")}</pre></div></div>`;
+    } else {
+      body.innerHTML = `<div class="dev-shell"><iframe src="${previewURL(p)}"></iframe></div>`;
+      window.halo.previewTouch?.(currentPreviewDevice() !== "desktop");
+    }
   } else {
-    body.innerHTML = `<iframe src="${previewURL(p)}"></iframe>`;
+    // 文本文件：代码类 → 语法高亮行号视图；纯文本类 → 阅读视图
+    body.innerHTML = `<div class="file-view"><div class="fv-note">加载中…</div></div>`;
+    const r = await window.halo.readFile(p);
+    const fv = $(".file-view", body);
+    if (!r?.data) {
+      fv.innerHTML = `<div class="fv-note">无法读取：${esc(r?.error || "")}（二进制或超出大小限制），可用右上角「打开」在外部查看</div>`;
+      return;
+    }
+    const content = r.data.content;
+    const lang = langOf(ext);
+    if (!lang) {
+      // 纯文本阅读视图：pre-wrap 自动换行，无行号干扰
+      fv.innerHTML = `<div class="fv-read">${escFile(content) || "&nbsp;"}${r.data.truncated ? `<div class="fv-note">文件过长，内容已截断</div>` : ""}</div>`;
+      return;
+    }
+    const shown = r.data.truncated ? content.slice(0, 200000) : content;
+    const lineCount = shown.split("\n").length;
+    const nums = Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
+    fv.innerHTML =
+      `<div class="fv-code"><div class="fvc-ln">${nums}</div><pre class="fvc-body">${hlFile(shown, lang)}</pre></div>` +
+      (r.data.truncated || lineCount > 2000 ? `<div class="fv-note">文件过长，仅显示部分内容${r.data.truncated ? "（且已截断）" : ""}</div>` : "");
   }
 }
 
@@ -1142,9 +1398,25 @@ function renderThinkList() {
 }
 
 /* ---- attachments ---- */
+/* 图片 MIME 三重兑底：dataURL 头 → file.type → base64 魔数；永不让 undefined 出门 */
+const IMAGE_SNIFF = [
+  ["iVBORw0KGgo", "image/png"],
+  ["/9j/", "image/jpeg"],
+  ["R0lGOD", "image/gif"],
+  ["UklGR", "image/webp"],
+];
+function sniffImageMime(b64 = "") {
+  for (const [p, m] of IMAGE_SNIFF) if (b64.startsWith(p)) return m;
+  return "";
+}
+const normImageMime = (m) => (m === "image/jpg" ? "image/jpeg" : m);
+
 async function attachImages() {
   const r = await window.halo.pickImages();
-  const imgs = r?.data || [];
+  const imgs = (r?.data || []).map((i) => ({
+    ...i,
+    mediaType: normImageMime(i.mediaType) || sniffImageMime(i.data) || "image/png",
+  }));
   S.images.push(...imgs);
   renderAttachments();
 }
@@ -1152,10 +1424,49 @@ async function attachImages() {
 function addImageFile(file) {
   const reader = new FileReader();
   reader.onload = () => {
-    S.images.push({ name: file.name, mediaType: file.type, data: String(reader.result).split(",")[1] });
-    renderAttachments();
+    const url = String(reader.result);
+    const data = url.split(",")[1] || "";
+    const fromUrl = (url.match(/^data:([^;,]+)/) || [])[1] || "";
+    const mediaType = normImageMime(fromUrl || file.type || sniffImageMime(data));
+    if (!mediaType.startsWith("image/")) return toast(`不支持的图片：${trunc(file.name, 24)}`, "err");
+    attachPrepared({ name: file.name, mediaType, data });
   };
   reader.readAsDataURL(file);
+}
+
+/* 入队前准备：超大图自动压缩（限制最大边长 + 转 JPEG），避免多图历史撑爆请求体 */
+async function attachPrepared(img) {
+  try {
+    const bytes = Math.floor((img.data.length * 3) / 4);
+    if (bytes > 400 * 1024) {
+      const small = await downscaleImage(img.data, img.mediaType, 1600, 0.85);
+      if (small && small.data.length < img.data.length) {
+        S.images.push({ name: img.name.replace(/\.png$/i, ".jpg"), mediaType: small.mediaType, data: small.data });
+        renderAttachments();
+        toast("大图已自动压缩", "ok");
+        return;
+      }
+    }
+  } catch {}
+  S.images.push(img);
+  renderAttachments();
+}
+
+function downscaleImage(b64, srcMime, maxSide, quality) {
+  return new Promise((resolve) => {
+    const im = new Image();
+    im.onload = () => {
+      const scale = Math.min(1, maxSide / Math.max(im.width, im.height));
+      if (scale >= 1) return resolve(null);
+      const c = document.createElement("canvas");
+      c.width = Math.round(im.width * scale);
+      c.height = Math.round(im.height * scale);
+      c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
+      resolve({ mediaType: "image/jpeg", data: c.toDataURL("image/jpeg", quality).split(",")[1] });
+    };
+    im.onerror = () => resolve(null);
+    im.src = `data:${srcMime};base64,${b64}`;
+  });
 }
 
 function renderAttachments() {
@@ -1172,20 +1483,25 @@ function renderAttachments() {
 }
 
 /* ---- project (A9: no-op when unchanged) ---- */
+async function applyProjectReset() {
+  clearChat();
+  S.previewFile = null;
+  $("#pvBody").innerHTML = PV_EMPTY;
+  $("#pvName").textContent = "未选择文件";
+  S.expanded.clear();
+  S.creating = null;
+}
+
 async function pickProject() {
   if (S.streaming) return toast("任务进行中，无法切换项目", "err");
   const r = await window.halo.pickProject(S.state?.cwd);
   const dir = r?.data;
   if (!dir || dir === S.state?.cwd) return;
-  clearChat();
-  S.previewFile = null;
-  $("#pvBody").innerHTML = `<div class="pv-empty"><div class="pv-empty-ico">◇</div><p>agent 生成的 HTML / 图片 / Markdown 会在这里实时预览</p></div>`;
-  $("#pvName").textContent = "未选择文件";
-  S.expanded.clear();
+  await applyProjectReset();
   await loadTree(true);
   await loadSessions();
   await loadResources();
-  notice(`已切换项目 · ${dir.split(/[\\/]/).pop()}`, "ok");
+  toast(`已切换项目 · ${dir.split(/[\\/]/).pop()}`, "ok");
 }
 
 /* ============================================================
@@ -1205,8 +1521,11 @@ function closeModal(m) {
 }
 
 function toast(text, kind = "") {
+  // 重复消息过滤：屏幕上已有相同文案且未消失的 toast 时不再追加
+  if ($$("#toasts .toast:not(.out)").some((t) => t.dataset.text === text)) return;
   const t = document.createElement("div");
   t.className = `toast ${kind}`;
+  t.dataset.text = text;
   t.innerHTML = `<span class="t-dot"></span><span>${esc(text)}</span>`;
   $("#toasts").appendChild(t);
   setTimeout(() => {
@@ -1223,15 +1542,391 @@ function autoGrow() {
 
 function scrollDown(force = false) {
   const m = $("#messages");
-  const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 90;
-  if (force || nearBottom) m.scrollTop = m.scrollHeight + 400;
+  const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 120;
+  // "instant" bypasses the CSS smooth behavior: per-delta smooth scrolls keep
+  // interrupting each other and permanently fall behind fast streaming output
+  if (force || nearBottom) m.scrollTo({ top: m.scrollHeight, behavior: "instant" });
 }
 
-function hideHero() { $("#nebulaHero").classList.add("hidden"); }
-function showHero() { $("#nebulaHero").classList.remove("hidden"); }
+/* ============================================================
+   auth / login modal（与 pi CLI 共享 ~/.pi/agent/auth.json）
+   ============================================================ */
+let authRows = [];
+let authFilter = "all"; // all | oauth | key
+const authPending = new Map(); // providerId -> pending api key (answer secret prompts)
 
-function updateZoomLabel() {
-  $("#zoomVal").textContent = Math.round(Nebula.getZoom() * 100) + "%";
+async function openAuthModal() {
+  authFilter = "all";
+  document.querySelectorAll("#authFilters .af-chip").forEach((x) =>
+    x.classList.toggle("active", x.dataset.af === "all"));
+  $("#authSearch").value = "";
+  openModal("authModal");
+  await renderAuthList();
+}
+
+async function renderAuthList() {
+  const list = $("#authList");
+  list.innerHTML = `<div class="model-empty">加载中…</div>`;
+  try {
+    authRows = (await window.halo.authProviders())?.data || [];
+  } catch (e) {
+    list.innerHTML = `<div class="model-empty">加载失败：${esc(String(e?.message || e))}</div>`;
+    return;
+  }
+  renderAuthRows();
+}
+
+function renderAuthRows() {
+  const list = $("#authList");
+  const f = ($("#authSearch").value || "").trim().toLowerCase();
+  const rows = authRows
+    .filter((p) => authFilter === "all" || (authFilter === "oauth" ? p.canOAuth : p.canApiKey))
+    .filter((p) => !f || (p.name + p.id).toLowerCase().includes(f));
+  if (!rows.length) { list.innerHTML = `<div class="model-empty">没有匹配的供应商</div>`; return; }
+  list.innerHTML = rows.map((p) => {
+    const status = p.configured
+      ? `<span class="chat-badge auth-ok">✓ 已登录</span>`
+      : `<span class="chat-badge">未登录</span>`;
+    const actions = [
+      p.canOAuth ? `<button class="mini-btn" data-auth-oauth="${esc(p.id)}">${p.subscription ? "订阅登录" : "OAuth 登录"}</button>` : "",
+      p.canApiKey ? `<button class="mini-btn" data-auth-key="${esc(p.id)}">API Key</button>` : "",
+      p.configured ? `<button class="mini-btn" data-auth-logout="${esc(p.id)}">登出</button>` : "",
+    ].filter(Boolean).join("");
+    return `<div class="auth-row" data-auth-row="${esc(p.id)}">
+      <div class="auth-name"><span>${esc(p.name)}</span>${status}<small>${esc(p.id)}</small></div>
+      <div class="auth-actions">${actions}</div>
+      <div class="auth-progress" data-auth-progress="${esc(p.id)}" hidden></div>
+      <div class="auth-keyrow" data-auth-keyrow="${esc(p.id)}" hidden>
+        <input type="password" placeholder="粘贴 API Key…" data-auth-input="${esc(p.id)}" />
+        <button class="mini-btn" data-auth-save="${esc(p.id)}">保存</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function onAuthListClick(e) {
+  const sel = e.target.closest("[data-auth-select]");
+  if (sel) { window.halo.authRespond(sel.dataset.authSelect); return; }
+  const sub = e.target.closest("[data-auth-prompt-submit]");
+  if (sub) {
+    const inp = $("[data-auth-prompt-input]", sub.closest(".auth-progress"));
+    window.halo.authRespond(inp?.value.trim() || "");
+    return;
+  }
+  if (e.target.closest("[data-auth-prompt-cancel]")) { window.halo.authCancel(); return; }
+  const oauth = e.target.closest("[data-auth-oauth]");
+  if (oauth) { startAuthLogin(oauth.dataset.authOauth, "oauth"); return; }
+  const key = e.target.closest("[data-auth-key]");
+  if (key) {
+    const row = $(`[data-auth-keyrow="${CSS.escape(key.dataset.authKey)}"]`);
+    if (row) { row.hidden = !row.hidden; if (!row.hidden) $("[data-auth-input]", row)?.focus(); }
+    return;
+  }
+  const save = e.target.closest("[data-auth-save]");
+  if (save) { saveApiKey(save.dataset.authSave); return; }
+  const out = e.target.closest("[data-auth-logout]");
+  if (out) doLogout(out.dataset.authLogout);
+}
+
+async function startAuthLogin(providerId, type) {
+  const prog = $(`[data-auth-progress="${CSS.escape(providerId)}"]`);
+  if (prog) { prog.hidden = false; prog.dataset.phase = "start"; prog.textContent = "正在启动登录流程…"; }
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    const p2 = $(`[data-auth-progress="${CSS.escape(providerId)}"]`);
+    if (!p2 || p2.hidden || p2.dataset.phase !== "start") { clearInterval(tick); return; }
+    p2.textContent = `登录流程进行中… ${Math.floor((Date.now() - t0) / 1000)}s（若长时间无变化，请查看启动终端的 [auth] 日志）`;
+  }, 1000);
+  try {
+    await window.halo.authLogin(providerId, type);
+  } catch (e) {
+    /* error already toasted via auth_event; refresh statuses */
+    renderAuthRows();
+    updateAuthSummary();
+  } finally {
+    clearInterval(tick);
+  }
+}
+
+async function saveApiKey(providerId) {
+  const inp = $(`[data-auth-input="${CSS.escape(providerId)}"]`);
+  const value = inp?.value.trim() || "";
+  if (!value) return toast("请先粘贴 API Key", "err");
+  authPending.set(providerId, value);
+  await window.halo.authLogin(providerId, "api_key").catch(() => {});
+  authPending.delete(providerId);
+  await renderAuthList();
+  updateAuthSummary();
+}
+
+async function doLogout(providerId) {
+  try {
+    await window.halo.authLogout(providerId);
+    toast("已登出", "ok");
+  } catch (e) {
+    toast(`登出失败：${e?.message || e}`, "err");
+  }
+  await renderAuthList(); // 重新拉取登录状态，避免徽章滞留
+  updateAuthSummary();
+  await loadModels();
+  await ensureModelAvailable();
+}
+
+/* 登出/登录后保持当前对话模型可用：不可用则自动切换，全部不可用则提示登录 */
+async function ensureModelAvailable() {
+  const cur = S.state?.model;
+  const ok = cur && S.models.some((m) => m.provider === cur.provider && m.id === cur.id);
+  if (ok) return;
+  if (!S.models.length) { toast("所有模型均已登出，请先在登录配置里登录账号", "err"); return; }
+  const m = S.models[0];
+  const r = await window.halo.setModel(m.provider, m.id);
+  if (r?.ok) applyState(r.data);
+  if (cur) toast(`当前模型已不可用，已自动切换到 ${m.name}`, "ok");
+}
+
+async function onAuthEvent(ev) {
+  console.debug("[auth] renderer event:", ev.phase, ev.providerId);
+  const prog = $(`[data-auth-progress="${CSS.escape(ev.providerId)}"]`);
+  const show = (html) => { if (prog) { prog.hidden = false; prog.dataset.phase = "event"; prog.innerHTML = html; } };
+  if (ev.phase === "notify") {
+    const n = ev.event || {};
+    if (n.type === "auth_url") {
+      show(`浏览器已打开，请完成授权…<br><a href="${esc(n.url)}" target="_blank">${esc(n.url)}</a>`);
+      try { window.open(n.url, "_blank"); } catch {}
+    } else if (n.type === "device_code") {
+      show(`设备码：<b>${esc(n.userCode)}</b> · 正在打开 <a href="${esc(n.verificationUri)}" target="_blank">${esc(n.verificationUri)}</a>`);
+      try { window.open(n.verificationUri, "_blank"); } catch {}
+    } else if (n.type === "info" || n.type === "progress") {
+      show(esc(n.message || "…"));
+    }
+  } else if (ev.phase === "prompt") {
+    const p = ev.prompt || {};
+    const inputHtml = `<span class="auth-inline-input"><input data-auth-prompt-input placeholder="${esc(p.placeholder || "")}" /></span> <button class="mini-btn" data-auth-prompt-submit>提交</button> <button class="mini-btn" data-auth-prompt-cancel>取消</button>`;
+    if (p.type === "secret" || p.type === "text") {
+      const pending = authPending.get(ev.providerId);
+      if (pending !== undefined) { window.halo.authRespond(pending); show("已提交，正在验证…"); return; }
+      show(`${esc(p.message || "请输入：")}<br>${inputHtml}`);
+    } else if (p.type === "manual_code") {
+      show(`${esc(p.message || "请在浏览器完成登录后，粘贴授权码或回调 URL：")}<br>${inputHtml}`);
+    } else if (p.type === "select") {
+      show(`${esc(p.message || "请选择：")}<br>` + (p.options || []).map((o) => `<button class="mini-btn" data-auth-select="${esc(o.id)}">${esc(o.label)}</button>`).join(" "));
+    }
+  } else if (ev.phase === "done") {
+    toast(`登录成功 ✓（${ev.providerId}）`, "ok");
+    if (prog) prog.hidden = true;
+    await renderAuthList();
+    updateAuthSummary();
+    await loadModels();
+    await ensureModelAvailable();
+  } else if (ev.phase === "error") {
+    toast(`登录失败：${ev.error}`, "err");
+    if (prog) prog.hidden = true;
+  }
+}
+
+/* 登录状态仅用于 authBtn 的 tooltip（右侧聊天框已显示模型信息） */
+async function updateAuthSummary() {
+  try {
+    const rows = ((await window.halo.authProviders())?.data) || [];
+    const n = rows.filter((r) => r.configured).length;
+    $("#authBtn").title = n ? `登录配置 · 已登录 ${n} 个供应商` : "登录配置";
+  } catch {}
+}
+
+/* ============================================================
+   settings · 插件与技能（pi 包生态：搜索 / 安装 / 卸载 / 启用停用）
+   ============================================================ */
+const PKG_TYPE_CN = { extension: "扩展", skill: "技能", theme: "主题", prompt: "提示词", package: "综合包" };
+const relTime = (iso) => {
+  if (!iso) return "";
+  const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (d < 3600) return Math.max(1, Math.floor(d / 60)) + " 分钟前";
+  if (d < 86400) return Math.floor(d / 3600) + " 小时前";
+  if (d < 86400 * 30) return Math.floor(d / 86400) + " 天前";
+  if (d < 86400 * 365) return Math.floor(d / 86400 / 30) + " 个月前";
+  return Math.floor(d / 86400 / 365) + " 年前";
+};
+function openSettings() {
+  openModal("settingsModal");
+  if (!S.pkgLoaded) {
+    S.pkgLoaded = true;
+    loadInstalled();
+    loadMarket(true);
+  } else {
+    loadInstalled();
+  }
+}
+async function loadInstalled() {
+  const box = $("#pkgInstalled");
+  box.innerHTML = `<div class="pkg-empty">读取中…</div>`;
+  const r = await window.halo.pkgInstalled();
+  const list = r?.data || [];
+  S.pkgInstalledList = list;
+  $("#pkgInstalledCount").textContent = list.length ? list.length + " 个" : "";
+  if (!list.length) {
+    box.innerHTML = `<div class="pkg-empty">尚未安装任何包</div>`;
+    return;
+  }
+  box.innerHTML = list.map((p, i) => {
+    const name = esc(p.raw.replace(/^npm:/, ""));
+    return `<div class="pkg-row${p.disabled ? " off" : ""}" data-i="${i}">
+      <div class="pkg-main">
+        <span class="pkg-name">${name}</span>
+        <span class="pkg-kind">${p.kind === "npm" ? "npm" : p.kind === "git" ? "git" : "本地"}</span>
+        ${p.disabled ? `<span class="pkg-off-badge">已停用</span>` : ""}
+      </div>
+      <div class="pkg-ops">
+        <button class="ext-switch${p.disabled ? "" : " on"}" data-act="toggle" title="${p.disabled ? "启用" : "停用"}"></button>
+        ${p.kind !== "本地" ? `<button class="mini-btn" data-act="update">更新</button>` : ""}
+        <button class="mini-btn danger" data-act="remove">卸载</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+async function loadMarket(reset) {
+  if (reset) {
+    S.pkgFrom = 0;
+    $("#pkgMarket").innerHTML = `<div class="pkg-empty">加载中…</div>`;
+    S.pkgItems = [];
+  }
+  const size = 20;
+  const r = await window.halo.pkgSearch({ query: S.pkgQuery || "", from: S.pkgFrom || 0, size });
+  const box = $("#pkgMarket");
+  if (!r?.ok) {
+    box.innerHTML = `<div class="pkg-empty">加载失败：${esc(r?.error || "")}</div>`;
+    return;
+  }
+  const items = r.data?.items || [];
+  const all = reset ? items : (S.pkgItems || []).concat(items);
+  S.pkgItems = all;
+  S.pkgTotal = r.data?.total || 0;
+  $("#pkgTotal").textContent = all.length ? `${all.length} / ${S.pkgTotal}` : "";
+  const installedNorm = new Set((S.pkgInstalledList || []).map((p) => normPkgSource(p.raw)));
+  const filtered = S.pkgType && S.pkgType !== "all"
+    ? all.filter((p) => p.types?.includes(S.pkgType))
+    : all;
+  if (!filtered.length) {
+    box.innerHTML = `<div class="pkg-empty">${reset ? "没有匹配的包" : "没有更多了"}</div>`;
+    $("#pkgMore").hidden = true;
+    return;
+  }
+  box.innerHTML = filtered.map((p, i) => {
+    const installed = installedNorm.has(normPkgSource("npm:" + p.name));
+    const badges = (p.types || []).map((t) => `<span class="pkg-type t-${t}">${PKG_TYPE_CN[t] || t}</span>`).join("");
+    const repo = p.repo ? `<a class="pkg-repo" href="${esc(p.repo)}" target="_blank" rel="noopener" title="源码仓库">仓库</a>` : "";
+    return `<div class="pkg-card" data-i="${i}">
+      <div class="pkg-c-head">
+        <span class="pkg-name">${esc(p.name.replace(/^npm:/, ""))}</span>
+        ${badges}
+      </div>
+      <div class="pkg-desc">${esc(trunc(p.desc || "（无描述）", 120))}</div>
+      <div class="pkg-meta">
+        <span>v${esc(p.version || "?")}</span>
+        <span>${relTime(p.date)}</span>
+        ${p.author ? `<span>@${esc(p.author)}</span>` : ""}
+        ${repo}
+        <span class="pkg-spacer"></span>
+        ${installed
+          ? `<span class="pkg-in-mark">✓ 已安装</span>`
+          : `<button class="mini-btn accent" data-act="install" data-name="${esc(p.name)}">安装</button>`}
+      </div>
+    </div>`;
+  }).join("");
+  S.pkgFrom = (S.pkgFrom || 0) + size;
+  $("#pkgMore").hidden = all.length >= S.pkgTotal;
+}
+const normPkgSource = (s) => {
+  let v = String(s || "").trim();
+  if (v.startsWith("npm:")) {
+    v = v.replace(/(npm:[^@]+)@[\w.+-]+$/, "$1");
+  }
+  return v.toLowerCase();
+};
+function showPending() { $("#pkgPendingBar").hidden = false; }
+async function onInstalledClick(e) {
+  const btn = e.target.closest("[data-act]");
+  if (!btn) return;
+  const row = btn.closest(".pkg-row");
+  const p = S.pkgInstalledList?.[+row.dataset.i];
+  if (!p) return;
+  const act = btn.dataset.act;
+  if (act === "toggle") {
+    btn.disabled = true;
+    const r = await window.halo.pkgToggle(p.raw, !p.disabled);
+    if (r?.ok) {
+      p.disabled = !p.disabled;
+      showPending();
+      loadInstalled();
+      toast(p.disabled ? "已停用（新会话生效）" : "已启用（新会话生效）", "ok");
+    } else {
+      btn.disabled = false;
+      toast(`操作失败：${r?.error || ""}`, "err");
+    }
+  } else if (act === "remove") {
+    if (!row.classList.contains("confirm")) {
+      row.classList.add("confirm");
+      btn.textContent = "确认卸载？";
+      setTimeout(() => { row.classList.remove("confirm"); btn.textContent = "卸载"; }, 2600);
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "卸载中…";
+    const r = await window.halo.pkgRemove(p.raw);
+    if (r?.ok) {
+      toast("已卸载（新会话生效）", "ok");
+      showPending();
+      await loadInstalled();
+      if (S.pkgLoaded) loadMarket(true);
+    } else {
+      btn.disabled = false;
+      btn.textContent = "卸载";
+      toast(`卸载失败：${r?.error || r?.output || ""}`, "err");
+    }
+  } else if (act === "update") {
+    btn.disabled = true;
+    btn.textContent = "更新中…";
+    const r = await window.halo.pkgUpdate(p.raw);
+    btn.disabled = false;
+    btn.textContent = "更新";
+    toast(r?.ok ? "已是最新 / 更新完成" : `更新失败：${r?.error || r?.output || ""}`, r?.ok ? "ok" : "err");
+    if (r?.ok) showPending();
+  }
+}
+async function onMarketClick(e) {
+  const btn = e.target.closest('[data-act="install"]');
+  if (!btn) return;
+  const name = btn.dataset.name;
+  const source = "npm:" + name;
+  btn.disabled = true;
+  btn.textContent = "安装中…";
+  const r = await window.halo.pkgInstall(source);
+  if (r?.ok) {
+    toast(`已安装 ${name}（新会话生效）`, "ok");
+    showPending();
+    await loadInstalled();
+    loadMarket(true);
+  } else {
+    btn.disabled = false;
+    btn.textContent = "安装";
+    toast(`安装失败：${r?.error || r?.output || ""}`, "err");
+  }
+}
+async function applyPkgChanges() {
+  const btn = $("#pkgApply");
+  if (S.streaming) return toast("任务进行中，无法重载", "err");
+  btn.disabled = true;
+  btn.textContent = "重载中…";
+  const r = await window.halo.pkgReload();
+  btn.disabled = false;
+  btn.textContent = "立即重载";
+  if (r?.ok) {
+    $("#pkgPendingBar").hidden = true;
+    clearChat();
+    await refreshAll();
+    toast("插件配置已生效，已开启新会话", "ok");
+  } else {
+    toast(`重载失败：${r?.error || ""}`, "err");
+  }
 }
 
 /* ============================================================
@@ -1242,20 +1937,163 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function rich(src) {
-  let s = esc(src);
-  const blocks = [];
-  s = s.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    blocks.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
-    return `\u0000B${blocks.length - 1}\u0000`;
+/* ---- 轻量语法高亮（文件预览代码视图） ---- */
+const escFile = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const HL_KW = {
+  js: "const let var function return if else for while do switch case break continue new class extends import export from default try catch finally throw typeof instanceof in of this null undefined true false async await yield static get set delete void super",
+  py: "def class import from return if elif else for while in not and or try except finally with as lambda None True False pass break continue raise global nonlocal yield async await assert del is",
+  sh: "if then else elif fi for while do done case esac function echo export local return set source alias until select time",
+  css: "important media supports keyframes root",
+};
+const HL_LANG = {
+  py: "py",
+  js: "js", mjs: "js", cjs: "js", ts: "js", tsx: "js", jsx: "js", java: "js", c: "js", cpp: "js", h: "js", hpp: "js", go: "js", rs: "js", php: "js", rb: "js", swift: "js", kt: "js", cs: "js",
+  css: "css", json: "json",
+  html: "html", htm: "html", xml: "html", vue: "html", svelte: "html", svg: "html",
+  sh: "sh", bash: "sh", bat: "sh", ps1: "sh", yaml: "sh", yml: "sh", toml: "sh", ini: "sh", conf: "sh", env: "sh",
+};
+const langOf = (ext) => HL_LANG[ext] || null;
+const HL_RE = {
+  js: /(\/\*[\s\S]*?\*\/|\/\/[^\n]*)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|import|export|from|default|try|catch|finally|throw|typeof|instanceof|in|of|this|null|undefined|true|false|async|await|yield|static|get|set|delete|void|super)\b|\b(\d+(?:\.\d+)?)\b|([A-Za-z_$][\w$]*)(?=\s*\()/g,
+  py: /(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|\b(def|class|import|from|return|if|elif|else|for|while|in|not|and|or|try|except|finally|with|as|lambda|None|True|False|pass|break|continue|raise|global|nonlocal|yield|async|await|assert|del|is)\b|\b(\d+(?:\.\d+)?)\b|([A-Za-z_][\w]*)(?=\s*\()/g,
+  sh: /(#[^\n]*)|("(?:[^"\\\n]|\\.)*"|'[^'\n]*')|\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|echo|export|local|return|set|source|alias|until|select|time)\b|\b(\d+(?:\.\d+)?)\b|([A-Za-z_][\w-]*)(?=\s*\()/g,
+  css: /(\/\*[\s\S]*?\*\/)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|([\w-]+)(?=\s*:)|(#[0-9a-fA-F]{3,8}\b|\b\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw|vmin|vmax|s|ms|deg|fr)?\b)|(@[\w-]+|[.#][\w-]+)/g,
+  json: /("(?:[^"\\\n]|\\.)*")(?=\s*:)|("(?:[^"\\\n]|\\.)*")|\b(true|false|null)\b|(-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)/g,
+  html: /(&lt;!--[\s\S]*?--&gt;)|(&lt;\/?[\w-]+)|([\w-]+)(?==)|("(?:[^"\\\n]|\\.)*")|(&gt;)/g,
+};
+const HL_CLS = ["c-com", "c-str", "c-kw", "c-num", "c-fn"];
+function hlFile(code, lang) {
+  const s = escFile(code);
+  const re = HL_RE[lang];
+  if (!re) return s;
+  let out = "", last = 0, m;
+  re.lastIndex = 0;
+  while ((m = re.exec(s))) {
+    if (m.index > last) out += s.slice(last, m.index);
+    const gi = m.slice(1).findIndex((g) => g !== undefined);
+    out += `<span class="${HL_CLS[gi] || "c-fn"}">${m[0]}</span>`;
+    last = m.index + m[0].length;
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  out += s.slice(last);
+  return out;
+}
+
+/* 完整 markdown 渲染（聊天回复 + md 文件预览共用）：标题/表格/列表/引用/任务/删除线/链接/图片/代码 */
+const mdUrl = (u, mdPath) => {
+  u = String(u || "").trim();
+  if (/^(https?:|mailto:|halo-preview:|data:image\/)/i.test(u)) return u.replace(/"/g, "%22");
+  if (mdPath && !/^[a-z]+:/i.test(u)) {
+    const dir = mdPath.replace(/[\\/][^\\/]*$/, "");
+    const parts = dir.split(/[\\/]/);
+    for (const seg of u.replace(/^\.\//, "").split(/[\\/]/)) {
+      if (seg === "..") parts.pop();
+      else if (seg !== "." && seg) parts.push(seg);
+    }
+    return previewURL(parts.join("/"));
+  }
+  return null;
+};
+function mdInline(s, mdPath) {
+  const codes = [];
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(`<code>${c}</code>`); return `\u0000C${codes.length - 1}\u0000`; });
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => {
+    const u = mdUrl(url, mdPath);
+    return u ? `<img src="${u}" alt="${alt.replace(/"/g, "&quot;")}" loading="lazy">` : _;
   });
-  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text, url) => {
+    const u = mdUrl(url, mdPath);
+    return u ? `<a href="${u}" target="_blank" rel="noopener">${text}</a>` : text;
+  });
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  s = s.split(/\n{2,}/).map((p) => {
-    const b = p.match(/^\u0000B(\d+)\u0000$/);
-    if (b) return blocks[+b[1]];
-    return `<p>${p.replace(/\n/g, "<br>")}</p>`;
-  }).join("");
-  s = s.replace(/\u0000B(\d+)\u0000/g, (_, i) => blocks[+i]);
+  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<i>$2</i>");
+  s = s.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+  s = s.replace(/\u0000C(\d+)\u0000/g, (_, k) => codes[+k]);
   return s;
+}
+const mdSplitRow = (line) => {
+  let l = line.trim();
+  if (l.startsWith("|")) l = l.slice(1);
+  if (l.endsWith("|")) l = l.slice(0, -1);
+  return l.split("|").map((c) => c.trim());
+};
+const LI_RE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+function mdList(lines, i, mdPath) {
+  const ordered = /\d/.test(lines[i].match(LI_RE)[2][0]);
+  const base = lines[i].match(LI_RE)[1].length;
+  let out = ordered ? "<ol>" : "<ul>";
+  while (i < lines.length) {
+    const m = lines[i].match(LI_RE);
+    if (m && m[1].length === base) {
+      let text = m[3];
+      const task = text.match(/^\[( |x|X)\]\s+(.*)$/);
+      out += "<li>" + (task ? `<input type="checkbox" disabled ${task[1] !== " " ? "checked" : ""}> ` + mdInline(task[2], mdPath) : mdInline(text, mdPath));
+      i++;
+      if (i < lines.length && LI_RE.test(lines[i]) && lines[i].match(LI_RE)[1].length > base) {
+        const r = mdList(lines, i, mdPath);
+        out += r.html; i = r.next;
+      }
+      out += "</li>";
+    } else if (!lines[i].trim() && i + 1 < lines.length && LI_RE.test(lines[i + 1])) {
+      i++;
+    } else break;
+  }
+  return { html: out + (ordered ? "</ol>" : "</ul>"), next: i };
+}
+function mdBlocks(lines, mdPath) {
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    let m = line.match(/^\s*(`{3,}|~{3,})\s*(\w*)\s*$/);
+    if (m) {
+      const buf = []; i++;
+      while (i < lines.length && !new RegExp("^\\s*" + m[1]).test(lines[i])) { buf.push(lines[i]); i++; }
+      i++;
+      out.push(`<pre><code>${buf.join("\n").replace(/\n$/, "")}</code></pre>`);
+      continue;
+    }
+    if (!line.trim()) { i++; continue; }
+    m = line.match(/^(#{1,6})\s+(.*)$/);
+    if (m) { const h = m[1].length; out.push(`<h${h}>${mdInline(m[2], mdPath)}</h${h}>`); i++; continue; }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push("<hr>"); i++; continue; }
+    if (line.includes("|") && i + 1 < lines.length && /^\s*\|?[\s:|-]*-[\s:|-]*$/.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+      const aligns = mdSplitRow(lines[i + 1]).map((c) => (c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : "left"));
+      const head = mdSplitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) { rows.push(mdSplitRow(lines[i])); i++; }
+      const th = head.map((c, k) => `<th style="text-align:${aligns[k] || "left"}">${mdInline(c, mdPath)}</th>`).join("");
+      const tb = rows.map((r) => "<tr>" + head.map((_, k) => `<td style="text-align:${aligns[k] || "left"}">${mdInline(r[k] ?? "", mdPath)}</td>`).join("") + "</tr>").join("");
+      out.push(`<div class="md-table-wrap"><table><thead><tr>${th}</tr></thead><tbody>${tb}</tbody></table></div>`);
+      continue;
+    }
+    if (/^\s*&gt;/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*&gt;/.test(lines[i])) { buf.push(lines[i].replace(/^\s*&gt;\s?/, "")); i++; }
+      out.push(`<blockquote>${mdBlocks(buf, mdPath)}</blockquote>`);
+      continue;
+    }
+    if (LI_RE.test(line)) {
+      const r = mdList(lines, i, mdPath);
+      out.push(r.html); i = r.next;
+      continue;
+    }
+    const buf = [line]; i++;
+    while (i < lines.length && lines[i].trim() &&
+      !/^\s*(`{3,}|~{3,})/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) &&
+      !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
+      !/^\s*&gt;/.test(lines[i]) && !LI_RE.test(lines[i])) {
+      buf.push(lines[i]); i++;
+    }
+    out.push(`<p>${buf.map((l) => mdInline(l, mdPath)).join("<br>")}</p>`);
+  }
+  return out.join("");
+}
+function mdRender(src, mdPath) {
+  return mdBlocks(escFile(src).split("\n"), mdPath ?? null);
+}
+
+function rich(src) {
+  return mdRender(src, null);
 }

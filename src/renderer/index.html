@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <title>Pi Halo · 星环</title>
+<script>
+  /* paint the saved theme before first frame to avoid flash */
+  try { document.documentElement.dataset.theme = localStorage.getItem("halo-theme") || "dark"; } catch {}
+</script>
 <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -12,13 +16,8 @@
     <div class="tb-left">
       <div class="logo" title="Pi Halo">
         <svg viewBox="0 0 200 200" aria-hidden="true">
-          <defs>
-            <linearGradient id="lg-mark" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#8be9ff"/><stop offset=".55" stop-color="#a78bfa"/><stop offset="1" stop-color="#f0a6ff"/>
-            </linearGradient>
-          </defs>
-          <circle cx="100" cy="100" r="86" fill="none" stroke="rgba(148,163,255,.28)" stroke-width="4"/>
-          <g fill="none" stroke="url(#lg-mark)" stroke-width="15" stroke-linecap="round">
+          <circle cx="100" cy="100" r="86" fill="none" stroke="currentColor" stroke-opacity="0.25" stroke-width="4"/>
+          <g fill="none" stroke="currentColor" stroke-width="15" stroke-linecap="round">
             <path d="M48,66 C74,55 136,54 156,62"/>
             <path d="M74,67 C71,98 68,124 58,146"/>
             <path d="M126,66 C128,98 131,126 142,146"/>
@@ -38,6 +37,10 @@
     </div>
 
     <div class="tb-right">
+      <button id="themeToggle" class="tb-btn" title="切换 黑 / 白 主题">
+        <svg viewBox="0 0 24 24" class="ic ic-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg viewBox="0 0 24 24" class="ic ic-moon"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      </button>
       <div class="win-controls">
         <button id="winMin" title="最小化"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
         <button id="winMax" title="最大化/还原"><svg viewBox="0 0 24 24" class="ic-max"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg><svg viewBox="0 0 24 24" class="ic-restore"><rect x="5" y="9" width="10" height="10" rx="1.5"/><path d="M9 5.5h8A1.5 1.5 0 0 1 18.5 7v8"/></svg></button>
@@ -65,15 +68,8 @@
         </button>
       </nav>
 
-      <!-- tab: chat (agent state) -->
+      <!-- tab: chat -->
       <div class="side-section active" data-pane="chat">
-        <div class="agent-card">
-          <div class="agent-orb" id="agentOrb"><div class="orb-core"></div><div class="orb-ring"></div></div>
-          <div class="agent-status">
-            <div class="agent-title" id="agentTitle">核心待命</div>
-            <div class="agent-sub" id="agentSub">Agent 已就绪</div>
-          </div>
-        </div>
         <div class="quick-list">
           <div class="side-label">快捷操作</div>
           <button class="quick-item" id="qNew"><i>✦</i>新会话<span class="kbd">/new</span></button>
@@ -102,130 +98,97 @@
         <div id="extList" class="res-list"></div>
       </div>
 
-      <!-- bottom model card -->
-      <footer id="modelCard" class="fx t-b">
-        <button id="modelBtn" class="model-btn" title="选择模型">
-          <span class="model-dot"></span>
-          <span class="model-info">
-            <b id="modelName">正在唤醒核心…</b>
-            <small id="modelMeta">pi core agent</small>
+      <!-- bottom: workspace files -->
+      <div class="side-files">
+        <div class="side-label row">
+          <span>文件</span>
+          <span class="sf-actions">
+            <button id="btnNewFile" class="mini-icon" title="新建文件">
+              <svg viewBox="0 0 24 24" class="ic"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M12 12v6M9 15h6"/></svg>
+            </button>
+            <button id="btnNewDir" class="mini-icon" title="新建文件夹">
+              <svg viewBox="0 0 24 24" class="ic"><path d="M4 6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M12 10.5v5M9.5 13h5"/></svg>
+            </button>
+            <button id="treeRefresh" class="mini-icon" title="刷新文件树">
+              <svg viewBox="0 0 24 24" class="ic"><path d="M20 11a8 8 0 1 0-2.2 5.3"/><path d="M20 5v6h-6"/></svg>
+            </button>
           </span>
-          <svg viewBox="0 0 24 24" class="ic chev"><path d="m6 9 6 6 6-6"/></svg>
+        </div>
+        <div id="wsTree" class="ws-tree"></div>
+      </div>
+
+      <!-- bottom: settings + auth -->
+      <footer id="modelCard" class="fx t-b">
+        <button id="btnSettings" class="model-btn" title="设置 · 插件与技能管理">
+          <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+          <span class="model-info"><b>设置</b><small>插件 · 技能 · 配置</small></span>
         </button>
-        <button id="thinkBtn" class="think-btn" title="思考深度">
-          <svg viewBox="0 0 24 24" class="ic"><path d="M12 3a6 6 0 0 1 3.6 10.8c-.6.5-.6 1.2-.6 1.7V17h-6v-1.5c0-.5 0-1.2-.6-1.7A6 6 0 0 1 12 3Z M10 20h4"/></svg>
-          <span id="thinkLabel">自动</span>
-        </button>
+        <button id="authBtn" class="sq-btn" title="登录配置（与 pi CLI 共享认证）">π</button>
       </footer>
     </aside>
 
-    <!-- ------------- center: workspace / preview / nebula ------------- -->
+    <!-- ------------- center: preview only ------------- -->
     <main id="center" class="fx t-c">
-      <div class="center-tabs">
-        <button class="ctab active" data-cpane="workspace" title="文件树与会话改动">
-          <svg viewBox="0 0 24 24" class="ic"><path d="M4 6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg>
-          <span>工作区</span>
-        </button>
-        <button class="ctab" data-cpane="preview" title="HTML / 图片 / Markdown 实时预览">
-          <svg viewBox="0 0 24 24" class="ic"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg>
-          <span>预览</span>
-        </button>
-        <button class="ctab" data-cpane="nebula" title="星环动画">
-          <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="3.2"/><ellipse cx="12" cy="12" rx="9.5" ry="4.2" transform="rotate(-24 12 12)"/></svg>
-          <span>星环</span>
-        </button>
-        <span class="ct-spacer"></span>
-        <span id="wsPath" class="ct-path"></span>
-      </div>
-
-      <!-- ======== workspace ======== -->
-      <section id="cpane-workspace" class="cpane active">
-        <aside class="ws-tree-wrap">
-          <div class="ws-head">
-            <span>文件</span>
-            <button id="treeRefresh" class="mini-btn" title="刷新文件树">↻</button>
-          </div>
-          <div id="wsTree" class="ws-tree"></div>
-        </aside>
-        <div class="ws-detail" id="wsDetail"></div>
-      </section>
-
       <!-- ======== preview ======== -->
-      <section id="cpane-preview" class="cpane">
+      <section id="cpane-preview" class="cpane active">
         <div class="pv-head">
           <span class="pv-ico">◇</span>
           <span id="pvName" class="pv-name">未选择文件</span>
           <span class="ct-spacer"></span>
+          <span id="wsPath" class="ct-path"></span>
+          <span class="ct-spacer"></span>
+          <div id="pvMode" class="pv-mode" hidden>
+            <button data-m="render" class="active" title="渲染页面">渲染</button>
+            <button data-m="source" title="查看源代码">源码</button>
+          </div>
           <button id="pvReload" class="mini-btn" title="重新加载">↻ 刷新</button>
           <button id="pvOpen" class="mini-btn" title="用系统默认程序打开">↗ 打开</button>
         </div>
-        <div class="pv-body" id="pvBody">
+        <div class="pv-body dev-desktop" id="pvBody">
           <div class="pv-empty">
-            <div class="pv-empty-ico">◇</div>
-            <p>agent 生成的 HTML / 图片 / Markdown 会在这里实时预览</p>
-            <p class="dim">在工作区点击文件，或让 agent 生成页面后自动打开</p>
+            <div class="pv-ghost">
+              <div class="pv-gscreen">
+                <div class="pv-empty-ico">◇</div>
+                <p>agent 生成的 HTML / 图片 / Markdown 会在这里实时预览</p>
+                <p class="dim">在左下角文件列表点击文件，或让 agent 生成页面后自动打开</p>
+              </div>
+              <div class="pv-gneck"></div>
+              <div class="pv-gbase"></div>
+            </div>
           </div>
+        </div>
+        <div class="pv-devices">
+          <button class="pvdev active" data-dev="desktop" title="电脑视图 · 100%">
+            <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4.5" width="18" height="12.5" rx="2"/><path d="M9 21h6M12 17.5V21"/></svg>
+            <span>电脑</span>
+          </button>
+          <button class="pvdev" data-dev="tablet" title="平板视图 · 768px">
+            <svg viewBox="0 0 24 24" class="ic"><rect x="4.5" y="3" width="15" height="18" rx="2.5"/><path d="M10.5 17.5h3"/></svg>
+            <span>平板</span>
+          </button>
+          <button class="pvdev" data-dev="mobile" title="手机视图 · 390px">
+            <svg viewBox="0 0 24 24" class="ic"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.8 18h2.4"/></svg>
+            <span>手机</span>
+          </button>
+          <span class="pv-devsize" id="pvDevSize">100%</span>
         </div>
       </section>
 
-      <!-- ======== nebula (optional ambience) ======== -->
-      <section id="nebula" class="cpane">
-        <canvas id="nebulaCanvas"></canvas>
-
-        <div class="neb-top">
-          <div class="session-pill">
-            <span class="pulse" id="nebPulse"></span>
-            <span id="nebSessionName">新会话</span>
-            <span class="sep">·</span>
-            <span id="nebStatus">就绪</span>
-          </div>
-          <div class="zoom-ctrl">
-            <button id="zoomOut" title="缩小">−</button>
-            <span id="zoomVal">100%</span>
-            <button id="zoomIn" title="放大">＋</button>
-            <span class="vsep"></span>
-            <button id="orbitsToggle" class="tgl on" title="轨道线">◌</button>
-            <button id="labelsToggle" class="tgl on" title="轨道标签">✦</button>
-          </div>
-        </div>
-
-        <div id="nebulaHero">
-          <svg viewBox="0 0 200 200" class="hero-mark">
-            <circle cx="100" cy="100" r="86" fill="none" stroke="rgba(148,163,255,.22)" stroke-width="3"/>
-            <g fill="none" stroke="url(#lg-mark)" stroke-width="12" stroke-linecap="round">
-              <path d="M48,66 C74,55 136,54 156,62"/>
-              <path d="M74,67 C71,98 68,124 58,146"/>
-              <path d="M126,66 C128,98 131,126 142,146"/>
-            </g>
-          </svg>
-          <h1>星环</h1>
-          <p>每次工具调用化作一颗绕核运转的星 —— 装饰性视图</p>
-        </div>
-
-        <div class="neb-toolbar">
-          <button id="toolNew" title="新会话"><svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg></button>
-          <button id="toolImage" title="附加图片"><svg viewBox="0 0 24 24" class="ic"><path d="m21 15-5-5-9 9M5 17.5 8.5 14a2 2 0 0 1 3 0L21 23.5M5 21h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2Z"/></svg></button>
-          <button id="toolFolder" title="切换项目"><svg viewBox="0 0 24 24" class="ic"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></button>
-          <span class="tsep"></span>
-          <button id="toolHelp" title="帮助"><svg viewBox="0 0 24 24" class="ic"><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.4-3 4M12 17.5v.1"/><circle cx="12" cy="12" r="9.2"/></svg></button>
-        </div>
-      </section>
     </main>
 
     <!-- ------------- chat panel ------------- -->
     <section id="chat" class="fx t-r">
       <header id="chatHead">
-        <div class="chat-title">
-          <span id="chatTitle">新会话</span>
-          <span class="chat-badge" id="ctxBadge">0 条</span>
-        </div>
         <div class="chat-stats" id="chatStats">
           <span title="输入 tokens">↑ 0</span><span title="输出 tokens">↓ 0</span>
           <span title="缓存读取">R 0</span><span title="缓存写入">W 0</span>
           <span title="花费">$0.0000</span>
         </div>
         <div class="chat-actions">
-          <button id="btnCompact" title="压缩上下文 /compact"><svg viewBox="0 0 24 24" class="ic"><path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg></button>
+          <button id="btnFocus" title="专注模式 · 对话全屏（隐藏侧栏与工作区）">
+            <svg viewBox="0 0 24 24" class="ic ic-expand"><path d="M9 4H5a1 1 0 0 0-1 1v4M15 4h4a1 1 0 0 1 1 1v4M9 20H5a1 1 0 0 1-1-1v-4M15 20h4a1 1 0 0 0 1-1v-4"/></svg>
+            <svg viewBox="0 0 24 24" class="ic ic-collapse"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
+          </button>
         </div>
       </header>
 
@@ -239,7 +202,7 @@
           <div class="composer-bar">
             <div class="cb-left">
               <button id="btnAttach" title="附加图片"><svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg></button>
-              <button id="btnModel" class="chip"><svg viewBox="0 0 24 24" class="ic"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg><span>模型</span></button>
+              <button id="btnModel" class="chip"><svg viewBox="0 0 24 24" class="ic"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg><span id="modelChipName">模型</span></button>
               <button id="btnSkill" class="chip" title="技能与命令"><svg viewBox="0 0 24 24" class="ic"><path d="m12 3 2.1 5.3L19 10l-4.9 1.7L12 17l-2.1-5.3L5 10l4.9-1.7Z"/></svg><span>技能</span></button>
             </div>
             <div class="cb-right">
@@ -251,7 +214,6 @@
             </div>
           </div>
         </div>
-        <div class="composer-hint">由 pi 核心驱动 · 内置 read / bash / edit / write 工具链</div>
       </footer>
     </section>
   </div>
@@ -277,6 +239,82 @@
   </div>
 </div>
 
+<!-- ======================= auth modal ======================= -->
+<div id="authModal" class="modal" hidden>
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3>登录配置</h3>
+      <input id="authSearch" type="text" placeholder="搜索供应商…" />
+      <button class="modal-x" data-close>&times;</button>
+    </div>
+    <div id="authFilters" class="auth-filters">
+      <button class="af-chip active" data-af="all">全部</button>
+      <button class="af-chip" data-af="oauth">订阅</button>
+      <button class="af-chip" data-af="key">API Key</button>
+    </div>
+    <div id="authList" class="modal-body"></div>
+  </div>
+</div>
+
+<!-- ======================= settings modal ======================= -->
+<div id="settingsModal" class="modal" hidden>
+  <div class="modal-panel settings-panel">
+    <div class="set-side">
+      <div class="set-brand">
+        <span class="set-mark">π</span>
+        <span>设置</span>
+      </div>
+      <button class="set-nav active" data-pane="pkgs">
+        <svg viewBox="0 0 24 24" class="ic"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="M12 12l8-4.5M12 12v9M12 12 4 7.5"/></svg>
+        插件与技能
+      </button>
+      <button class="set-nav" data-pane="appearance">
+        <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18Z"/></svg>
+        外观
+      </button>
+      <button class="set-nav" data-pane="login">
+        <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+        模型与登录
+      </button>
+      <div class="set-side-gap"></div>
+      <button class="modal-x set-close" data-close>&times;</button>
+    </div>
+    <div class="set-main">
+      <div id="setPane-pkgs" class="set-pane active">
+        <div class="set-head">
+          <div class="set-search">
+            <input id="pkgSearchInput" type="text" placeholder="搜索 pi 生态的插件 / 技能 / 主题…" />
+          </div>
+          <div class="set-tabs" id="pkgTabs">
+            <button class="ptab active" data-t="all">全部</button>
+            <button class="ptab" data-t="extension">扩展</button>
+            <button class="ptab" data-t="skill">技能</button>
+            <button class="ptab" data-t="theme">主题</button>
+            <button class="ptab" data-t="prompt">提示词</button>
+          </div>
+        </div>
+        <div class="set-body">
+          <div class="set-sec">
+            <h4>已安装 <span id="pkgInstalledCount" class="set-count"></span></h4>
+            <div id="pkgInstalled" class="pkg-list"></div>
+          </div>
+          <div class="set-sec">
+            <h4>浏览市场 <span id="pkgTotal" class="set-count"></span></h4>
+            <div id="pkgMarket" class="pkg-list"></div>
+            <div class="set-more-wrap"><button id="pkgMore" class="mini-btn" hidden>加载更多</button></div>
+          </div>
+        </div>
+        <div class="set-pending" id="pkgPendingBar" hidden>
+          <span>更改将在新会话生效</span>
+          <button id="pkgApply" class="mini-btn accent">立即重载</button>
+        </div>
+      </div>
+      <div class="set-pane" id="setPane-appearance"><div class="set-soon">外观设置即将推出（主题切换 · 字号 · 布局密度）</div></div>
+      <div class="set-pane" id="setPane-login"><div class="set-soon">点击右下角 π 图标管理登录配置</div></div>
+    </div>
+  </div>
+</div>
+
 <!-- ======================= help modal ======================= -->
 <div id="helpModal" class="modal" hidden>
   <div class="modal-panel">
@@ -287,7 +325,6 @@
         <div class="help-kv"><span class="kbd">Alt+Enter</span><span>排队追加消息（follow-up）</span></div>
         <div class="help-kv"><span class="kbd">Shift+Enter</span><span>换行</span></div>
         <div class="help-kv"><span class="kbd">Esc</span><span>中止当前任务</span></div>
-        <div class="help-kv"><span class="kbd">Ctrl+滚轮</span><span>星环缩放</span></div>
         <div class="help-kv"><span class="kbd">/new</span><span>新会话</span></div>
         <div class="help-kv"><span class="kbd">/compact</span><span>压缩上下文</span></div>
         <div class="help-kv"><span class="kbd">/model · /thinking</span><span>打开选择器</span></div>
@@ -299,7 +336,6 @@
 </div>
 
 <div id="toasts"></div>
-<script type="module" src="js/nebula.js"></script>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

@@ -6,6 +6,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from "electron";
 import path from "node:path";
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PiBridge, HaloStore } from "./pi-bridge.mjs";
 
@@ -13,6 +14,14 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(HERE, "..", "..");
 const PRELOAD = path.join(DIST, "src", "preload", "preload.cjs");
 const ICON = path.join(DIST, "assets", "icon.png");
+
+/* pi SDK 会为每个会话运行时注册一组关闭钩子（SIGINT/SIGTERM/beforeExit），
+ * 会话重建几次后监听器数量就会超过 Node 默认上限 10，触发“内存泄漏”误报。
+ * 这里提高上限消除噪音（实际并非泄漏）。 */
+/* pi SDK 会随会话运行时/扩展环境注册一组关闭钩子（SIGINT/SIGTERM/beforeExit），
+ * 重建几次后数量超过 Node 默认上限 10，触发“内存泄漏”误报。
+ * 这些钩子是 SDK 的正常清理逻辑，并非泄漏 —— 这里取消上限以消除噪音。 */
+process.setMaxListeners?.(0);
 
 // privileged scheme so the Preview pane can load workspace files in an iframe
 protocol.registerSchemesAsPrivileged([
@@ -99,7 +108,7 @@ function bootstrap() {
       icon: ICON,
       frame: false,
       show: false,
-      backgroundColor: "#06060b",
+      backgroundColor: "#0b0b0c",
       titleBarStyle: "hidden",
       webPreferences: {
         preload: PRELOAD,
@@ -134,6 +143,147 @@ function bootstrap() {
 
   /* ---------------- IPC ---------------- */
 
+  // 预览触摸模拟：平板/手机模式隐藏滚动条 + 按住拖动滚动 + 松手惯性 + 拖动后抑制误点击
+  let previewTouch = false;
+  const TOUCH_ON = [
+    '(function(){',
+    'var st=document.getElementById("__halo-touch");',
+    'if(!st){st=document.createElement("style");st.id="__halo-touch";document.documentElement.appendChild(st);}',
+    'st.textContent="::-webkit-scrollbar{width:0!important;height:0!important}html{scrollbar-width:none!important}html{cursor:grab}html.halo-drag,html.halo-drag *{cursor:grabbing!important}html{scroll-behavior:auto!important}body{overscroll-behavior:contain}";',
+    'window.__haloTouchOn=true;',
+    'if(window.__haloTouchInstalled)return;',
+    'window.__haloTouchInstalled=true;',
+    'if(window.innerWidth<=430){var hs=document.createElement("style");hs.textContent="body::after{content:\'\';position:fixed;bottom:7px;left:50%;transform:translateX(-50%);width:118px;height:5px;border-radius:3px;background:rgba(0,0,0,.16);z-index:2147483647;pointer-events:none}";document.documentElement.appendChild(hs);}',  // 手机手势条
+    'var dragSc=null,sx=0,sy=0,cx=0,cy=0,bx=0,by=0,rafD=0,rafG=0,rafB=0,samples=[],moved=false,osT=0;',
+    'var rootSc=function(){return document.scrollingElement||document.documentElement;};',
+    'function isRoot(s){return s===rootSc()||s===document.documentElement;}',
+    'function scrollerAt(t){',
+    ' var de=rootSc();',
+    ' if(de.scrollHeight>de.clientHeight+1)return de;',
+    ' var cur=t;',
+    ' while(cur&&cur!==de){',
+    '  var s=getComputedStyle(cur);',
+    '  if(/(auto|scroll|overlay)/.test(s.overflowY)&&cur.scrollHeight>cur.clientHeight+1)return cur;',
+    '  cur=cur.parentElement;',
+    ' }',
+    ' return null;',
+    '}',
+    'function limits(sc){',
+    ' if(isRoot(sc)){var de=rootSc();return{maxT:Math.max(0,de.scrollHeight-window.innerHeight),maxL:Math.max(0,de.scrollWidth-window.innerWidth)};}',
+    ' return{maxT:Math.max(0,sc.scrollHeight-sc.clientHeight),maxL:Math.max(0,sc.scrollWidth-sc.clientWidth)};',
+    '}',
+    'function setScroll(sc,t,l){if(isRoot(sc)){window.scrollTo({top:t,left:l,behavior:"instant"});}else{sc.scrollTop=t;sc.scrollLeft=l;}}',
+    'function getScroll(sc){if(isRoot(sc))return{top:window.scrollY,left:window.scrollX};return{top:sc.scrollTop,left:sc.scrollLeft};}',
+    'function setOs(v){',
+    ' osT=v;var de=rootSc();',
+    ' if(v)de.style.transform="translateY("+v+"px)";else de.style.transform="";',
+    ' try{parent.postMessage({__haloOs:{v:Math.round(v*10)/10,dy:Math.round((cy-sy)*10)/10,by:Math.round(by*10)/10}},"*")}catch(e){}',
+    '}',
+    'function dragFrame(){',  // 绝对跟手：每帧按手指总位移直接定位，事件丢失也不掉队
+    ' if(!dragSc)return;',
+    ' var dx=cx-sx,dy=cy-sy;',
+    ' var lm=limits(dragSc);',
+    ' var rawT=by-dy,rawL=bx-dx;',
+    ' var t=rawT,l=rawL,os=0;',
+    ' if(isRoot(dragSc)){',
+    '  if(rawT<0)os=rawT*0.3;else if(rawT>lm.maxT)os=(rawT-lm.maxT)*0.3;',
+    '  if(os!==osT)setOs(os);',
+    ' }',
+    ' t=Math.max(0,Math.min(lm.maxT,rawT));l=Math.max(0,Math.min(lm.maxL,rawL));',
+    ' setScroll(dragSc,t,l);',
+    ' rafD=requestAnimationFrame(dragFrame);',
+    '}',
+    'function releaseVelocity(){',  // 从尾回溯连续移动段（间隔<60ms），松手前停顿不稀释速度
+    ' if(samples.length<2)return{x:0,y:0};',
+    ' var i=samples.length-1;',
+    ' while(i>0&&samples[i].t-samples[i-1].t<60)i--;',
+    ' var f=samples[i],ll=samples[samples.length-1],dt=ll.t-f.t;',
+    ' if(dt<10)return{x:0,y:0};',
+    ' var vx=(ll.x-f.x)/dt*16.7,vy=(ll.y-f.y)/dt*16.7;',
+    ' var m=Math.sqrt(vx*vx+vy*vy);',
+    ' if(m>65){vx*=65/m;vy*=65/m;}',  // 甩动上限 ~3900px/s
+    ' return{x:vx,y:vy};',
+    '}',
+    'function glide(sc,vx,vy){',  // 惯性：时间归一化摩擦 + 边界夹紧
+    ' var lt=performance.now();',
+    ' var rep=function(){try{parent.postMessage({__haloScroll:{y:isRoot(sc)?window.scrollY:sc.scrollTop,ph:2}},"*")}catch(e){}};',
+    ' var step=function(){',
+    '  var t=performance.now(),dms=t-lt;lt=t;',
+    '  var k=Math.pow(0.965,dms/16.7);',
+    '  vx*=k;vy*=k;',
+    '  var lm=limits(sc),st=getScroll(sc);',
+    '  var nt=st.top-vy*dms/16.7,nl=st.left-vx*dms/16.7;',
+    '  if(nt<=0){nt=0;vy=0;}else if(nt>=lm.maxT){nt=lm.maxT;vy=0;}',
+    '  if(nl<=0){nl=0;vx=0;}else if(nl>=lm.maxL){nl=lm.maxL;vx=0;}',
+    '  setScroll(sc,nt,nl);',
+    '  if(vx*vx+vy*vy>0.04)rafG=requestAnimationFrame(step);else rep();',
+    ' };',
+    ' rafG=requestAnimationFrame(step);',
+    '}',
+    'function bounceBack(){',  // 橡皮筋回弹
+    ' if(Math.abs(osT)<0.5){setOs(0);return;}',
+    ' setOs(osT*0.8);',
+    ' rafB=requestAnimationFrame(bounceBack);',
+    '}',
+    'function pushSample(x,y){var t=performance.now();samples.push({t:t,x:x,y:y});while(samples.length>2&&t-samples[0].t>120)samples.shift();}',
+    'document.addEventListener("pointerdown",function(e){',
+        ' if(!window.__haloTouchOn||e.button!==0)return;',
+    ' var sc=scrollerAt(e.target);',
+    ' if(!sc)return;',
+    ' cancelAnimationFrame(rafG);cancelAnimationFrame(rafD);cancelAnimationFrame(rafB);',
+    ' dragSc=sc;moved=false;samples=[];',
+    ' sx=e.clientX;sy=e.clientY;cx=sx;cy=sy;',
+    ' var st=getScroll(sc);bx=st.left;by=st.top;',
+    ' setOs(0);',
+    ' document.documentElement.style.cursor="grabbing";document.body.style.cursor="grabbing";',  // 内联强制：杜绝拖动时出现系统默认圆圈光标
+    ' if(e.target.setPointerCapture){try{e.target.setPointerCapture(e.pointerId)}catch(err){}}',
+    ' document.documentElement.classList.add("halo-drag");',
+    ' pushSample(cx,cy);',
+    ' rafD=requestAnimationFrame(dragFrame);',
+    '},true);',
+    'document.addEventListener("pointermove",function(e){',
+        ' if(!dragSc)return;',
+    ' cx=e.clientX;cy=e.clientY;',
+    ' if(!moved&&(cx-sx)*(cx-sx)+(cy-sy)*(cy-sy)>16)moved=true;',
+    ' pushSample(cx,cy);',
+    '},true);',
+    'function endDrag(e,withGlide){',
+        ' if(!dragSc)return;',
+    ' cancelAnimationFrame(rafD);',
+    ' var sc=dragSc;dragSc=null;',
+    ' if(e.target.releasePointerCapture){try{e.target.releasePointerCapture(e.pointerId)}catch(err){}}',
+    ' document.documentElement.classList.remove("halo-drag");',
+    ' document.documentElement.style.cursor="";document.body.style.cursor="";',
+    ' if(osT!==0)bounceBack();',
+    ' if(!moved)return;',
+    ' var rep=function(){try{parent.postMessage({__haloScroll:{y:isRoot(sc)?window.scrollY:sc.scrollTop,ph:1}},"*")}catch(e2){}};',
+    ' var v=releaseVelocity();',
+    ' rep();',
+    ' var kill=function(ev){ev.stopPropagation();ev.preventDefault();};',
+    ' document.addEventListener("click",kill,true);',
+    ' setTimeout(function(){document.removeEventListener("click",kill,true);},80);',
+    ' if(withGlide&&(Math.abs(v.x)>0.5||Math.abs(v.y)>0.5))glide(sc,v.x,v.y);',
+    '}',
+    'document.addEventListener("pointerup",function(e){endDrag(e,true);},true);',
+    'document.addEventListener("pointercancel",function(e){endDrag(e,false);},true);',
+    'document.addEventListener("selectstart",function(e){if(dragSc&&e.cancelable)e.preventDefault();},true);',
+    'document.addEventListener("dragstart",function(e){if(dragSc&&e.cancelable)e.preventDefault();},true);',
+    '})();'
+  ].join("\n");
+  const TOUCH_OFF = '(function(){window.__haloTouchOn=false;var st=document.getElementById("__halo-touch");if(st)st.remove();})()';
+  const applyPreviewTouch = (attempt = 0) => {
+    const frames = (() => {
+      try { return mainWin?.webContents.mainFrame.frames || []; } catch { return []; }
+    })();
+    const hits = frames.filter((f) => String(f.url).startsWith("halo-preview://"));
+    if (!hits.length) {
+      // iframe 可能尚未挂载，重试几次；关闭开关时无需重试
+      if (previewTouch && attempt < 6) setTimeout(() => applyPreviewTouch(attempt + 1), 250);
+      return;
+    }
+    for (const f of hits) Promise.resolve(f.executeJavaScript(previewTouch ? TOUCH_ON : TOUCH_OFF)).catch(() => {});
+  };
+
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, ...args) => {
       try {
@@ -161,8 +311,22 @@ function bootstrap() {
   handle("halo:set-model", (provider, id) => bridge.setModel(provider, id));
   handle("halo:set-thinking", (level) => bridge.setThinkingLevel(level));
   handle("halo:list-sessions", () => bridge.listSessions());
+
+  // auth / login（与 pi CLI 共享 ~/.pi/agent/auth.json）
+  handle("halo:auth-providers", () => bridge.authProviders());
+  handle("halo:auth-login", (providerId, type) => bridge.authLogin(providerId, type));
+  handle("halo:auth-respond", (value) => bridge.authPromptRespond(value));
+  handle("halo:auth-cancel", () => bridge.authCancel());
+  handle("halo:auth-logout", (providerId) => bridge.authLogout(providerId));
+  handle("halo:ext-toggle", (extPath, enabled) => bridge.setExtensionEnabled(extPath, enabled));
   handle("halo:open-session", (file) => bridge.openSession(file));
   handle("halo:new-session", () => bridge.newSession());
+  handle("halo:delete-session", (file) => bridge.deleteSession(file));
+  handle("halo:preview-touch", async ({ on }) => {
+    previewTouch = !!on;
+    applyPreviewTouch();
+    return { on: previewTouch };
+  });
   handle("halo:snapshot-messages", () => bridge.snapshotMessages());
   handle("halo:list-resources", () => bridge.listResources());
 
@@ -208,6 +372,32 @@ function bootstrap() {
     return { root, tree: walk(root, 0), truncated: count > CAP };
   });
 
+  // 新建文件/文件夹（名称校验 + 限定项目内）
+  const VALID_NAME = /^[^\\/:*?"<>|]+$/;
+  handle("halo:create-entry", async ({ parent, name, kind }) => {
+    const root = path.resolve(bridge.cwd || ".");
+    const rel = String(name || "").trim();
+    if (!rel || rel === "." || rel === ".." || !VALID_NAME.test(rel)) throw new Error("名称非法（不能包含 \\/:*?\"<>|）");
+    const base = parent ? path.resolve(parent) : root;
+    if (!isInsideProject(base)) throw new Error("路径超出项目范围");
+    const target = path.join(base, rel);
+    if (fs.existsSync(target)) throw new Error(`已存在：${rel}`);
+    if (kind === "dir") fs.mkdirSync(target);
+    else fs.writeFileSync(target, "", { flag: "wx" });
+    return { path: target };
+  });
+
+  // 删除文件/文件夹（递归 + 限定项目内，禁止删除根目录）
+  handle("halo:delete-entry", async ({ target }) => {
+    const root = path.resolve(bridge.cwd || ".");
+    const abs = path.resolve(String(target || ""));
+    if (abs === root) throw new Error("不能删除项目根目录");
+    if (!isInsideProject(abs)) throw new Error("路径超出项目范围");
+    if (!fs.existsSync(abs)) throw new Error("目标不存在");
+    fs.rmSync(abs, { recursive: true });
+    return { deleted: abs };
+  });
+
   handle("halo:read-file", async (p) => {
     const abs = path.resolve(p);
     if (!isInsideProject(abs)) throw new Error("路径超出项目范围");
@@ -246,6 +436,131 @@ function bootstrap() {
       await bridge.start(dir);
     }
     return dir;
+  });
+
+  /* 静默切换项目（启动恢复工作区用，无对话框） */
+  const normP = (p) => String(p || "").replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
+  handle("halo:use-project", async (dir) => {
+    try {
+      if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return { ok: false, error: "目录不存在" };
+      if (normP(dir) !== normP(bridge.cwd)) {
+        store.set("cwd", dir);
+        bridge.cwd = dir;
+        await bridge.start(dir);
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+
+  /* ---------------- 插件与技能（pi 包生态） ---------------- */
+  const piHome = () => path.join(app.getPath("home"), ".pi", "agent");
+  const readPiSettings = () => {
+    try { return JSON.parse(fs.readFileSync(path.join(piHome(), "settings.json"), "utf8")); } catch { return {}; }
+  };
+  const writePiSettings = (obj) => {
+    fs.mkdirSync(piHome(), { recursive: true });
+    fs.writeFileSync(path.join(piHome(), "settings.json"), JSON.stringify(obj, null, 2) + "\n");
+  };
+  const spawnPi = (args) => new Promise((resolve) => {
+    const child = spawn("pi", args, { shell: true, windowsHide: true });
+    let out = "", err = "";
+    const timer = setTimeout(() => { try { child.kill(); } catch {} resolve({ ok: false, error: "超时（3 分钟）", output: out.slice(-1200) }); }, 180000);
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, error: String(e?.message || e) }); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, code, output: (out + "\n" + err).trim().slice(-1600) });
+    });
+  });
+  const pkgTypes = (p) => {
+    const kws = (p.keywords || []).map((k) => String(k).toLowerCase());
+    const hay = [p.name || "", p.description || "", kws.join(" ")].join(" ").toLowerCase();
+    const kwHas = (t) => kws.includes("pi-" + t) || kws.includes(t) || kws.includes(t + "s");
+    const txtHas = (t) => hay.includes(t);
+    const types = [];
+    if (kwHas("skill") || (txtHas("skill") && !kws.includes("pi-extension"))) types.push("skill");
+    if (kwHas("theme") || txtHas("theme")) types.push("theme");
+    if (kwHas("prompt") || txtHas("prompt")) types.push("prompt");
+    if (kwHas("extension") || /extension|adapter|toolbar|footer|overlay|dashboard|integrat|workflow/.test(hay)) types.push("extension");
+    if (!types.length) types.push(kws.length ? "extension" : "package");
+    return types;
+  };
+  handle("halo:pkg-search", async ({ query = "", from = 0, size = 20 } = {}) => {
+    const text = encodeURIComponent("keywords:pi-package" + (String(query).trim() ? " " + String(query).trim() : ""));
+    const res = await fetch(`https://registry.npmjs.org/-/v1/search?text=${text}&size=${size}&from=${from}`);
+    if (!res.ok) throw new Error("npm 搜索失败 " + res.status);
+    const j = await res.json();
+    const items = (j.objects || []).map((o) => {
+      const p = o.package || {};
+      return {
+        name: p.name || "",
+        desc: p.description || "",
+        version: p.version || "",
+        date: p.date || "",
+        author: p.publisher?.username || (typeof p.author === "string" ? p.author : p.author?.name) || "",
+        repo: p.links?.repository || p.links?.homepage || "",
+        types: pkgTypes(p),
+      };
+    });
+    return { total: j.total || items.length, items };
+  });
+  handle("halo:pkg-installed", async () => {
+    const st = readPiSettings();
+    return (st.packages || []).map((p) => {
+      if (typeof p === "string") {
+        const kind = p.startsWith("npm:") ? "npm" : p.startsWith("git:") || /^https?:\/\//.test(p) ? "git" : "本地";
+        return { raw: p, source: p, kind, disabled: false };
+      }
+      const src = p.source || "";
+      const kind = src.startsWith("npm:") ? "npm" : src.startsWith("git:") || /^https?:\/\//.test(src) ? "git" : "本地";
+      const disabled = ["extensions", "skills", "prompts", "themes"].every((k) => Array.isArray(p[k]) && p[k].length === 0);
+      return { raw: src, source: src, kind, disabled };
+    });
+  });
+  const ensureSource = (source) => {
+    if (!source || !/^(npm:|git:|https?:\/\/|\.\.?\/|[a-zA-Z]:\\)/.test(source)) throw new Error("不支持的包源：" + source);
+    return source;
+  };
+  handle("halo:pkg-install", async ({ source }) => {
+    ensureSource(source);
+    const r = await spawnPi(["install", source]);
+    if (!r.ok) throw new Error(r.error || r.output || `退出码 ${r.code}`);
+    return { output: r.output };
+  });
+  handle("halo:pkg-remove", async ({ source }) => {
+    if (!source) throw new Error("缺少包名");
+    const r = await spawnPi(["remove", source]);
+    if (!r.ok) throw new Error(r.error || r.output || `退出码 ${r.code}`);
+    return { output: r.output };
+  });
+  handle("halo:pkg-update", async ({ source }) => {
+    if (!source) throw new Error("缺少包名");
+    const r = await spawnPi(["update", source]);
+    if (!r.ok) throw new Error(r.error || r.output || `退出码 ${r.code}`);
+    return { output: r.output };
+  });
+  /* 启用 / 停用：停用 = settings 里该包改为全空 filter 对象（官方过滤机制），启用 = 恢复字符串 */
+  handle("halo:pkg-toggle", async ({ raw, on }) => {
+    const st = readPiSettings();
+    const list = Array.isArray(st.packages) ? st.packages : [];
+    const idx = list.findIndex((p) => (typeof p === "string" ? p : p.source) === raw);
+    if (idx < 0) throw new Error("未找到该包：" + raw);
+    if (on) {
+      list[idx] = typeof list[idx] === "string" ? list[idx] : list[idx].source;
+    } else {
+      const src = typeof list[idx] === "string" ? list[idx] : list[idx].source;
+      list[idx] = { source: src, extensions: [], skills: [], prompts: [], themes: [] };
+    }
+    st.packages = list;
+    writePiSettings(st);
+    return true;
+  });
+  handle("halo:pkg-reload", async () => {
+    await bridge.start(bridge.cwd);
+    return true;
   });
 
   handle("halo:pick-images", async () => {

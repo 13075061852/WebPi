@@ -21,11 +21,31 @@ contextBridge.exposeInMainWorld("halo", {
   listSessions: () => ipcRenderer.invoke("halo:list-sessions"),
   openSession: (file) => ipcRenderer.invoke("halo:open-session", file),
   newSession: () => ipcRenderer.invoke("halo:new-session"),
+  deleteSession: (file) => ipcRenderer.invoke("halo:delete-session", file),
+  createEntry: (opts) => ipcRenderer.invoke("halo:create-entry", opts),
+  deleteEntry: (target) => ipcRenderer.invoke("halo:delete-entry", { target }),
+  previewTouch: (on) => ipcRenderer.invoke("halo:preview-touch", { on }),
   snapshotMessages: () => ipcRenderer.invoke("halo:snapshot-messages"),
   listResources: () => ipcRenderer.invoke("halo:list-resources"),
 
+  // auth / login（与 pi CLI 共享认证）
+  authProviders: () => ipcRenderer.invoke("halo:auth-providers"),
+  authLogin: (providerId, type) => ipcRenderer.invoke("halo:auth-login", providerId, type),
+  authRespond: (value) => ipcRenderer.invoke("halo:auth-respond", value),
+  authCancel: () => ipcRenderer.invoke("halo:auth-cancel"),
+  authLogout: (providerId) => ipcRenderer.invoke("halo:auth-logout", providerId),
+  extToggle: (extPath, enabled) => ipcRenderer.invoke("halo:ext-toggle", extPath, enabled),
+
   // dialogs
   pickProject: (current) => ipcRenderer.invoke("halo:pick-project", current),
+  useProject: (dir) => ipcRenderer.invoke("halo:use-project", dir),
+  pkgSearch: (q) => ipcRenderer.invoke("halo:pkg-search", q),
+  pkgInstalled: () => ipcRenderer.invoke("halo:pkg-installed"),
+  pkgInstall: (source) => ipcRenderer.invoke("halo:pkg-install", { source }),
+  pkgRemove: (source) => ipcRenderer.invoke("halo:pkg-remove", { source }),
+  pkgUpdate: (source) => ipcRenderer.invoke("halo:pkg-update", { source }),
+  pkgToggle: (raw, on) => ipcRenderer.invoke("halo:pkg-toggle", { raw, on }),
+  pkgReload: () => ipcRenderer.invoke("halo:pkg-reload"),
   pickImages: () => ipcRenderer.invoke("halo:pick-images"),
 
   // workspace / preview

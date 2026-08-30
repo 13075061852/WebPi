@@ -155,7 +155,20 @@ export class PiBridge {
     }
 
     const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
-      const services = await createAgentSessionServices({ cwd });
+      const services = await createAgentSessionServices({
+        cwd,
+        resourceLoaderOptions: {
+          extensionsOverride: (base) => {
+            // 缓存全部已发现的扩展（含即将被禁用的），供能力页展示与开关
+            this._allExtensions = (base.extensions || []).map((x) => ({
+              name: path.basename(x.path || "") || "extension",
+              path: x.path || "",
+            }));
+            const disabled = new Set(this.store.data.disabledExtensions || []);
+            return { ...base, extensions: base.extensions.filter((x) => !disabled.has(x.path)) };
+          },
+        },
+      });
       this.services = services;
       return {
         ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
@@ -245,6 +258,105 @@ export class PiBridge {
     return this.publicState();
   }
 
+  /* ---------------- auth / login（与 pi CLI 共享 ~/.pi/agent/auth.json） ---------------- */
+
+  async authProviders() {
+    await loadPi();
+    const mr = this.modelRuntime;
+    if (!mr) throw new Error("Model runtime not ready");
+    const provs = mr.getProviders();
+    const arr = Array.isArray(provs) ? provs : Object.values(provs || {});
+    const out = [];
+    for (const p of arr) {
+      const id = p.id || p.providerId;
+      if (!id) continue;
+      const auth = p.auth || {};
+      const canOAuth = !!auth.oauth?.login;
+      const canApiKey = !!auth.apiKey?.login;
+      let status = { configured: false };
+      try { status = (await mr.getProviderAuthStatus(id)) || status; } catch {}
+      if (!canOAuth && !canApiKey && !status.configured) continue; // ambient-only，无可配置项
+      let usingSub = false;
+      try { usingSub = mr.isUsingSubscription(id) === true; } catch {}
+      out.push({
+        id,
+        name: p.name || id,
+        canOAuth,
+        canApiKey,
+        subscription: canOAuth && auth.oauth?.isSubscription === true,
+        oauthName: auth.oauth?.name || "",
+        apiKeyName: auth.apiKey?.name || "",
+        configured: !!status.configured,
+        source: status.source || "",
+        usingSub,
+      });
+    }
+    out.sort((a, b) => (b.configured - a.configured) || a.name.localeCompare(b.name));
+    return out;
+  }
+
+  /** 启动登录流程：OAuth/ApiKey 的提示与事件通过 pi:event（type:"auth_event"）推给渲染层 */
+  authLogin(providerId, type) {
+    return this._authRun(providerId, type === "oauth" ? "oauth" : "api_key");
+  }
+
+  async _authRun(providerId, type) {
+    await loadPi();
+    const mr = this.modelRuntime;
+    if (!mr) throw new Error("Model runtime not ready");
+    console.log(`[auth] login start: ${providerId} (${type})`);
+    this._authAbort = new AbortController();
+    const interaction = {
+      signal: this._authAbort.signal,
+      prompt: (p) => new Promise((resolve, reject) => {
+        console.log(`[auth] prompt: ${providerId} <- ${p.type} ${(p.message || "").slice(0, 60)}`);
+        this._authPromptResolve = { resolve, reject };
+        this.emit("pi:event", { event: { type: "auth_event", phase: "prompt", providerId, prompt: p } });
+      }),
+      notify: (ev) => {
+        console.log(`[auth] notify: ${providerId} -> ${ev.type}`);
+        this.emit("pi:event", { event: { type: "auth_event", phase: "notify", providerId, event: ev } });
+      },
+    };
+    try {
+      const cred = await mr.login(providerId, type, interaction);
+      console.log(`[auth] done: ${providerId} (${cred?.type || type})`);
+      this.emit("pi:event", { event: { type: "auth_event", phase: "done", providerId, credentialType: cred?.type || type } });
+      this.pushState();
+      return { providerId, type: cred?.type || type };
+    } catch (e) {
+      console.log(`[auth] error: ${providerId} ->`, e?.message || e);
+      this.emit("pi:event", { event: { type: "auth_event", phase: "error", providerId, error: String(e?.message || e) } });
+      throw e;
+    } finally {
+      this._authPromptResolve = null;
+      this._authAbort = null;
+    }
+  }
+
+  authPromptRespond(value) {
+    const p = this._authPromptResolve;
+    if (!p) throw new Error("没有等待中的登录输入");
+    this._authPromptResolve = null;
+    p.resolve(value);
+    return true;
+  }
+
+  authCancel() {
+    const p = this._authPromptResolve;
+    if (p) { this._authPromptResolve = null; p.reject(new Error("已取消")); }
+    this._authAbort?.abort();
+    this._authAbort = null;
+    return true;
+  }
+
+  async authLogout(providerId) {
+    await loadPi();
+    await this.modelRuntime.logout(providerId);
+    this.pushState();
+    return true;
+  }
+
   setThinkingLevel(level) {
     this.session?.setThinkingLevel(level);
     this.store.set("thinkingLevel", level);
@@ -287,12 +399,14 @@ export class PiBridge {
     const { SessionManager } = await loadPi();
     const out = [];
     try {
-      const all = await SessionManager.listAll(this.cwd);
+      // NOTE: listAll() returns [] in pi 0.84.x — use list(), which returns
+      // {path,id,cwd,name,created,modified,messageCount,firstMessage,...}
+      const all = await SessionManager.list(this.cwd);
       for (const s of Array.isArray(all) ? all : []) {
         out.push({
           file: s.path || s.file || s.sessionFile || "",
           id: s.id || "",
-          name: s.name || s.displayName || "",
+          name: s.name || s.firstMessage || "",
           modified: s.modified || s.mtime || null,
           messageCount: s.messageCount ?? null,
         });
@@ -318,6 +432,25 @@ export class PiBridge {
     return this.publicState();
   }
 
+  /** 删除会话记录文件；若删除的是当前会话，先切到新会话再删文件 */
+  async deleteSession(file) {
+    const abs = path.resolve(file);
+    if (!/\.jsonl$/i.test(abs)) throw new Error("不是会话记录文件");
+    if (!fs.existsSync(abs)) throw new Error("会话记录不存在");
+    let switched = false;
+    const current = this.session?.sessionFile;
+    if (current && path.resolve(current) === abs) {
+      if (this.session?.isStreaming) throw new Error("任务进行中，先中止再删除");
+      await this.runtime.newSession();
+      this._bindSession();
+      this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+      switched = true;
+    }
+    fs.rmSync(abs, { force: true });
+    this.pushState();
+    return { switched };
+  }
+
   /* ---------------- environment ---------------- */
 
   async chooseProject(currentPath) {
@@ -339,26 +472,51 @@ export class PiBridge {
     }));
   }
 
-  /* pi-parity resource discovery: skills / prompts / extensions / context files */
+  /* pi-parity resource discovery: skills / prompts / extensions */
   listResources() {
-    const out = { skills: [], prompts: [], extensions: [], contextFiles: [] };
+    const out = { skills: [], prompts: [], extensions: [] };
     try {
       const loader =
-        this.runtime?.services?.resourceLoader ||
-        this.services?.resourceLoader ||
-        this.runtime?.services?.resources ||
-        this.services?.resources;
-      const safe = (fn) => {
-        try { return fn?.() || []; } catch { return []; }
-      };
+        this.runtime?.services?.resourceLoader || this.services?.resourceLoader;
       if (loader) {
-        out.skills = safe(loader.getSkills).map((s) => ({ name: s.name, description: s.description }));
-        out.prompts = safe(loader.getPrompts).map((p) => ({ name: p.name, description: p.description }));
-        out.extensions = safe(loader.getExtensions).map((x) => ({ name: x.name || x.id || "extension" }));
-        out.contextFiles = safe(() => loader.getAgentsFiles?.().agentsFiles).map((f) => f?.path || "").filter(Boolean);
+        const sk = loader.getSkills?.() || {};
+        out.skills = (sk.skills || []).map((s) => ({ name: s.name, description: s.description }));
+        const pr = loader.getPrompts?.() || {};
+        out.prompts = (pr.prompts || []).map((p) => ({ name: p.name, description: p.description }));
       }
+      const disabled = new Set(this.store.data.disabledExtensions || []);
+      let all = this._allExtensions || [];
+      if (!all.length && loader) {
+        try {
+          all = (loader.getExtensions().extensions || []).map((x) => ({
+            name: path.basename(x.path || "") || "extension",
+            path: x.path || "",
+          }));
+        } catch {}
+      }
+      out.extensions = all.map((x) => ({ ...x, disabled: disabled.has(x.path) }));
     } catch {}
     return out;
+  }
+
+  /* 扩展开关：写入禁用名单并重建会话（保留当前会话记录） */
+  async setExtensionEnabled(extPath, enabled) {
+    const list = new Set(this.store.data.disabledExtensions || []);
+    if (enabled) list.delete(extPath);
+    else list.add(extPath);
+    this.store.set("disabledExtensions", [...list]);
+    const sf = this.session?.sessionFile;
+    if (sf && this.runtime) {
+      try {
+        await this.runtime.switchSession(sf);
+        this._bindSession();
+        this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+      } catch (e) {
+        return { error: String(e?.message || e) };
+      }
+    }
+    this.pushState();
+    return this.listResources();
   }
 
   async dispose() {

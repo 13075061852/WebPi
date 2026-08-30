@@ -21,7 +21,7 @@
   const RING_R = 88 * DPR;
   const parts = [];
   const rand = (a, b) => a + Math.random() * (b - a);
-  const palette = ["139,233,255", "167,139,250", "240,166,255", "196,181,253", "125,211,252"];
+  const palette = ["255,255,255", "196,196,202", "140,140,148"];
 
   for (let i = 0; i < N; i++) {
     const ang = rand(0, Math.PI * 2);
@@ -54,8 +54,8 @@
     // faint breathing core before the glyph appears
     const coreA = Math.min(t / 700, 1) * (0.5 + 0.5 * Math.sin(now / 420));
     const g = ctx.createRadialGradient(CX, CY, 0, CX, CY, 26 * DPR);
-    g.addColorStop(0, `rgba(210,225,255,${0.55 * coreA})`);
-    g.addColorStop(1, "rgba(210,225,255,0)");
+    g.addColorStop(0, `rgba(255,255,255,${0.55 * coreA})`);
+    g.addColorStop(1, "rgba(255,255,255,0)");
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(CX, CY, 26 * DPR, 0, Math.PI * 2);

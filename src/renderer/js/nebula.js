@@ -16,12 +16,21 @@ const Nebula = (() => {
   let running = true;
   let t0 = performance.now();
 
-  const TOOL_COLORS = {
-    read: "#8be9ff", bash: "#fcd34d", powershell: "#fcd34d",
-    edit: "#a78bfa", write: "#6ee7b7", grep: "#f0a6ff",
-    find: "#93c5fd", ls: "#94a3b8", todo: "#fbbf24",
-  };
-  const colorOf = (t) => TOOL_COLORS[t] || "#a5b4fc";
+  /* theme-aware ink — canvas can't read CSS vars, so resolve them once per theme */
+  let INK = "255,255,255";   // rgb triplet from --ink-rgb
+  let BGC = "#0b0b0c";       // resolved --bg0 (π glyph color)
+  const ERR = "224,96,92";   // functional error red
+  function refreshTheme() {
+    try {
+      const cs = getComputedStyle(document.documentElement);
+      INK = (cs.getPropertyValue("--ink-rgb").trim() || "255,255,255").replace(/^rgb\(|\)$/g, "");
+      BGC = cs.getPropertyValue("--bg0").trim() || "#0b0b0c";
+    } catch {}
+  }
+  const inkA = (a) => `rgba(${INK},${a})`;
+  const errA = (a) => `rgba(${ERR},${a})`;
+  document.addEventListener("themechange", refreshTheme);
+  refreshTheme();
   const RINGS = [0.24, 0.36, 0.48]; // fraction of min(W,H)
 
   /* ---------------- init ---------------- */
@@ -49,9 +58,12 @@ const Nebula = (() => {
   function resize() {
     if (!canvas) return;
     DPR = Math.min(window.devicePixelRatio || 1, 2);
-    const r = canvas.getBoundingClientRect();
-    W = canvas.width = Math.max(1, r.width * DPR);
-    H = canvas.height = Math.max(1, r.height * DPR);
+    // size from the host pane, never from the canvas itself: the first resize
+    // while the pane is hidden would otherwise write inline 0px styles that
+    // override the CSS inset:0 sizing and lock the canvas at 1×1 forever
+    const r = canvas.parentElement.getBoundingClientRect();
+    W = canvas.width = Math.max(1, Math.round(r.width * DPR));
+    H = canvas.height = Math.max(1, Math.round(r.height * DPR));
     canvas.style.width = r.width + "px";
     canvas.style.height = r.height + "px";
   }
@@ -75,7 +87,7 @@ const Nebula = (() => {
   function addToolNode({ id, toolName }) {
     const ring = nodes.length % RINGS.length;
     nodes.push({
-      id, toolName, color: colorOf(toolName),
+      id, toolName,
       ring,
       baseR: RINGS[ring],
       ang: Math.random() * TAU,
@@ -87,7 +99,7 @@ const Nebula = (() => {
       wobble: Math.random() * TAU,
       dying: false,
     });
-    pulses.push({ t: performance.now(), color: colorOf(toolName) });
+    pulses.push({ t: performance.now() });
     if (nodes.length > 40) {
       const idx = nodes.findIndex((n) => n.state !== "run");
       if (idx >= 0) nodes[idx].dying = true;
@@ -136,7 +148,7 @@ const Nebula = (() => {
     /* starfield */
     for (const s of stars) {
       const a = s.a * (0.6 + 0.4 * Math.sin(s.tw + t * s.sp * 6));
-      ctx.fillStyle = `rgba(200,215,255,${a})`;
+      ctx.fillStyle = inkA(a);
       ctx.beginPath();
       ctx.arc(s.x * W + mouse.sx * 14 * DPR * s.depth, s.y * H + mouse.sy * 14 * DPR * s.depth, s.r, 0, TAU);
       ctx.fill();
@@ -146,7 +158,7 @@ const Nebula = (() => {
     if (showOrbits) {
       for (let i = 0; i < RINGS.length; i++) {
         const r = unit * RINGS[i] * 2;
-        ctx.strokeStyle = `rgba(148,163,255,${0.07 + i * 0.015})`;
+        ctx.strokeStyle = `rgba(${INK},${0.06 + i * 0.014})`;
         ctx.lineWidth = 1;
         ctx.setLineDash([2 + i, 7 + i * 3]);
         ctx.lineDashOffset = -t * (0.008 + i * 0.004) * DPR;
@@ -162,7 +174,7 @@ const Nebula = (() => {
     for (const p of pulses) {
       const k = (now - p.t) / 1400;
       const r = unit * (0.1 + k * 0.9);
-      ctx.strokeStyle = hexA(p.color, 0.5 * (1 - k));
+      ctx.strokeStyle = inkA(0.5 * (1 - k));
       ctx.lineWidth = 1.4 * DPR;
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, TAU);
@@ -175,8 +187,8 @@ const Nebula = (() => {
       const pos = nodePos(n, cx, cy, unit, now);
       const grad = ctx.createLinearGradient(cx, cy, pos.x, pos.y);
       const a = n.state === "run" ? 0.3 : 0.1;
-      grad.addColorStop(0, hexA(n.color, a));
-      grad.addColorStop(1, hexA(n.color, 0));
+      grad.addColorStop(0, n.state === "err" ? errA(a) : inkA(a));
+      grad.addColorStop(1, n.state === "err" ? errA(0) : inkA(0));
       ctx.strokeStyle = grad;
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -201,7 +213,7 @@ const Nebula = (() => {
       /* activity pulse halo */
       const pk = (now - n.pulseAt) / 900;
       if (pk < 1) {
-        ctx.strokeStyle = hexA(n.state === "err" ? "#fda4af" : n.color, 0.65 * (1 - pk));
+        ctx.strokeStyle = n.state === "err" ? errA(0.65 * (1 - pk)) : inkA(0.65 * (1 - pk));
         ctx.lineWidth = 1.2 * DPR;
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, r + pk * 22 * DPR, 0, TAU);
@@ -210,22 +222,22 @@ const Nebula = (() => {
 
       /* glow */
       const g = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, r * 4);
-      g.addColorStop(0, hexA(n.state === "err" ? "#fda4af" : n.color, 0.5 * n.alpha));
-      g.addColorStop(1, hexA(n.color, 0));
+      g.addColorStop(0, n.state === "err" ? errA(0.4 * n.alpha) : inkA(0.4 * n.alpha));
+      g.addColorStop(1, n.state === "err" ? errA(0) : inkA(0));
       ctx.fillStyle = g;
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, r * 4, 0, TAU);
       ctx.fill();
 
       /* body */
-      ctx.fillStyle = hexA(n.color, n.alpha);
+      ctx.fillStyle = n.state === "err" ? errA(n.alpha) : inkA(n.alpha);
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, r, 0, TAU);
       ctx.fill();
 
       /* ring around running node */
       if (active) {
-        ctx.strokeStyle = hexA(n.color, 0.5 * n.alpha);
+        ctx.strokeStyle = inkA(0.5 * n.alpha);
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, r + 4.5 * DPR, t / 300 + n.ang, t / 300 + n.ang + Math.PI * 1.2);
@@ -236,7 +248,7 @@ const Nebula = (() => {
       if (showLabels && n.alpha > 0.4 && (active || n.state === "done")) {
         const la = (active ? 0.85 : 0.4) * n.alpha;
         ctx.font = `${10 * DPR}px "Cascadia Code", Consolas, monospace`;
-        ctx.fillStyle = hexA(n.color, la);
+        ctx.fillStyle = n.state === "err" ? errA(la) : inkA(la);
         ctx.textAlign = "center";
         const label = n.state === "err" ? `${n.toolName} ✕` : n.toolName;
         ctx.fillText(label, pos.x, pos.y - r - 7 * DPR);
@@ -251,13 +263,13 @@ const Nebula = (() => {
       const x = cx + Math.cos(a.ang) * d;
       const y = cy + Math.sin(a.ang) * d;
       const al = Math.sin(Math.min(k * 2.4, 1) * Math.PI) * 0.85;
-      ctx.fillStyle = hexA("#6ee7b7", al);
+      ctx.fillStyle = inkA(al * 0.9);
       ctx.beginPath();
       ctx.arc(x, y, 2 * DPR, 0, TAU);
       ctx.fill();
       ctx.font = `${10 * DPR}px "Cascadia Code", Consolas, monospace`;
       ctx.textAlign = "center";
-      ctx.fillStyle = hexA("#a7f3d0", al);
+      ctx.fillStyle = inkA(al);
       ctx.fillText(a.name, x, y - 8 * DPR);
     }
 
@@ -267,19 +279,19 @@ const Nebula = (() => {
 
     // outer glow
     const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR * 3.4);
-    glow.addColorStop(0, busy ? "rgba(240,166,255,0.32)" : "rgba(139,233,255,0.22)");
-    glow.addColorStop(0.4, "rgba(167,139,250,0.10)");
-    glow.addColorStop(1, "rgba(167,139,250,0)");
+    glow.addColorStop(0, inkA(busy ? 0.28 : 0.16));
+    glow.addColorStop(0.4, inkA(0.06));
+    glow.addColorStop(1, inkA(0));
     ctx.fillStyle = glow;
     ctx.beginPath();
     ctx.arc(cx, cy, coreR * 3.4, 0, TAU);
     ctx.fill();
 
-    // core disc
+    // core disc — pure ink
     const disc = ctx.createRadialGradient(cx - coreR * 0.3, cy - coreR * 0.35, coreR * 0.1, cx, cy, coreR);
-    disc.addColorStop(0, "#e6f4ff");
-    disc.addColorStop(0.45, busy ? "#c9b8ff" : "#9bd9ff");
-    disc.addColorStop(1, busy ? "#6d4fd6" : "#4c3fd6");
+    disc.addColorStop(0, inkA(busy ? 1 : 0.95));
+    disc.addColorStop(0.45, inkA(0.8));
+    disc.addColorStop(1, inkA(0.55));
     ctx.fillStyle = disc;
     ctx.beginPath();
     ctx.arc(cx, cy, coreR, 0, TAU);
@@ -287,9 +299,9 @@ const Nebula = (() => {
 
     // π glyph
     ctx.save();
-    ctx.shadowColor = busy ? "rgba(240,166,255,0.9)" : "rgba(139,233,255,0.8)";
-    ctx.shadowBlur = 14 * DPR;
-    ctx.fillStyle = "#07080f";
+    ctx.shadowColor = inkA(0.55);
+    ctx.shadowBlur = 10 * DPR;
+    ctx.fillStyle = BGC;
     ctx.font = `italic 600 ${coreR * 1.25}px Georgia, "Times New Roman", serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -303,12 +315,6 @@ const Nebula = (() => {
     const r = unit * n.baseR * 2 + Math.sin(now / 900 + n.wobble) * 5 * DPR;
     const a = n.ang + (now - t0) * 0.001 * n.speed;
     return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r * 0.92 };
-  }
-
-  function hexA(hex, a) {
-    const h = hex.replace("#", "");
-    const n = parseInt(h, 16);
-    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
   }
 
   return {
