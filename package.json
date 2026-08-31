@@ -12,5 +12,10 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "^44.0.0"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "iconv-lite": "^0.7.3"
   }
 }

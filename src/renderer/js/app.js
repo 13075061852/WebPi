@@ -19,6 +19,8 @@ window.addEventListener("message", (e) => {
 const S = {
   state: null,
   streaming: false,
+  usageDays: 7,
+  usageCache: new Map(),      // days -> 统计结果（切换天数避免重复扫描）
   streamingTool: null,
   retrying: null,             // {attempt, maxAttempts} | null
   images: [],                 // pending attachments [{name, mediaType, data}]
@@ -31,7 +33,7 @@ const S = {
   thinking: null,
   toolCards: new Map(),       // toolCallId -> {card, outEl, descEl, path, startedAt, toolName}
   queued: { steering: [], followUp: [] },
-  pkgQuery: "", pkgType: "all", pkgFrom: 0, pkgItems: [], pkgTotal: 0, pkgLoaded: false, pkgInstalledList: [],
+  pkgQuery: "", pkgType: "all", pkgPage: 1, pkgItems: [], pkgTotal: 0, pkgLoaded: false, pkgInstalledList: [],
   previewMode: "render", // 预览模式：render（渲染页面）| source（源代码）
   sessions: [],
   renderQueued: false,
@@ -45,6 +47,8 @@ const S = {
   selectedFile: null,
   previewFile: null,
   treeTimer: null,
+  quota: { provider: null, data: null },   // 当前模型剩余额度（积分/百分比，60s 缓存）
+  quotaTimer: null,
   creating: null,             // { parent: string|null, kind: "file"|"dir" } 行内新建状态
 };
 
@@ -132,10 +136,80 @@ function applyState(st) {
   }
 }
 
+/* 当前模型的剩余额度：切模型时刷新（主进程另有 60s 接口缓存） */
+async function loadQuota(provider, force = false) {
+  if (!provider) return;
+  if (S.quota.provider === provider && !force) return;
+  if (!window.halo?.modelQuota) return;
+  const r = await window.halo.modelQuota(provider).catch(() => null);
+  if (!r?.ok) return;
+  // 过程中模型又切了：丢弃过期结果
+  if ((S.state?.model?.provider || null) !== provider) return;
+  S.quota = { provider, data: r.data };
+  renderQuotaChip();
+}
+
+function renderQuotaChip() {
+  const el = $("#ctxQuota");
+  if (!el) return;
+  const provider = S.state?.model?.provider || null;
+  const q = S.quota.provider === provider ? S.quota.data : null;
+  const portals = { longcat: "https://longcat.chat/platform/usage?tab=token" };
+  el.classList.remove("low", "kind-plain");
+  el.dataset.portal = "";
+  el.style.cursor = "default";
+  if (q?.kind === "points" && !q.error) {
+    // 积分制：纯数字，无上限不画条
+    el.classList.add("kind-plain");
+    $("#ctxQuotaBar").style.width = "100%";
+    $("#ctxQuotaText").textContent = `${q.label} ${(q.value ?? 0).toLocaleString()}`;
+    el.title = `${q.label}余额（AutoClaw 积分制，每分钟刷新）`;
+    return;
+  }
+  if (q?.kind === "balance" && !q.error) {
+    // 余额制：货币金额（DeepSeek / Moonshot / OpenRouter 等）
+    el.classList.add("kind-plain");
+    const sym = q.currency === "CNY" ? "¥" : q.currency === "USD" ? "$" : "";
+    $("#ctxQuotaBar").style.width = "100%";
+    $("#ctxQuotaText").textContent = `${sym}${(q.value ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    el.title = `${q.label}（每分钟刷新）${q.voucher > 0 ? ` · 代金券 ${sym}${q.voucher.toLocaleString()}` : ""}`;
+    return;
+  }
+  if (q?.kind === "windows" && Array.isArray(q.windows) && q.windows.length) {
+    // 订阅制双窗口（OpenAI Codex：5h + 7d）：条显示最紧张的那个
+    const parts = q.windows.map((w) => {
+      const reset = w.resetAt ? new Date(w.resetAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+      return { text: `${w.label} ${(w.remaining * 100).toFixed(0)}%`, remaining: w.remaining, title: `${w.label}窗 剩 ${(w.remaining * 100).toFixed(1)}%${reset ? ` · ${reset} 重置` : ""}` };
+    });
+    const tight = parts.reduce((a, b) => (b.remaining < a.remaining ? b : a));
+    $("#ctxQuotaBar").style.width = (tight.remaining * 100).toFixed(1) + "%";
+    $("#ctxQuotaText").textContent = parts.map((p) => p.text).join(" · ");
+    el.classList.toggle("low", tight.remaining < 0.15);
+    el.title = `订阅额度 · ${parts.map((p) => p.title).join("，")}（每分钟刷新）`;
+    return;
+  }
+  // 没有真实额度数据：一律不显示百分比，只提示
+  const portal = portals[provider] || "";
+  el.classList.add("kind-plain");
+  $("#ctxQuotaBar").style.width = "0%";
+  $("#ctxQuotaText").textContent = q?.error ? "额度 —" : "—";
+  el.title = q?.error
+    ? "该模型的额度接口暂不可用"
+    : portal
+      ? "该模型为 Token 资源包制（网页登录态鉴权，本地无法读取）· 点击打开官网用量页"
+      : "该模型暂无额度接口";
+  el.dataset.portal = portal;
+  el.style.cursor = portal ? "pointer" : "default";
+}
+
 function renderStats(u = {}) {
   const st = S.state || {};
   const ctx = st.contextTokens || 0;
   const win = st.model?.contextWindow || 0;
+  // 剩余额度展示（替代原技能按钮）：积分制 / 订阅百分比 / 上下文兑底
+  renderQuotaChip();
+  // 模型（provider）变了就拉一次额度
+  if (st.model?.provider && S.quota.provider !== st.model.provider) loadQuota(st.model.provider, true);
   const allZero = !u.input && !u.output && !u.cacheRead && !u.cacheWrite && !u.cost;
   if (allZero) {
     $("#chatStats").innerHTML = `<span title="当前网关未返回用量统计">— tokens</span>`;
@@ -331,8 +405,26 @@ function finalizeTurn() {
   const turn = S.turn;
   S.turn = null;
   if (!turn) return;
+  // 兜底：回合结束时若思考块还开着（如无正文输出、异常中止等场景），统一折叠为一行摘要
+  collapseThink();
+  $$(".think[open]", turn).forEach((d) => { d.open = false; });
   // 回合结束，等待动画随之消失
   $(".turn-status", turn)?.remove();
+  // 思考 + 工具调用整体打包为「执行过程」折叠组：默认收起，只留最终输出在外
+  const procNodes = $$(".think, .tool, .stall-hint", turn);
+  if (procNodes.length) {
+    const nThink = $$(".think", turn).length;
+    const nTool = $$(".tool", turn).length;
+    const parts = [];
+    if (nThink) parts.push(`思考 ${nThink}`);
+    if (nTool) parts.push(`工具 ${nTool}`);
+    const wrap = document.createElement("details");
+    wrap.className = "tproc";
+    wrap.innerHTML = `<summary><span class="proc-chevron">▶</span><span class="proc-label">执行过程</span><span class="proc-meta">${parts.join(" · ")}</span></summary><div class="tproc-body"></div>`;
+    procNodes[0].parentNode.insertBefore(wrap, procNodes[0]);
+    const body = $(".tproc-body", wrap);
+    for (const n of procNodes) body.appendChild(n); // appendChild 移动节点，保持原有顺序
+  }
   // 空回合（没有任何实质内容）直接移除
   if (!$(".md, .think, .tool, .error-card, .stall-hint", turn)) { turn.remove(); return; }
 }
@@ -374,7 +466,7 @@ function ensureThink() {
 }
 
 const thinkPreviewText = (buf) =>
-  String(buf).replace(/[*_#`>]/g, "").replace(/\s+/g, " ").trim().slice(0, 260);
+  String(buf).replace(/[*_#`>]/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
 
 function collapseThink() {
   const t = S.thinking;
@@ -739,6 +831,7 @@ async function restoreHistory() {
   const r = await window.halo.snapshotMessages();
   const msgs = r?.data || [];
   if (!msgs.length) return;
+  $("#messages").classList.add("restoring"); // 历史回放不播入场动效（切换会话/启动时保持安静）
   const toolCards = new Map(); // toolCallId -> 卡片引用，用于回填 toolResult
   for (const m of msgs) {
     if (m.role === "user") {
@@ -812,6 +905,8 @@ async function restoreHistory() {
   }
   finalizeTurn();
   scrollDown();
+  // 同步插入已完成（期间无帧绘制），此刻移除才不会触发入场动画
+  $("#messages").classList.remove("restoring");
 }
 
 /* ============================================================
@@ -836,7 +931,7 @@ async function loadSessions() {
     const file = (s.file || "").split(/[\\/]/).pop().replace(/\.jsonl$/, "");
     const main = document.createElement("button");
     main.className = "s-main";
-    main.innerHTML = `<span class="s-name">${isCur ? '<span class="s-cur">当前</span>' : ""}${esc(s.name || friendlySession(file))}</span>
+    main.innerHTML = `<span class="s-name">${esc(s.name || friendlySession(file))}</span>
       <span class="s-meta">${s.modified ? new Date(s.modified).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}${s.messageCount != null ? " · " + s.messageCount + "条" : ""}</span>`;
     main.addEventListener("click", () => {
       if (S.streaming) return toast("任务进行中，无法切换会话", "err");
@@ -1084,23 +1179,42 @@ function wireUI() {
 
   // settings
   $("#btnSettings").addEventListener("click", openSettings);
+
+  // 侧栏展开/收起（彻底收起；状态记忆）
+  try { if (localStorage.getItem("halo.sbCollapsed") === "1") document.body.classList.add("sb-collapsed"); } catch {}
+  $("#btnSidebar").addEventListener("click", () => {
+    const collapsed = document.body.classList.toggle("sb-collapsed");
+    try { localStorage.setItem("halo.sbCollapsed", collapsed ? "1" : "0"); } catch {}
+  });
   $$("#settingsModal .set-nav").forEach((b) => b.addEventListener("click", () => {
     document.querySelectorAll("#settingsModal .set-nav").forEach((x) => x.classList.toggle("active", x === b));
     document.querySelectorAll("#settingsModal .set-pane").forEach((p) => p.classList.toggle("active", p.id === "setPane-" + b.dataset.pane));
+    if (b.dataset.pane === "usage") loadUsage(); // 打开面板时刷新统计
   }));
-  $("#pkgSearchInput").addEventListener("input", debounce(() => { S.pkgQuery = $("#pkgSearchInput").value.trim(); loadMarket(true); }, 350));
+  $("#usageRange").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-d]");
+    if (!b) return;
+    $$("#usageRange .ptab").forEach((x) => x.classList.toggle("active", x === b));
+    S.usageDays = Number(b.dataset.d) || 30;
+    loadUsage(); // 有缓存立即渲染，无缓存才出占位符
+  });
+  $("#pkgSearchInput").addEventListener("input", debounce(() => {
+    S.pkgQuery = $("#pkgSearchInput").value.trim();
+    if (S.pkgType === "installed") renderInstalled(); // 已安装列表本地过滤
+    else loadMarket(1); // 搜索重回第一页
+  }, 350));
   $("#pkgTabs").addEventListener("click", (e) => {
     const b = e.target.closest(".ptab");
     if (!b) return;
     S.pkgType = b.dataset.t;
     $$("#pkgTabs .ptab").forEach((x) => x.classList.toggle("active", x === b));
-    loadMarket(true);
+    syncPkgTab();
   });
-  $("#pkgMore").addEventListener("click", () => loadMarket(false));
+  $("#pkgPrev").addEventListener("click", () => loadMarket(Math.max(1, (S.pkgPage || 1) - 1)));
+  $("#pkgNext").addEventListener("click", () => loadMarket((S.pkgPage || 1) + 1));
   $("#pkgUpdateAll").addEventListener("click", updateAllPkgs);
   $("#pkgApply").addEventListener("click", applyPkgChanges);
   $("#pkgInstalled").addEventListener("click", onInstalledClick);
-  $("#agentList").addEventListener("click", onAgentClick);
   $("#pkgMarket").addEventListener("click", onMarketClick);
   $("#authSearch").addEventListener("input", () => renderAuthRows());
   $("#authFilters").addEventListener("click", (e) => {
@@ -1127,6 +1241,107 @@ function wireUI() {
   $("#btnFocus").addEventListener("click", () => {
     const on = document.body.classList.toggle("focus-mode");
     $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
+  });
+
+  // 预览区控制台：pv-head 按钮切换，视图覆盖预览区；终端配色跟随主题
+  const termPane = $("#cpane-preview");
+  let term = null, fitAddon = null;
+  let termCwd = "", termBusy = false, termLine = "";
+  const termHist = [];
+  let histIdx = -1, histDraft = "";
+  const TERM_PALETTE = {
+    dark: { black: "#2a2d33", red: "#e06c75", green: "#98c379", yellow: "#e5c07b", blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#d6d9de" },
+    light: { black: "#3b4048", red: "#c2382f", green: "#1a7f37", yellow: "#9a6700", blue: "#0b5cad", magenta: "#8250df", cyan: "#0f7d87", white: "#d6d9de" },
+  };
+  function termApplyTheme() {
+    if (!term) return;
+    const dark = document.documentElement.dataset.theme !== "light";
+    const cs = getComputedStyle(document.documentElement);
+    term.options.theme = {
+      background: cs.getPropertyValue("--bg0").trim() || (dark ? "#0b0b0c" : "#f6f6f4"),
+      foreground: cs.getPropertyValue("--txt").trim() || (dark ? "#f4f4f3" : "#17171a"),
+      cursor: dark ? "#9aa3b2" : "#5b6472",
+      selectionBackground: dark ? "#3a4150" : "#c9d4e3",
+      ...TERM_PALETTE[dark ? "dark" : "light"],
+    };
+  }
+  document.addEventListener("themechange", termApplyTheme);
+  const termPrompt = () => `\x1b[36m${termCwd || ""}>\x1b[0m`;
+  const termDrawPrompt = () => term?.write(termPrompt());
+  const termEraseInput = () => { term?.write("\x1b[2K\r" + termPrompt() + termLine); }; // 清行并重绘 提示符+当前输入
+  function termEnsure() {
+    if (term) return;
+    term = new window.Terminal({
+      fontFamily: 'Cascadia Mono, Consolas, "Courier New", monospace',
+      fontSize: 12.5,
+      cursorBlink: true,
+      scrollback: 4000,
+    });
+    fitAddon = new window.FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open($("#termHost"));
+    termApplyTheme();
+    fitAddon.fit();
+    term.onData((d) => {
+      // Ctrl+C：重开干净 shell
+      if (d === "\x03") {
+        termLine = ""; histIdx = -1;
+        term.write("\r\n");
+        window.halo.ptyKill();
+        window.halo.ptyStart();
+        return;
+      }
+      // 方向键↑↓：本地历史切换（cmd 管道模式无历史，渲染层提供）
+      if (d === "\x1b[A" || d === "\x1b[B") {
+        if (!termHist.length) return;
+        if (histIdx === -1) { histDraft = termLine; histIdx = termHist.length; }
+        histIdx = Math.max(0, Math.min(termHist.length, histIdx + (d === "\x1b[A" ? -1 : 1)));
+        termLine = histIdx === termHist.length ? histDraft : termHist[histIdx];
+        termEraseInput();
+        return;
+      }
+      if (d.startsWith("\x1b")) return; // 其余转义序列（←→ 等）：忽略
+      // 逐字符处理（粘贴多行也能逐行提交）
+      for (const ch of d) {
+        if (ch === "\r") { // 回车：提交（cls 本地清屏；空行直接要新提示符）
+          const cmdText = termLine;
+          termLine = ""; histIdx = -1; histDraft = "";
+          term.write("\r\n");
+          if (/^(cls|clear)\s*$/i.test(cmdText)) { term.clear(); termDrawPrompt(); continue; }
+          if (cmdText.trim()) termHist.push(cmdText);
+          termBusy = true;
+          window.halo.ptyWrite(cmdText + "\r\n");
+          continue;
+        }
+        if (ch === "\x7f") { if (termLine.length) { termLine = termLine.slice(0, -1); term.write("\b \b"); } continue; }
+        if (ch === "\t" || ch === "\n") continue; // Tab 补全/裸 \n：管道模式无意义，忽略
+        termLine += ch;
+        term.write(ch);
+      }
+    });
+    window.halo.onPtyOut((t) => term?.write(t));
+    window.halo.onPtyCwd((cwd) => { termCwd = cwd; if (!termBusy) termDrawPrompt(); }); // 启动/重启后首个提示符
+    window.halo.onPtyDone(() => { termBusy = false; termDrawPrompt(); }); // 命令结束：画新提示符
+    window.halo.onPtyExit(() => {
+      termBusy = false; termLine = "";
+      term?.write("\r\n\x1b[90m· 进程已退出\x1b[0m\r\n");
+      if (termPane.classList.contains("term-open")) setTimeout(() => window.halo.ptyStart(), 300); // 自动续上干净 shell
+    });
+  }
+  $("#btnTerm").addEventListener("click", () => {
+    termEnsure();
+    const open = termPane.classList.toggle("term-open");
+    $("#btnTerm").classList.toggle("active", open);
+    if (open) {
+      window.halo.ptyStart();
+      setTimeout(() => { fitAddon?.fit(); term?.focus(); }, 60);
+    }
+  });
+  window.addEventListener("resize", () => { if (termPane.classList.contains("term-open")) fitAddon?.fit(); });
+  $("#termClose").addEventListener("click", () => {
+    termPane.classList.remove("term-open");
+    $("#btnTerm").classList.remove("active");
+    window.halo.ptyKill();
   });
 
   // composer
@@ -1169,9 +1384,10 @@ function wireUI() {
   // think chip button
   $("#btnThink").addEventListener("click", () => { renderThinkList(); openModal("thinkModal"); });
   $("#btnModel").addEventListener("click", () => { loadModels(); openModal("modelModal"); });
-  $("#btnSkill").addEventListener("click", () => {
-    $("#input").value = $("#input").value.startsWith("/") ? $("#input").value : "/" + $("#input").value;
-    $("#input").focus();
+  // 额度占位点击：跳转对应官网用量页（如 LongCat Token 资源包）
+  $("#ctxQuota").addEventListener("click", () => {
+    const portal = $("#ctxQuota").dataset.portal;
+    if (portal) window.halo.openExternal(portal).catch(() => {});
   });
 
   // paste images
@@ -1191,6 +1407,13 @@ function wireUI() {
   });
 
   wireCenter();
+
+  // 额度：初始拉取 + 每 60s 刷新（积分/订阅余额变动）
+  if (S.state?.model?.provider) loadQuota(S.state.model.provider, true);
+  setInterval(() => {
+    const p = S.state?.model?.provider;
+    if (p) loadQuota(p, true);
+  }, 60_000);
 }
 
 /* ============================================================
@@ -1200,7 +1423,6 @@ function wireCenter() {
   $("#treeRefresh").addEventListener("click", () => loadTree(true));
   $("#btnNewFile").addEventListener("click", () => startCreate("file"));
   $("#btnNewDir").addEventListener("click", () => startCreate("dir"));
-  $("#pvReload").addEventListener("click", () => setPreview(S.previewFile, true));
   // 预览模式切换：渲染 / 源码
   $("#pvMode").addEventListener("click", (e) => {
     const b = e.target.closest("[data-m]");
@@ -1209,7 +1431,6 @@ function wireCenter() {
     $$("#pvMode [data-m]").forEach((x) => x.classList.toggle("active", x === b));
     if (S.previewFile) setPreview(S.previewFile, true);
   });
-  $("#pvOpen").addEventListener("click", () => { if (S.previewFile) window.halo.openPath(S.previewFile); });
 
   // 预览设备切换：电脑 / 平板 / 手机
   const devSize = { desktop: "100%", tablet: "768px", mobile: "390px" };
@@ -1892,14 +2113,22 @@ const relTime = (iso) => {
 };
 function openSettings() {
   openModal("settingsModal");
-  loadAgents();
   loadDefaultModels();
-  if (!S.pkgLoaded) {
-    S.pkgLoaded = true;
-    loadInstalled().then(() => loadMarket(true));
-  } else {
-    loadInstalled();
-  }
+  S.pkgLoaded = true;
+  loadInstalled(); // 已安装数据每次打开都刷新
+  syncPkgTab();    // 市场数据按需加载
+}
+/** 已安装 / 市场 两个分区的显隐切换（搜索框两边共用，分别过滤各自列表） */
+function syncPkgTab() {
+  const inst = S.pkgType === "installed";
+  const mSec = $("#pkgMarketSec"), iSec = $("#pkgInstalledSec");
+  if (!mSec || !iSec) return;
+  mSec.hidden = inst;
+  iSec.hidden = !inst;
+  const pager = $("#pkgPager");
+  if (pager) pager.hidden = inst; // 翻页器只在市场 tab 显示
+  if (!inst) loadMarket(1);
+  else renderInstalled(); // 用当前搜索词过滤已装列表
 }
 async function loadDefaultModels() {
   const list = $("#defModelList");
@@ -1949,43 +2178,94 @@ async function loadDefaultModels() {
     }
   }
 }
-async function loadAgents() {
-  const box = $("#agentList");
+
+/* ---- 用量统计 ---- */
+function fmtCost(n) {
+  if (!n) return "$0";
+  if (n >= 100) return "$" + n.toFixed(0);
+  if (n >= 1) return "$" + n.toFixed(2);
+  return "$" + n.toFixed(4);
+}
+async function loadUsage(force = false) {
+  const box = $("#usageContent");
   if (!box) return;
-  box.innerHTML = `<div class="pkg-empty">读取中…</div>`;
-  const [lr, dr] = await Promise.all([window.halo.agentList(), window.halo.agentDefaultGet()]);
-  const list = (lr?.data || []);
-  const cur = dr?.data || "";
-  if (!list.length) {
-    box.innerHTML = `<div class="pkg-empty">未发现智能体定义（用户级 ~/.pi/agent/agents 或项目 .pi/agents 下没有 *.md）</div>`;
+  const cached = S.usageCache.has(S.usageDays);
+  if (cached && !force) { renderUsage(S.usageCache.get(S.usageDays)); return; }
+  if (!cached) {
+    // 首次查看该范围：占位符居中（外层高度已固定，不会坍塌）
+    box.innerHTML = `<div class="set-soon">正在扫描会话记录…</div>`;
+  } else {
+    // 已有内容：保留旧数据只变暗，扫完后静默替换，不清空
+    box.classList.add("refreshing");
+  }
+  const r = await window.halo.usageSummary(S.usageDays).catch(() => null);
+  box.classList.remove("refreshing");
+  if (!r?.ok) {
+    if (cached) { toast(`用量刷新失败：${r?.error || "未知错误"}`, "err"); renderUsage(S.usageCache.get(S.usageDays)); }
+    else box.innerHTML = `<div class="set-soon">统计失败：${esc(r?.error || "未知错误")}</div>`;
     return;
   }
-  box.innerHTML = [`
-    <div class="agent-row${cur === "" ? " on" : ""}" data-name="">
-      <div class="pkg-main"><span class="pkg-name">默认（pi 编程助手）</span></div>
-      <div class="pkg-ops"><span class="agent-cur">使用中</span></div>
-    </div>`]
-    .concat(list.map((a) => `
-    <div class="agent-row${cur === a.name ? " on" : ""}" data-name="${esc(a.name)}" title="${esc(a.path)}">
-      <div class="pkg-main">
-        <span class="pkg-name">${esc(a.name)}</span>
-        ${a.desc ? `<span class="agent-desc">${esc(a.desc)}</span>` : ""}
-        <span class="pkg-kind">${a.scope === "user" ? "用户级" : a.scope === "project" ? "项目级" : "内置"}</span>
-      </div>
-      <div class="pkg-ops"><span class="agent-cur">使用中</span></div>
-    </div>`)).join("");
+  S.usageCache.set(S.usageDays, r.data);
+  renderUsage(r.data);
 }
-async function onAgentClick(e) {
-  const row = e.target.closest(".agent-row");
-  if (!row) return;
-  const name = row.dataset.name || "";
-  const r = await window.halo.agentDefaultSet(name);
-  if (r?.ok) {
-    document.querySelectorAll("#agentList .agent-row").forEach((x) => x.classList.toggle("on", x === row));
-    toast(name ? `默认智能体已切换：${name}（下一条消息生效）` : "已恢复默认 pi 编程助手", "ok");
-  } else {
-    toast(`设置失败：${r?.error || ""}`, "err");
+function renderUsage(d) {
+  const box = $("#usageContent");
+  if (!box) return;
+  const t = d.totals || {};
+  const range = S.usageDays;
+
+  /* 日维度柱状图：范围内日期连续填充，无数据的天高度为 0 */
+  const dayMap = new Map((d.daily || []).map((x) => [x.date, x]));
+  const days = [];
+  for (let i = range - 1; i >= 0; i--) {
+    const dt = new Date(Date.now() - i * 86400000);
+    const key = dt.toISOString().slice(0, 10);
+    days.push({ key, label: `${dt.getMonth() + 1}/${dt.getDate()}`, ...(dayMap.get(key) || { calls: 0, tokens: 0, cost: 0, totalTokens: 0 }) });
   }
+  const maxDay = Math.max(...days.map((x) => x.totalTokens || 0), 1);
+  const chart = days.map((x) => `
+    <div class="u-bar${x.totalTokens ? "" : " zero"}" style="height:${Math.max((x.totalTokens / maxDay) * 100, x.totalTokens ? 3 : 1.5)}%"
+         title="${x.label} · ${fmtTokens(x.totalTokens)} tokens · ${fmtCost(x.cost)} · ${x.calls} 次"></div>`).join("");
+
+  /* 模型排行 */
+  const maxModel = Math.max(...(d.models || []).map((m) => m.totalTokens || 0), 1);
+  const modelRows = (d.models || []).map((m) => `
+    <div class="u-row">
+      <div class="u-main">
+        <div class="u-name"><b>${esc(m.key.split("/")[1] || m.key)}</b><small>${esc(m.key)}</small></div>
+        <div class="u-nums">${m.calls} 次 · ${fmtTokens(m.totalTokens)} tok · ${fmtCost(m.cost)}</div>
+      </div>
+      <div class="u-track"><i style="width:${Math.max((m.totalTokens / maxModel) * 100, 2)}%"></i></div>
+      <div class="u-sub">输入 ${fmtTokens(m.input)} · 输出 ${fmtTokens(m.output)} · 缓存 ${fmtTokens(m.cacheRead + m.cacheWrite)}</div>
+    </div>`).join("") || `<div class="pkg-empty">范围内没有模型调用记录</div>`;
+
+  /* 项目分布 */
+  const projRows = (d.projects || []).map((p) => {
+    const name = p.cwd.split(/[\\/]/).filter(Boolean).pop() || p.cwd;
+    return `<div class="u-prow"><span class="u-pname" title="${esc(p.cwd)}">${esc(name)}</span>
+      <span class="u-pnum">${fmtTokens(p.totalTokens)} tok · ${fmtCost(p.cost)}</span></div>`;
+  }).join("");
+
+  box.innerHTML = `
+    <div class="set-sec">
+      <div class="usage-cards">
+        <div class="usage-card"><b>${fmtCost(t.cost)}</b><small>总花费</small></div>
+        <div class="usage-card"><b>${fmtTokens(t.totalTokens)}</b><small>总 tokens</small></div>
+        <div class="usage-card"><b>${t.calls ?? 0}</b><small>调用次数</small></div>
+        <div class="usage-card"><b>${d.sessions ?? 0}</b><small>会话数</small></div>
+      </div>
+      <div class="u-note">输入 ${fmtTokens(t.input)} · 输出 ${fmtTokens(t.output)} · 缓存读 ${fmtTokens(t.cacheRead)} · 缓存写 ${fmtTokens(t.cacheWrite)}</div>
+    </div>
+    <div class="set-sec">
+      <h4>每日 tokens <span class="set-count">近 ${range} 天</span></h4>
+      <div class="usage-chart">${chart}</div>
+      <div class="u-axis"><span>${days[0]?.label || ""}</span><span>${days[days.length - 1]?.label || ""}</span></div>
+    </div>
+    <div class="set-sec">
+      <h4>模型排行 <span class="set-count">按 tokens</span></h4>
+      <div class="usage-rows">${modelRows}</div>
+    </div>
+    ${projRows ? `<div class="set-sec"><h4>项目分布</h4><div class="usage-projs">${projRows}</div></div>` : ""}`;
 }
 async function loadInstalled() {
   const box = $("#pkgInstalled");
@@ -1999,11 +2279,24 @@ async function loadInstalled() {
   updBtn.hidden = !upd;
   updBtn.textContent = `一键更新 (${upd})`;
   updBtn.disabled = false;
+  renderInstalled();
+}
+/** 渲染已安装列表（按搜索词本地过滤，data-i 保留原始索引供操作定位） */
+function renderInstalled() {
+  const box = $("#pkgInstalled");
+  if (!box) return;
+  const list = S.pkgInstalledList || [];
   if (!list.length) {
-    box.innerHTML = `<div class="pkg-empty">尚未安装任何包</div>`;
+    box.innerHTML = `<div class="pkg-empty">尚未安装任何包，可在“插件与技能”的市场中安装</div>`;
     return;
   }
-  box.innerHTML = list.map((p, i) => {
+  const q = (S.pkgQuery || "").toLowerCase();
+  const rows = list.map((p, i) => ({ p, i })).filter(({ p }) => !q || (p.raw || "").toLowerCase().includes(q));
+  if (!rows.length) {
+    box.innerHTML = `<div class="pkg-empty">没有匹配“${esc(S.pkgQuery)}”的已安装包</div>`;
+    return;
+  }
+  box.innerHTML = rows.map(({ p, i }) => {
     const name = esc(p.raw.replace(/^npm:/, ""));
     const ver = p.update ? `<span class="pkg-ver upd" title="${esc(p.version)} → ${esc(p.latest)}">${esc(p.version)} → ${esc(p.latest)}</span>` : p.version ? `<span class="pkg-ver">v${esc(p.version)}</span>` : "";
     return `<div class="pkg-row${p.disabled ? " off" : ""}" data-i="${i}">
@@ -2040,43 +2333,34 @@ async function updateAllPkgs() {
     toast(`一键更新失败：${e?.message || e}`, "err");
   }
   await loadInstalled();
-  if (S.pkgLoaded) loadMarket(true);
+  if (S.pkgLoaded) loadMarket(1);
 }
-async function loadMarket(reset) {
-  if (reset) {
-    S.pkgFrom = 0;
-    $("#pkgMarket").innerHTML = `<div class="pkg-empty">加载中…</div>`;
-    S.pkgItems = [];
-  }
-  const size = 20;
-  const r = await window.halo.pkgSearch({ query: S.pkgQuery || "", from: S.pkgFrom || 0, size });
+const PAGE_SIZE = 20;
+async function loadMarket(page) {
+  if (S.pkgType === "installed") return; // 已安装 tab 不需要市场数据（切回时 syncPkgTab 会重新加载）
+  if (page) S.pkgPage = page;
+  S.pkgPage = S.pkgPage || 1;
   const box = $("#pkgMarket");
+  box.innerHTML = `<div class="pkg-empty">加载中…</div>`;
+  const typeParam = ["extension", "skill", "theme", "prompt"].includes(S.pkgType) ? S.pkgType : "";
+  const r = await window.halo.pkgSearch({ query: S.pkgQuery || "", from: (S.pkgPage - 1) * PAGE_SIZE, size: PAGE_SIZE, type: typeParam });
   if (!r?.ok) {
     box.innerHTML = `<div class="pkg-empty">加载失败：${esc(r?.error || "")}</div>`;
+    renderPager();
     return;
   }
   const items = r.data?.items || [];
-  const all = reset ? items : (S.pkgItems || []).concat(items);
-  S.pkgItems = all;
+  S.pkgItems = items;
   S.pkgTotal = r.data?.total || 0;
-  $("#pkgTotal").textContent = all.length ? `${all.length} / ${S.pkgTotal}` : "";
   const installedNorm = new Set((S.pkgInstalledList || []).map((p) => normPkgSource(p.raw)));
-  const notInstalled = all.filter((p) => !installedNorm.has(normPkgSource("npm:" + p.name)));
-  const filtered = S.pkgType && S.pkgType !== "all"
-    ? notInstalled.filter((p) => p.types?.includes(S.pkgType))
-    : notInstalled;
-  if (!filtered.length) {
-    // 当前页全是已安装的包：还有下一页就自动续拉
-    if (all.length < S.pkgTotal) return loadMarket(false);
-    box.innerHTML = `<div class="pkg-empty">没有更多未安装的包</div>`;
-    $("#pkgMore").hidden = true;
-    return;
-  }
-  box.innerHTML = filtered.map((p, i) => {
-    const installed = installedNorm.has(normPkgSource("npm:" + p.name));
-    const badges = (p.types || []).map((t) => `<span class="pkg-type t-${t}">${PKG_TYPE_CN[t] || t}</span>`).join("");
-    const repo = p.repo ? `<a class="pkg-repo" href="${esc(p.repo)}" target="_blank" rel="noopener" title="源码仓库">仓库</a>` : "";
-    return `<div class="pkg-card" data-i="${i}">
+  const list = items.filter((p) => !installedNorm.has(normPkgSource("npm:" + p.name)));
+  if (!list.length) {
+    box.innerHTML = `<div class="pkg-empty">${items.length ? "本页的包都已安装，可翻下一页" : "没有找到匹配的包"}</div>`;
+  } else {
+    box.innerHTML = list.map((p) => {
+      const badges = (p.types || []).map((t) => `<span class="pkg-type t-${t}">${PKG_TYPE_CN[t] || t}</span>`).join("");
+      const repo = p.repo ? `<a class="pkg-repo" href="${esc(p.repo)}" target="_blank" rel="noopener" title="源码仓库">仓库</a>` : "";
+      return `<div class="pkg-card">
       <div class="pkg-c-head">
         <span class="pkg-name">${esc(p.name.replace(/^npm:/, ""))}</span>
         ${badges}
@@ -2088,14 +2372,23 @@ async function loadMarket(reset) {
         ${p.author ? `<span>@${esc(p.author)}</span>` : ""}
         ${repo}
         <span class="pkg-spacer"></span>
-        ${installed
-          ? `<span class="pkg-in-mark">✓ 已安装</span>`
-          : `<button class="mini-btn accent" data-act="install" data-name="${esc(p.name)}">安装</button>`}
+        <button class="mini-btn accent" data-act="install" data-name="${esc(p.name)}">安装</button>
       </div>
     </div>`;
-  }).join("");
-  S.pkgFrom = (S.pkgFrom || 0) + size;
-  $("#pkgMore").hidden = all.length >= S.pkgTotal;
+    }).join("");
+  }
+  renderPager();
+}
+/** 翻页器：页码指示 + 上一/下一页按钮状态 */
+function renderPager() {
+  const total = S.pkgTotal || 0;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const cur = Math.min(S.pkgPage || 1, pages);
+  const info = $("#pkgPageInfo");
+  if (info) info.textContent = total ? `第 ${cur} / ${pages} 页 · 共 ${total} 个` : "";
+  const prev = $("#pkgPrev"), next = $("#pkgNext");
+  if (prev) prev.disabled = cur <= 1;
+  if (next) next.disabled = !total || cur >= pages;
 }
 const normPkgSource = (s) => {
   let v = String(s || "").trim();
@@ -2157,7 +2450,7 @@ async function onInstalledClick(e) {
       const list = S.pkgInstalledList;
       $("#pkgInstalledCount").textContent = list.length ? list.length + " 个" : "";
       if (!list.length) $("#pkgInstalled").innerHTML = `<div class="pkg-empty">尚未安装任何包</div>`;
-      if (S.pkgLoaded) loadMarket(true);
+      if (S.pkgLoaded) loadMarket(1);
     } else {
       btn.disabled = false;
       btn.textContent = "卸载";
@@ -2185,7 +2478,7 @@ async function onMarketClick(e) {
     toast(`已安装 ${name}（新会话生效）`, "ok");
     showPending();
     await loadInstalled();
-    loadMarket(true);
+    loadMarket(1);
   } else {
     btn.disabled = false;
     btn.textContent = "安装";

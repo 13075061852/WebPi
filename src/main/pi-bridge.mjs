@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import crypto from "node:crypto";
 
 /* ------------------------------------------------------------------ */
 /* resolve the globally installed pi package                           */
@@ -661,6 +662,313 @@ export class PiBridge {
     } catch {}
     out.sort((a, b) => new Date(b.modified || 0) - new Date(a.modified || 0));
     return out.slice(0, 40);
+  }
+
+  /**
+   * 模型用量统计：扫描全部会话 jsonl，聚合近 N 天的 tokens / 花费。
+   * 数据源与 pi CLI 完全一致（agent 目录 sessions 下每个会话文件里
+   * assistant 消息的 usage 字段），无需额外记录。
+   */
+  async usageSummary(days = 30) {
+    const since = Date.now() - days * 86400000;
+    const { getAgentDir } = await loadPi();
+    const root = path.join(getAgentDir(), "sessions");
+    const byModel = new Map();   // provider/model -> 聚合
+    const byDay = new Map();     // YYYY-MM-DD -> 聚合
+    const byProject = new Map(); // cwd -> 聚合
+    let sessions = 0;
+    const emptyAgg = () => ({ calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 });
+    const add = (map, key, u) => {
+      const a = map.get(key) || emptyAgg();
+      a.calls++; a.input += u.input || 0; a.output += u.output || 0;
+      a.cacheRead += u.cacheRead || 0; a.cacheWrite += u.cacheWrite || 0;
+      a.totalTokens += u.totalTokens || (u.input || 0) + (u.output || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
+      a.cost += u.cost?.total || 0;
+      map.set(key, a);
+    };
+    const scan = (dir) => {
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { scan(full); continue; }
+        if (!e.isFile() || !e.name.endsWith(".jsonl")) continue;
+        let text = "";
+        try { text = fs.readFileSync(full, "utf8"); } catch { continue; }
+        const lines = text.split("\n");
+        let cwd = "";
+        let counted = false;
+        for (const line of lines) {
+          if (!line || line[0] !== "{") continue;
+          // 快速预筛：不含 usage 的行直接跳过（session/model_change 等头部行除外）
+          const isSessionHead = line.includes('"type":"session"');
+          if (!isSessionHead && !line.includes('"usage"')) continue;
+          let obj;
+          try { obj = JSON.parse(line); } catch { continue; }
+          if (isSessionHead) { cwd = obj.cwd || cwd; continue; }
+          const m = obj.message;
+          if (m?.role !== "assistant" || !m.usage) continue;
+          const ts = Date.parse(obj.timestamp || "");
+          if (!Number.isFinite(ts) || ts < since) continue;
+          if (!counted) { sessions++; counted = true; }
+          add(byModel, `${m.provider || "?"}/${m.model || "?"}`, m.usage);
+          add(byDay, String(obj.timestamp || "").slice(0, 10) || "?", m.usage);
+          add(byProject, cwd || "未知项目", m.usage);
+        }
+      }
+    };
+    scan(root);
+    const r4 = (n) => Math.round(n * 10000) / 10000;
+    const models = [...byModel.entries()].map(([key, a]) => ({ key, ...a, cost: r4(a.cost) }))
+      .sort((x, y) => y.totalTokens - x.totalTokens);
+    const daily = [...byDay.entries()].map(([date, a]) => ({ date, ...a, cost: r4(a.cost) }))
+      .sort((x, y) => x.date.localeCompare(y.date));
+    const projects = [...byProject.entries()].map(([cwd, a]) => ({ cwd, ...a, cost: r4(a.cost) }))
+      .sort((x, y) => y.totalTokens - x.totalTokens).slice(0, 8);
+    const totals = [...byModel.values()].reduce((s, a) => ({
+      calls: s.calls + a.calls, input: s.input + a.input, output: s.output + a.output,
+      cacheRead: s.cacheRead + a.cacheRead, cacheWrite: s.cacheWrite + a.cacheWrite,
+      totalTokens: s.totalTokens + a.totalTokens, cost: s.cost + a.cost,
+    }), emptyAgg());
+    totals.cost = r4(totals.cost);
+    return { days, sessions, totals, models, daily, projects };
+  }
+
+  /* ---------------- 模型剩余额度（多制度） ----------------
+   * points  积分制（AutoClaw）：agent-assetmgr 钱包接口 total_balance
+   * balance 余额制（DeepSeek / Moonshot / OpenRouter / MiniMax / OpenAI 赠金）：官方余额接口，货币金额
+   * windows 订阅制（OpenAI Codex / Z.AI·智谱 GLM Coding）：5h + 周/7天滚动窗口百分比
+   * 未接入的 provider 显示占位提示（不伪装百分比）
+   */
+  #quotaCache = new Map(); // provider → { ts, data }
+
+  #quotaKindFor(provider) {
+    if (provider === "autoclaw") return "points";
+    if (["openai-codex", "zai", "zai-coding-cn"].includes(provider)) return "windows";
+    if (["deepseek", "moonshotai", "moonshotai-cn", "openrouter", "minimax", "minimax-cn", "openai"].includes(provider)) return "balance";
+    return "context"; // 未接入额度的 provider：显示占位提示
+  }
+
+  /** 读取 pi 凭据（~/.pi/agent/auth.json），只取指定 provider 的字段 */
+  #piCredential(providerId) {
+    const file = path.join(os.homedir(), ".pi", "agent", "auth.json");
+    const j = JSON.parse(fs.readFileSync(file, "utf8"));
+    return j?.[providerId] || null;
+  }
+
+  /** chatgpt.com 需走系统代理；国内端点直连 */
+  async #proxiedFetch(url, init) {
+    const proxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy || "";
+    if (proxy) {
+      try {
+        const undici = await import("undici");
+        if (undici?.ProxyAgent) return fetch(url, { ...init, dispatcher: new undici.ProxyAgent(proxy) });
+      } catch {}
+    }
+    return fetch(url, init);
+  }
+
+  /** AutoClaw 桌面端令牌：request-headers.json 由桌面端周期性重写，读前先取最新 */
+  #autoclawToken() {
+    const file = path.join(os.homedir(), ".openclaw-autoclaw", "request-headers.json");
+    const j = JSON.parse(fs.readFileSync(file, "utf8"));
+    let t = String(j?.headers?.["X-Authorization"] || "").trim();
+    if (!t) throw new Error("AutoClaw 令牌不存在（桌面端未登录？）");
+    return t.startsWith("Bearer ") ? t : `Bearer ${t}`;
+  }
+
+  /** AutoClaw 控制台接口签名：X-Auth-Sign = md5(appid & 秒级时间戳 & appkey) */
+  #autoclawHeaders() {
+    const APP_ID = "100003";
+    const APP_KEY = "38d2391985e2369a5fb8227d8e6cd5e5";
+    const ts = String(Math.floor(Date.now() / 1000));
+    return {
+      "Content-Type": "application/json",
+      Accept: "*/*",
+      "X-Version": "1.17.9",
+      "X-Tm": "win",
+      "X-Product": "autoclaw",
+      "X-Channel": "official",
+      "X-Lang": "zh-CN",
+      "X-Auth-Appid": APP_ID,
+      "X-Auth-TimeStamp": ts,
+      "X-Auth-Sign": crypto.createHash("md5").update(`${APP_ID}&${ts}&${APP_KEY}`).digest("hex"),
+      "X-Trace-Id": crypto.randomUUID(),
+      authorization: this.#autoclawToken(),
+    };
+  }
+
+  async #quotaAutoclaw() {
+    const base = "https://autoglm-acceleration-api.zhipuai.cn";
+    const headers = this.#autoclawHeaders();
+    const r = await fetch(`${base}/agent-assetmgr/api/v2/wallets?biz_app_id=autoclaw`, { headers, signal: AbortSignal.timeout(8000) });
+    const j = await r.json().catch(() => null);
+    if (j?.code !== 0 || !j?.data) throw new Error(j?.msg || `wallets HTTP ${r.status}`);
+    return { kind: "points", label: "积分", value: Number(j.data.total_balance) || 0 };
+  }
+
+  async #quotaDeepSeek() {
+    const cred = this.#piCredential("deepseek");
+    if (!cred?.key) throw new Error("DeepSeek 未配置 API Key");
+    const r = await fetch("https://api.deepseek.com/user/balance", {
+      headers: { Authorization: `Bearer ${cred.key}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = await r.json().catch(() => null);
+    const info = j?.balance_infos?.[0];
+    if (!info) throw new Error(j?.error?.message || `balance HTTP ${r.status}`);
+    return { kind: "balance", label: "余额", value: Number(info.total_balance) || 0, currency: info.currency || "CNY" };
+  }
+
+  async #quotaCodex() {
+    const cred = this.#piCredential("openai-codex");
+    if (!cred?.access || !cred?.accountId) throw new Error("OpenAI Codex 未登录");
+    const r = await this.#proxiedFetch("https://chatgpt.com/backend-api/wham/usage", {
+      headers: {
+        Authorization: `Bearer ${cred.access}`,
+        "ChatGPT-Account-Id": cred.accountId,
+        Accept: "application/json",
+        Origin: "https://chatgpt.com",
+        Referer: "https://chatgpt.com/",
+        "User-Agent": "Mozilla/5.0",
+      },
+      signal: AbortSignal.timeout(12000),
+    });
+    const j = await r.json().catch(() => null);
+    const rl = j?.rate_limit || j?.rate_limits || {};
+    const mk = (w, fallbackSeconds) => {
+      if (!w) return null;
+      const seconds = Number(w.limit_window_seconds) || fallbackSeconds;
+      const hours = Math.round(seconds / 3600);
+      const label = hours % 24 === 0 ? `${hours / 24}d` : `${hours}h`;
+      const used = Number(w.used_percent);
+      const remaining = Number.isFinite(used) ? Math.max(0, Math.min(1, 1 - used / 100)) : 1;
+      return { label, remaining, resetAt: Number(w.reset_at) || 0 };
+    };
+    const windows = [mk(rl.primary_window, 5 * 3600), mk(rl.secondary_window, 7 * 24 * 3600)].filter(Boolean);
+    if (!windows.length) throw new Error(`usage HTTP ${r.status}`);
+    return { kind: "windows", windows };
+  }
+
+  /** Z.AI / 智谱 GLM Coding 订阅：token 窗口用量百分比（认证为裸 token，无 Bearer 前缀） */
+  async #quotaZai(provider) {
+    const cred = this.#piCredential(provider);
+    if (!cred?.key) throw new Error(provider === "zai" ? "Z.AI 未配置 API Key" : "智谱 GLM Coding 未配置 API Key");
+    const base = provider === "zai" ? "https://api.z.ai" : "https://open.bigmodel.cn";
+    const r = await fetch(`${base}/api/monitor/usage/quota/limit`, {
+      headers: { Authorization: cred.key, "Content-Type": "application/json", "Accept-Language": "en-US,en" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) throw new Error(`quota HTTP ${r.status}`);
+    const j = await r.json().catch(() => null);
+    const rows = Array.isArray(j?.limits) ? j.limits : [];
+    const windows = [];
+    for (const lim of rows) {
+      if (lim?.type !== "TOKENS_LIMIT") continue; // TIME_LIMIT 是 MCP 调用次数，与对话额度无关
+      const used = Number(lim.percentage);
+      if (!Number.isFinite(used)) continue;
+      const isWeek = Number(lim.unit) === 6 && Number(lim.number) === 1;
+      windows.push({
+        label: isWeek ? "周" : "5h",
+        remaining: Math.max(0, Math.min(1, 1 - used / 100)),
+        resetAt: Number(lim.nextResetTime) ? Number(lim.nextResetTime) / 1000 : 0,
+      });
+    }
+    if (!windows.length) throw new Error("quota 数据缺失");
+    return { kind: "windows", windows };
+  }
+
+  /** Moonshot 平台预付余额：.ai 全球站 USD / .cn 国内站 CNY，含代金券 */
+  async #quotaMoonshot(provider, base, currency) {
+    const cred = this.#piCredential(provider);
+    if (!cred?.key) throw new Error("Moonshot 未配置 API Key");
+    const r = await this.#proxiedFetch(`${base}/v1/users/me/balance`, {
+      headers: { Authorization: `Bearer ${cred.key}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) throw new Error(`balance HTTP ${r.status}`);
+    const j = await r.json().catch(() => null);
+    const d = j?.data;
+    const v = Number(d?.available_balance ?? d?.cash_balance);
+    if (!d || !Number.isFinite(v)) throw new Error("balance 数据缺失");
+    return { kind: "balance", label: "余额", value: Math.max(0, v), currency, voucher: Number(d?.voucher_balance) || 0 };
+  }
+
+  /** OpenRouter 预付信用：total_credits - total_usage，USD */
+  async #quotaOpenrouter() {
+    const cred = this.#piCredential("openrouter");
+    if (!cred?.key) throw new Error("OpenRouter 未配置 API Key");
+    const r = await this.#proxiedFetch("https://openrouter.ai/api/v1/credits", {
+      headers: { Authorization: `Bearer ${cred.key}` },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) throw new Error(`credits HTTP ${r.status}`);
+    const j = await r.json().catch(() => null);
+    const total = Number(j?.data?.total_credits);
+    if (!Number.isFinite(total)) throw new Error("credits 数据缺失");
+    const used = Number(j?.data?.total_usage);
+    return { kind: "balance", label: "余额", value: Math.max(0, total - (Number.isFinite(used) ? used : 0)), currency: "USD" };
+  }
+
+  /** 尽力而为接口：拿不到就返回 null（渲染层显示 —，不显示错误态） */
+  async #quotaOpenaiPlatform() {
+    try {
+      const cred = this.#piCredential("openai");
+      if (!cred?.key) return null;
+      const r = await this.#proxiedFetch("https://api.openai.com/v1/dashboard/billing/credit_grants", {
+        headers: { Authorization: `Bearer ${cred.key}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!r.ok) return null;
+      const j = await r.json().catch(() => null);
+      const v = Number(j?.total_available);
+      if (!Number.isFinite(v)) return null;
+      return { kind: "balance", label: "赠金", value: Math.max(0, v), currency: "USD" };
+    } catch { return null; }
+  }
+
+  async #quotaMinimax(provider) {
+    try {
+      const cred = this.#piCredential(provider);
+      if (!cred?.key) return null;
+      const base = provider === "minimax-cn" ? "https://api.minimaxi.com" : "https://api.minimax.io";
+      const r = await fetch(`${base}/v1/get_balance?key=${encodeURIComponent(cred.key)}`, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return null;
+      const j = await r.json().catch(() => null);
+      if (j?.base_resp?.status_code !== 0) return null;
+      const v = Number(j?.balance);
+      if (!Number.isFinite(v)) return null;
+      return { kind: "balance", label: "余额", value: Math.max(0, v), currency: j?.currency || (provider === "minimax-cn" ? "CNY" : "USD") };
+    } catch { return null; }
+  }
+
+  /** 当前 provider 的剩余额度；60s 内存缓存，失败时沿用上次数据 */
+  async modelQuota(provider) {
+    const kind = this.#quotaKindFor(provider);
+    if (kind === "context") return { kind: "context" };
+    const hit = this.#quotaCache.get(provider);
+    if (hit && Date.now() - hit.ts < 60_000) return hit.data;
+    try {
+      let data = null;
+      switch (provider) {
+        case "autoclaw": data = await this.#quotaAutoclaw(); break;
+        case "deepseek": data = await this.#quotaDeepSeek(); break;
+        case "openai-codex": data = await this.#quotaCodex(); break;
+        case "zai": case "zai-coding-cn": data = await this.#quotaZai(provider); break;
+        case "moonshotai": data = await this.#quotaMoonshot(provider, "https://api.moonshot.ai", "USD"); break;
+        case "moonshotai-cn": data = await this.#quotaMoonshot(provider, "https://api.moonshot.cn", "CNY"); break;
+        case "openrouter": data = await this.#quotaOpenrouter(); break;
+        case "minimax": case "minimax-cn": data = await this.#quotaMinimax(provider); break;
+        case "openai": data = await this.#quotaOpenaiPlatform(); break;
+      }
+      if (data) {
+        this.#quotaCache.set(provider, { ts: Date.now(), data });
+        return data;
+      }
+      // 尽力而为接口无数据：按「无额度信息」处理
+      return { kind: "context" };
+    } catch {}
+    return hit?.data || { kind, error: true };
   }
 
   async openSession(file) {

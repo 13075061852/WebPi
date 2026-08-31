@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld("halo", {
   setModel: (provider, id) => ipcRenderer.invoke("halo:set-model", provider, id),
   setThinking: (level) => ipcRenderer.invoke("halo:set-thinking", level),
   listSessions: () => ipcRenderer.invoke("halo:list-sessions"),
+  usageSummary: (days) => ipcRenderer.invoke("halo:usage-summary", { days }),
+  modelQuota: (provider) => ipcRenderer.invoke("halo:model-quota", provider),
   openSession: (file) => ipcRenderer.invoke("halo:open-session", file),
   newSession: () => ipcRenderer.invoke("halo:new-session"),
   deleteSession: (file) => ipcRenderer.invoke("halo:delete-session", file),
@@ -62,6 +64,14 @@ contextBridge.exposeInMainWorld("halo", {
   readTree: () => ipcRenderer.invoke("halo:read-tree"),
   readFile: (p) => ipcRenderer.invoke("halo:read-file", p),
   openPath: (p) => ipcRenderer.invoke("halo:open-path", p),
+  openExternal: (url) => ipcRenderer.invoke("halo:open-external", url),
+  ptyStart: () => ipcRenderer.invoke("halo:pty-start"),
+  ptyWrite: (d) => ipcRenderer.invoke("halo:pty-write", d),
+  ptyKill: () => ipcRenderer.invoke("halo:pty-kill"),
+  onPtyOut: (cb) => ipcRenderer.on("halo:pty-out", (_e, d) => cb(d)),
+  onPtyDone: (cb) => ipcRenderer.on("halo:pty-done", () => cb()),
+  onPtyCwd: (cb) => ipcRenderer.on("halo:pty-cwd", (_e, d) => cb(d)),
+  onPtyExit: (cb) => ipcRenderer.on("halo:pty-exit", () => cb()),
 
   // window
   minimize: () => ipcRenderer.send("win:minimize"),

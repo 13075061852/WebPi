@@ -7,6 +7,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from "elect
 import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
+import iconv from "iconv-lite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PiBridge, HaloStore, scanAgents } from "./pi-bridge.mjs";
 
@@ -400,6 +401,8 @@ function bootstrap() {
   handle("halo:set-model", (provider, id) => bridge.setModel(provider, id));
   handle("halo:set-thinking", (level) => bridge.setThinkingLevel(level));
   handle("halo:list-sessions", () => bridge.listSessions());
+  handle("halo:usage-summary", (args) => bridge.usageSummary(args?.days || 30));
+  handle("halo:model-quota", (provider) => bridge.modelQuota(provider));
 
   // auth / login（与 pi CLI 共享 ~/.pi/agent/auth.json）
   handle("halo:auth-providers", () => bridge.authProviders());
@@ -511,6 +514,71 @@ function bootstrap() {
     return shell.openPath(abs);
   });
 
+  handle("halo:open-external", (url) => {
+    if (!/^https:\/\//.test(String(url))) throw new Error("仅允许 https 链接");
+    shell.openExternal(String(url));
+    return true;
+  });
+
+  /* ------------- 预览区控制台：隐藏控制台 + 管道模式 cmd /Q -------------
+   * cmd /Q 不回显；渲染层自绘提示符、本地行编辑、方向键历史、cls 清屏。
+   * cmd 的真实提示符（X:\...>）在主进程被吞掉，同时从提示符解析 cwd 推给渲染层；
+   * 命令结束信号 = 下一个提示符到达（halo:pty-done）。编码统一 GBK（系统 OEM）。
+   */
+  let termChild = null, tBuf = "", tAwait = false;
+  const TERM_PROMPT_RE = /^([A-Za-z]:\\[^>\r\n]*>)$/;
+  handle("halo:pty-start", () => {
+    if (termChild) return true;
+    const cwd = bridge.cwd || process.cwd();
+    termChild = spawn("cmd.exe", ["/Q", "/D", "/C", "chcp 936 >nul & cmd.exe /Q /D /K"], {
+      cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+    });
+    tBuf = ""; tAwait = false;
+    const send = (ch, payload) => mainWin?.webContents.send(ch, payload);
+    const feed = (chunk) => {
+      tBuf += iconv.decode(chunk, "gbk");
+      let idx;
+      while ((idx = tBuf.search(/\r\n|\n|\r/)) >= 0) {
+        const line = tBuf.slice(0, idx);
+        tBuf = tBuf.slice(idx + (tBuf[idx] === "\r" && tBuf[idx + 1] === "\n" ? 2 : 1));
+        const m = TERM_PROMPT_RE.exec(line);
+        if (m) {
+          send("halo:pty-cwd", m[1].slice(0, -1));
+          if (tAwait) { tAwait = false; send("halo:pty-done"); }
+          continue;
+        }
+        send("halo:pty-out", line + "\r\n");
+      }
+      if (tBuf) {
+        if (TERM_PROMPT_RE.test(tBuf)) { // 无换尾的等待提示符
+          const m = TERM_PROMPT_RE.exec(tBuf);
+          tBuf = "";
+          send("halo:pty-cwd", m[1].slice(0, -1));
+          if (tAwait) { tAwait = false; send("halo:pty-done"); }
+        } else if (!tAwait) { // 空闲时来的零散字节（进度条等）直接透传
+          send("halo:pty-out", tBuf);
+          tBuf = "";
+        } // 命令执行中：攒整行，防止提示符前缀泄漏
+      }
+    };
+    termChild.stdout.on("data", feed);
+    termChild.stderr.on("data", (chunk) => send("halo:pty-out", iconv.decode(chunk, "gbk").replace(/\r?\n/g, "\r\n")));
+    termChild.on("close", () => { termChild = null; tBuf = ""; tAwait = false; send("halo:pty-exit"); });
+    return true;
+  });
+  handle("halo:pty-write", (d) => {
+    try {
+      const s = String(d);
+      if (/\r|\n/.test(s)) tAwait = true; // 提交了一行
+      termChild?.stdin.write(iconv.encode(s, "gbk"));
+    } catch {}
+  });
+  handle("halo:pty-kill", () => {
+    const c = termChild;
+    termChild = null;
+    if (c?.pid) { try { spawn("taskkill", ["/PID", String(c.pid), "/T", "/F"], { windowsHide: true }); } catch { try { c.kill(); } catch {} } }
+  });
+
   handle("halo:pick-project", async (currentPath) => {
     const res = await dialog.showOpenDialog(mainWin, {
       title: "选择项目目录",
@@ -579,8 +647,11 @@ function bootstrap() {
     if (!types.length) types.push(kws.length ? "extension" : "package");
     return types;
   };
-  handle("halo:pkg-search", async ({ query = "", from = 0, size = 20 } = {}) => {
-    const text = encodeURIComponent("keywords:pi-package" + (String(query).trim() ? " " + String(query).trim() : ""));
+  handle("halo:pkg-search", async ({ query = "", from = 0, size = 20, type = "" } = {}) => {
+    // 分类用裸关键词下推到 npm 服务端（extension/skill/theme/prompt），与官网分类口径一致
+    // （glimpseui 等官网 prompt 包带裸 "prompt" 关键词；pi-prompt 显式关键词只有少数包用）
+    const t = ["extension", "skill", "theme", "prompt"].includes(String(type)) ? String(type) : "";
+    const text = encodeURIComponent("keywords:pi-package" + (t ? "," + t : "") + (String(query).trim() ? " " + String(query).trim() : ""));
     const res = await fetch(`https://registry.npmjs.org/-/v1/search?text=${text}&size=${size}&from=${from}`);
     if (!res.ok) throw new Error("npm 搜索失败 " + res.status);
     const j = await res.json();

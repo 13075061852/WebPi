@@ -8,6 +8,9 @@
   try { document.documentElement.dataset.theme = localStorage.getItem("halo-theme") || "dark"; } catch {}
 </script>
 <link rel="stylesheet" href="css/app.css" />
+<link rel="stylesheet" href="vendor/xterm.css" />
+<script src="vendor/xterm.js"></script>
+<script src="vendor/addon-fit.js"></script>
 </head>
 <body>
 <div id="app">
@@ -119,7 +122,7 @@
       <footer id="modelCard" class="fx t-b">
         <button id="btnSettings" class="model-btn" title="设置 · 插件与技能管理">
           <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
-          <span class="model-info"><b>设置</b><small>插件 · 技能 · 配置</small></span>
+          <span>设置</span>
         </button>
         <button id="authBtn" class="sq-btn" title="登录配置（与 pi CLI 共享认证）">π</button>
       </footer>
@@ -130,7 +133,9 @@
       <!-- ======== preview ======== -->
       <section id="cpane-preview" class="cpane active">
         <div class="pv-head">
-          <span class="pv-ico">◇</span>
+          <button id="btnSidebar" title="收起/展开侧栏">
+            <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+          </button>
           <span id="pvName" class="pv-name">未选择文件</span>
           <span class="ct-spacer"></span>
           <span id="wsPath" class="ct-path"></span>
@@ -139,8 +144,9 @@
             <button data-m="render" class="active" title="渲染页面">渲染</button>
             <button data-m="source" title="查看源代码">源码</button>
           </div>
-          <button id="pvReload" class="mini-btn" title="重新加载">↻ 刷新</button>
-          <button id="pvOpen" class="mini-btn" title="用系统默认程序打开">↗ 打开</button>
+          <button id="btnTerm" class="pv-term-btn" title="控制台 · 命令提示符">
+            <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9.5l2.8 2.5L7 14.5M13 15h4"/></svg>
+          </button>
         </div>
         <div class="pv-body dev-desktop" id="pvBody">
           <div class="pv-empty">
@@ -154,6 +160,10 @@
               <div class="pv-gbase"></div>
             </div>
           </div>
+        </div>
+        <div id="termView">
+          <button id="termClose" title="关闭控制台">✕</button>
+          <div id="termHost"></div>
         </div>
         <div class="pv-devices">
           <button class="pvdev active" data-dev="desktop" title="电脑视图 · 100%">
@@ -201,7 +211,10 @@
             <div class="cb-left">
               <button id="btnAttach" title="附加图片"><svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg></button>
               <button id="btnModel" class="chip"><svg viewBox="0 0 24 24" class="ic"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg><span id="modelChipName">模型</span></button>
-              <button id="btnSkill" class="chip" title="技能与命令"><svg viewBox="0 0 24 24" class="ic"><path d="m12 3 2.1 5.3L19 10l-4.9 1.7L12 17l-2.1-5.3L5 10l4.9-1.7Z"/></svg><span>技能</span></button>
+              <span id="ctxQuota" class="chip quota" title="当前模型上下文剩余额度（会话已用 / 模型窗口）">
+                <span class="q-track"><i id="ctxQuotaBar"></i></span>
+                <span id="ctxQuotaText">—</span>
+              </span>
             </div>
             <div class="cb-right">
               <button id="btnThink" class="chip"><span id="thinkChip">自动</span><svg viewBox="0 0 24 24" class="ic chev"><path d="m6 9 6 6 6-6"/></svg></button>
@@ -257,16 +270,13 @@
 <!-- ======================= settings modal ======================= -->
 <div id="settingsModal" class="modal" hidden>
   <div class="modal-panel settings-panel">
+    <button class="modal-x set-close" data-close>&times;</button>
     <div class="set-side">
       <div class="set-brand">
         <span class="set-mark">π</span>
         <span>设置</span>
       </div>
-      <button class="set-nav active" data-pane="agents">
-        <svg viewBox="0 0 24 24" class="ic"><rect x="5" y="8" width="14" height="11" rx="2.5"/><circle cx="9.5" cy="13" r="1.3"/><circle cx="14.5" cy="13" r="1.3"/><path d="M12 8V5M9 5h6"/></svg>
-        智能体
-      </button>
-      <button class="set-nav" data-pane="pkgs">
+      <button class="set-nav active" data-pane="pkgs">
         <svg viewBox="0 0 24 24" class="ic"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="M12 12l8-4.5M12 12v9M12 12 4 7.5"/></svg>
         插件与技能
       </button>
@@ -278,24 +288,19 @@
         <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
         模型与登录
       </button>
-      <div class="set-side-gap"></div>
-      <button class="modal-x set-close" data-close>&times;</button>
+      <button class="set-nav" data-pane="usage">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M4 20h16M7 20v-6M12 20V8M17 20v-9"/></svg>
+        用量统计
+      </button>
     </div>
     <div class="set-main">
-      <div class="set-pane active" id="setPane-agents">
-        <div class="set-body">
-          <div class="set-sec">
-            <h4>默认智能体 <span class="set-count">新对话自动使用</span></h4>
-            <div id="agentList" class="pkg-list"></div>
-          </div>
-        </div>
-      </div>
-      <div id="setPane-pkgs" class="set-pane">
+      <div id="setPane-pkgs" class="set-pane active">
         <div class="set-head">
-          <div class="set-search">
+          <div class="set-search" id="pkgSearch">
             <input id="pkgSearchInput" type="text" placeholder="搜索 pi 生态的插件 / 技能 / 主题…" />
           </div>
           <div class="set-tabs" id="pkgTabs">
+            <button class="ptab" data-t="installed">已安装</button>
             <button class="ptab active" data-t="all">全部</button>
             <button class="ptab" data-t="extension">扩展</button>
             <button class="ptab" data-t="skill">技能</button>
@@ -304,34 +309,45 @@
           </div>
         </div>
         <div class="set-body">
-          <div class="set-sec">
+          <div class="set-sec" id="pkgInstalledSec" hidden>
             <h4>已安装 <span id="pkgInstalledCount" class="set-count"></span>
               <button id="pkgUpdateAll" class="mini-btn accent" hidden>一键更新</button>
             </h4>
             <div id="pkgInstalled" class="pkg-list"></div>
           </div>
-          <div class="set-sec">
-            <h4>浏览市场 <span id="pkgTotal" class="set-count"></span></h4>
+          <div class="set-sec" id="pkgMarketSec">
+            <h4>浏览市场</h4>
             <div id="pkgMarket" class="pkg-list"></div>
-            <div class="set-more-wrap"><button id="pkgMore" class="mini-btn" hidden>加载更多</button></div>
           </div>
         </div>
-        <div class="set-pending" id="pkgPendingBar" hidden>
-          <span>更改将在新会话生效</span>
-          <button id="pkgApply" class="mini-btn accent">立即重载</button>
+        <div class="set-pager" id="pkgPager">
+          <button id="pkgPrev" class="mini-btn">← 上一页</button>
+          <span id="pkgPageInfo" class="set-count"></span>
+          <button id="pkgNext" class="mini-btn">下一页 →</button>
         </div>
       </div>
+      <div class="set-pending" id="pkgPendingBar" hidden>
+        <span>更改将在新会话生效</span>
+        <button id="pkgApply" class="mini-btn accent">立即重载</button>
+      </div>
       <div class="set-pane" id="setPane-appearance"><div class="set-soon">外观设置即将推出（主题切换 · 字号 · 布局密度）</div></div>
+      <div class="set-pane" id="setPane-usage">
+        <div class="set-head">
+          <div class="set-tabs" id="usageRange">
+            <button class="ptab active" data-d="7">近 7 天</button>
+            <button class="ptab" data-d="30">近 30 天</button>
+            <button class="ptab" data-d="90">近 90 天</button>
+          </div>
+        </div>
+        <div class="set-body">
+          <div id="usageContent"><div class="set-soon">正在统计…</div></div>
+        </div>
+      </div>
       <div class="set-pane" id="setPane-login">
         <div class="set-body">
           <div class="set-sec">
             <h4>默认模型 <span id="defModelName" class="set-count"></span></h4>
-            <div class="set-note">新会话自动使用默认模型；会话内临时切换（右上模型按钮）不影响默认设置。</div>
             <div id="defModelList" class="pkg-list"></div>
-          </div>
-          <div class="set-sec">
-            <h4>登录</h4>
-            <div class="set-note">点击左下角 π 图标管理登录配置（与 pi CLI 共享 ~/.pi/agent/auth.json）。</div>
           </div>
         </div>
       </div>
