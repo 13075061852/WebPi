@@ -10,6 +10,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
+import { createInterface } from "node:readline";
 
 /* ------------------------------------------------------------------ */
 /* resolve the globally installed pi package                           */
@@ -108,7 +109,10 @@ export class HaloStore {
   save() {
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
+      // 原子写：先写 tmp 再 rename，崩溃/断电不会留下半截文件
+      const tmp = `${this.file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+      fs.renameSync(tmp, this.file);
     } catch {}
   }
   set(k, v) {
@@ -118,16 +122,193 @@ export class HaloStore {
 }
 
 /* ------------------------------------------------------------------ */
+/* 多账户凭据保管库（~/.pi/agent/halo-accounts.json）                    */
+/* 每个供应商可保存多个登录身份；「切换账户」= 把保存的凭据写回          */
+/* auth.json（走 pi 的文件锁写入路径）+ 刷新模型快照，与 pi CLI 完全互通 */
+/* ------------------------------------------------------------------ */
+
+export class HaloAuthVault {
+  /** @param seal  (plaintext:string) => encrypted string|null（来自主进程 safeStorage）
+   *  @param unseal (encrypted:string) => plaintext string|null；两者缺省 = 明文存储（回退） */
+  constructor(file = path.join(os.homedir(), ".pi", "agent", "halo-accounts.json"), seal = null, unseal = null) {
+    this.file = file;
+    this.seal = seal;
+    this.unseal = unseal;
+    this.data = { version: 1, active: {}, accounts: {} };
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (raw && typeof raw === "object") {
+        if (raw.active && typeof raw.active === "object") this.data.active = raw.active;
+        if (raw.accounts && typeof raw.accounts === "object") {
+          this.data.accounts = {};
+          for (const [k, arr] of Object.entries(raw.accounts)) {
+            this.data.accounts[k] = Array.isArray(arr) ? arr.map((a) => this.#decEntry(a)) : arr;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  /* 落盘前加密 credential（内存中保持明文，与 auth.json 同生命周期） */
+  #encEntry(entry) {
+    const c = entry?.credential;
+    if (!c || typeof c !== "object" || c.__enc || !this.seal) return entry;
+    const sealed = this.seal(JSON.stringify(c));
+    return sealed ? { ...entry, credential: { __enc: "v1", data: sealed } } : entry;
+  }
+
+  /* 读入时解密；解密失败（密钥环境变化）则标记凭据丢失，避免把密文当明文写回 auth.json */
+  #decEntry(entry) {
+    const c = entry?.credential;
+    if (c && c.__enc === "v1" && this.unseal) {
+      try {
+        const plain = JSON.parse(this.unseal(String(c.data)) || "null");
+        if (plain && typeof plain === "object") return { ...entry, credential: plain };
+      } catch {}
+      return { ...entry, credential: null, credentialLost: true };
+    }
+    return entry;
+  }
+
+  save() {
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      const out = { ...this.data, accounts: {} };
+      for (const [k, arr] of Object.entries(this.data.accounts)) {
+        out.accounts[k] = Array.isArray(arr) ? arr.map((a) => this.#encEntry(a)) : arr;
+      }
+      const tmp = `${this.file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(out, null, 2));
+      fs.renameSync(tmp, this.file);
+    } catch {}
+  }
+
+  list(providerId) {
+    return Array.isArray(this.data.accounts[providerId]) ? this.data.accounts[providerId] : [];
+  }
+
+  find(providerId, accountId) {
+    return this.list(providerId).find((a) => a.id === accountId) || null;
+  }
+
+  /** 保存/更新一个账户（同身份去重：oauth 优先按 accountId，其次令牌指纹） */
+  upsert(providerId, credential, label) {
+    if (!credential || !credential.type) return null;
+    const fp = HaloAuthVault.fingerprint(credential);
+    if (!fp) return null;
+    const meta = HaloAuthVault.jwtMeta(credential);
+    const accounts = (this.data.accounts[providerId] = this.list(providerId));
+    let entry = accounts.find((a) => a.fingerprint === fp) || null;
+    if (!entry && credential.type === "oauth" && credential.accountId) {
+      entry = accounts.find((a) => a.credential?.type === "oauth" && a.credential?.accountId === credential.accountId) || null;
+      if (entry) entry.fingerprint = fp;
+    }
+    if (entry) {
+      entry.credential = credential; // 令牌可能已刷新，始终保留最新
+      entry.savedAt = Date.now();
+      if (label) { entry.label = String(label); entry.userNamed = true; }
+      if (meta?.email) entry.email = meta.email;
+      if (meta?.plan) entry.plan = meta.plan;
+      if (!entry.userNamed && meta?.email) entry.label = meta.email; // 默认名升级为邮箱
+    } else {
+      entry = {
+        id: `acc_${crypto.randomBytes(5).toString("hex")}`,
+        label: String(label || meta?.email || HaloAuthVault.defaultLabel(credential)),
+        type: credential.type,
+        fingerprint: fp,
+        savedAt: Date.now(),
+        email: meta?.email || null,
+        plan: meta?.plan || null,
+        credential,
+      };
+      accounts.push(entry);
+    }
+    this.data.active[providerId] = entry.id;
+    this.save();
+    return entry;
+  }
+
+  remove(providerId, accountId) {
+    const accounts = this.list(providerId);
+    const idx = accounts.findIndex((a) => a.id === accountId);
+    if (idx < 0) return false;
+    accounts.splice(idx, 1);
+    if (!accounts.length) delete this.data.accounts[providerId];
+    if (this.data.active[providerId] === accountId) delete this.data.active[providerId];
+    this.save();
+    return true;
+  }
+
+  rename(providerId, accountId, label) {
+    const entry = this.find(providerId, accountId);
+    if (!entry) return false;
+    entry.label = String(label || "").trim() || entry.label;
+    entry.userNamed = true; // 用户自定义名：后续不再被邮箱自动覆盖
+    this.save();
+    return true;
+  }
+
+  setActive(providerId, accountId) {
+    this.data.active[providerId] = accountId;
+    this.save();
+  }
+
+  /** 凭据指纹：oauth 优先用 accountId（刷新令牌轮换后身份仍稳定） */
+  static fingerprint(credential) {
+    try {
+      const base = credential.type === "oauth"
+        ? (credential.accountId ? `aid:${credential.accountId}` : `t:${credential.refresh || ""}|${credential.access || ""}`)
+        : `k:${credential.key || ""}|env:${JSON.stringify(credential.env || {})}`;
+      return crypto.createHash("sha256").update(`${credential.type}::${base}`).digest("hex").slice(0, 16);
+    } catch { return null; }
+  }
+
+  /** 从 OAuth access token（JWT）本地解码账号元信息（邮箱 / 订阅类型），不联网 */
+  static jwtMeta(credential) {
+    try {
+      if (credential?.type !== "oauth" || typeof credential.access !== "string") return null;
+      const b64 = credential.access.split(".")[1];
+      if (!b64) return null;
+      const payload = JSON.parse(Buffer.from(b64.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+      const auth = payload?.["https://api.openai.com/auth"] || {};
+      const profile = payload?.["https://api.openai.com/profile"] || {};
+      const email = String(profile.email || payload.email || "").trim() || null;
+      const plan = String(auth.chatgpt_plan_type || "").trim() || null;
+      return { email, plan };
+    } catch { return null; }
+  }
+
+  static defaultLabel(credential) {
+    if (credential.type === "oauth") {
+      const aid = credential.accountId ? String(credential.accountId) : "";
+      return aid ? `OAuth · ${aid.slice(0, 8)}` : `OAuth · ${HaloAuthVault.fingerprint(credential)?.slice(0, 6) || "?"}`;
+    }
+    const k = String(credential.key || "");
+    return k.length > 12 ? `Key · ${k.slice(0, 6)}…${k.slice(-4)}` : `Key · ${HaloAuthVault.fingerprint(credential)?.slice(0, 6) || "?"}`;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* the bridge                                                          */
 /* ------------------------------------------------------------------ */
 
 export class PiBridge {
-  constructor(store) {
+  // 多会话并发池：每个会话一个独立 AgentSessionRuntime
+  #pool = new Map();   // key: normPath(sessionFile) -> SessionCtx
+  #focusedKey = null;  // 焦点会话 key
+  #focusSeq = 0;
+
+  constructor(store, crypto = {}, opts = {}) {
     this.store = store;
-    this.runtime = null;      // AgentSessionRuntime
-    this.session = null;
+    this.sessionDir = opts.sessionDir || null; // 会话目录覆盖（测试隔离用）
+    this.runtime = null;      // 焦点会话的 AgentSessionRuntime（兼容旧引用）
+    this.session = null;      // 焦点会话
     this.unsubscribe = null;
     this.modelRuntime = null;
+
+    this.#pool = new Map();   // key: normPath(sessionFile) -> SessionCtx
+    this.#focusedKey = null;  // 焦点会话 key
+    this.#focusSeq = 0;
     this.cwd = store.data.cwd || null;
     // 项目列表：一个项目 = 一个文件夹，记住各自的 lastSession（首次从现有 cwd 迁移）
     if (!Array.isArray(store.data.projects)) {
@@ -137,6 +318,8 @@ export class PiBridge {
     this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     this.emitter = null;      // (channel, payload) => void
     this.startingPromise = null;
+    // 多账户凭据保管库（可选传入 safeStorage 的 seal/unseal 实现加密落盘）
+    this.vault = new HaloAuthVault(undefined, crypto?.seal || null, crypto?.unseal || null);
   }
 
   onEvent(emitter) {
@@ -199,91 +382,30 @@ export class PiBridge {
     return this.publicState();
   }
 
-  async _doStart() {
-    const {
-      createAgentSessionRuntime,
-      createAgentSessionFromServices,
-      createAgentSessionServices,
-      ModelRuntime,
-      SessionManager,
-      getAgentDir,
-    } = await loadPi();
+async _doStart() {
+    const { ModelRuntime } = await loadPi();
 
-    // dispose any previous runtime/session before rebuilding (project switch)
-    try {
-      this.unsubscribe?.();
-      this.session?.dispose?.();
-    } catch {}
-    this.unsubscribe = null;
-    this.session = null;
+    // 重建前清空旧池（重启/项目切换慢路径）：后台任务随旧 runtime 取消
+    await this.#resetPool();
 
     if (!this.modelRuntime) {
       this.modelRuntime = await ModelRuntime.create({ allowModelNetwork: true, modelRefreshTimeoutMs: 12000 });
     }
 
-    const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
-      const services = await createAgentSessionServices({
-        cwd,
-        resourceLoaderOptions: {
-          extensionsOverride: (base) => {
-            // 缓存全部已发现的扩展（含即将被禁用的），供能力页展示与开关
-            this._allExtensions = (base.extensions || []).map((x) => ({
-              name: path.basename(x.path || "") || "extension",
-              path: x.path || "",
-            }));
-            const disabled = new Set(this.store.data.disabledExtensions || []);
-            const extensions = base.extensions.filter((x) => !disabled.has(x.path));
-            // Halo 默认智能体：完整 Extension 对象（path 指向真实存在的文件，loader stat 需要）；
-            // handler 在每轮 agent 启动前实时读 store，把选中智能体的提示追加到系统提示
-            try {
-              const extFile = path.join(path.dirname(this.store.file), "halo-default-agent-ext.mjs");
-              if (fs.existsSync(extFile)) {
-                const self = this;
-                extensions.push({
-                  path: extFile,
-                  resolvedPath: extFile,
-                  hidden: true,
-                  sourceInfo: { path: extFile, source: "halo", scope: "temporary", origin: "top-level" },
-                  handlers: new Map([
-                    ["before_agent_start", [async (event) => {
-                      const want = self.store.data.defaultAgent;
-                      if (!want) return undefined;
-                      try {
-                        const agents = await scanAgents(self.cwd);
-                        const ag = agents.find((a) => a.name === want);
-                        if (!ag || !ag.prompt) return undefined;
-                        const basePrompt = event.systemPrompt || "";
-                        return { systemPrompt: basePrompt + "\n\n# 当前智能体设定：" + ag.name + "\n\n" + ag.prompt };
-                      } catch { return undefined; }
-                    }]],
-                  ]),
-                  tools: new Map(),
-                  messageRenderers: new Map(),
-                  commands: new Map(),
-                  flags: new Map(),
-                  shortcuts: new Map(),
-                });
-              }
-            } catch {}
-            return { ...base, extensions };
-          },
-        },
-      });
-      this.services = services;
-      return {
-        ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
-        services,
-        diagnostics: services.diagnostics,
-      };
-    };
+    // 初始会话：恢复本项目 lastSession（若有），否则全新会话
+    const prev = this._findProject(this.cwd);
+    const last = prev?.lastSession && fs.existsSync(prev.lastSession) ? prev.lastSession : null;
+    let ctx = null;
+    if (last) {
+      try {
+        ctx = await this.#ensureSession(last);
+      } catch (e) {
+        console.error("[halo] restore project lastSession failed:", last, e);
+      }
+    }
+    if (!ctx) ctx = await this.#ensureFresh();
+    this.#focus(ctx);
 
-    this.runtime = await createAgentSessionRuntime(createRuntime, {
-      cwd: this.cwd,
-      agentDir: getAgentDir(),
-      sessionManager: SessionManager.create(this.cwd),
-    });
-
-    this._bindSession();
     await this.restoreModel();
     this._noteSession();
     try {
@@ -361,8 +483,8 @@ export class PiBridge {
     return this.projectsList();
   }
 
-  /* 切换项目：优先快路径（直接 switchSession 到该项目的上一个会话，cwdOverride 让 services 重建到目标目录，
-     一次重建完成“切目录+恢复会话”）；无会话可恢复时才完整 start（慢路径） */
+  /* 切换项目：优先快路径（打开该项目的上一个会话，cwdOverride 让 services 重建到目标目录，
+     一次重建完成“切目录+恢复会话”；不中断其他会话的后台任务） */
   async switchProject(cwd) {
     const target = String(cwd || "").replace(/\\/g, "/");
     let prev = this._findProject(target);
@@ -373,15 +495,11 @@ export class PiBridge {
       prev = this._findProject(target);
     }
     const last = prev?.lastSession && fs.existsSync(prev.lastSession) ? prev.lastSession : null;
-    if (last && this.runtime) {
+    if (last) {
       try {
-        await this.runtime.switchSession(last, { cwdOverride: target });
+        await this.openSession(last, { cwdOverride: target });
         this.cwd = target;
         this.store.set("cwd", target);
-        this._bindSession();
-        await this.restoreModel();
-        this._noteSession();
-        this._recomputeUsageFromSession();
         this.pushState();
         return this.publicState();
       } catch (e) {
@@ -391,10 +509,9 @@ export class PiBridge {
     if (PiBridge.normPath(target) !== PiBridge.normPath(this.cwd || "")) {
       await this.start(target);
     }
-    if (last && this.runtime) {
+    if (last) {
       try {
-        await this.runtime.switchSession(last);
-        this._bindSession();
+        await this.openSession(last);
         await this.restoreModel();
       } catch (e) {
         console.error("[halo] restore project lastSession failed:", last, e);
@@ -406,31 +523,197 @@ export class PiBridge {
     return this.publicState();
   }
 
-  _bindSession() {
-    if (this.unsubscribe) this.unsubscribe();
-    this.session = this.runtime.session;
-    this.unsubscribe = this.session.subscribe((event) => {
-      this._accountUsage(event);
-      this.emit("pi:event", { sessionId: this.session?.sessionId, event });
-      // A6: keep renderer state fresh at every meaningful boundary
+  /* ---------------- 多会话并发池 ---------------- */
+
+  /* 会话池上限：超出后淘汰最久未用且空闲（非流式）的会话。后台执行中的任务永不淘汰。 */
+  static POOL_LIMIT = 6;
+
+  /* 获取或创建会话 ctx：池中已有则复用（任务不中断）；否则创建独立 runtime 打开该会话文件 */
+  async #ensureSession(file, opts = {}) {
+    const key = PiBridge.normPath(file);
+    const hit = this.#pool.get(key);
+    if (hit) return hit;
+    // 无 cwdOverride 时优先用会话文件头记录的 cwd，保证 runtime cwd 与文件一致
+    let cwd = this.cwd;
+    if (!opts.cwdOverride) {
+      try {
+        const { SessionManager } = await loadPi();
+        const sm = SessionManager.open(file);
+        if (sm.getCwd?.()) cwd = sm.getCwd();
+      } catch {}
+    } else {
+      cwd = opts.cwdOverride;
+    }
+    const ctx = await this.#createCtx({ file, cwd, cwdOverride: opts.cwdOverride });
+    this.#pool.set(ctx.key, ctx);
+    return ctx;
+  }
+
+  /* 创建全新会话 ctx（新 runtime + 空会话） */
+  async #ensureFresh(opts = {}) {
+    const ctx = await this.#createCtx({ cwd: opts.cwd || this.cwd });
+    this.#pool.set(ctx.key, ctx);
+    return ctx;
+  }
+
+  /* 创建独立 runtime 并绑定事件订阅。file 缺省 = 全新空会话。 */
+  async #createCtx({ file, cwd, cwdOverride }) {
+    const { createAgentSessionRuntime, SessionManager, getAgentDir } = await loadPi();
+    const runtime = await createAgentSessionRuntime(this.#createRuntimeFactory(), {
+      cwd,
+      agentDir: getAgentDir(),
+      sessionManager: SessionManager.create(cwd, this.sessionDir || undefined),
+    });
+    if (file) {
+      await runtime.switchSession(file, cwdOverride ? { cwdOverride } : undefined);
+    }
+    const ctx = {
+      key: PiBridge.normPath(runtime.session.sessionFile || file || cwd),
+      runtime,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      lastFocus: 0,
+    };
+    ctx.unsubscribe = this.#bindCtx(ctx);
+    return ctx;
+  }
+
+  /* 每会话事件订阅：事件带 sessionId 转发；只有焦点会话触发状态推送 */
+  #bindCtx(ctx) {
+    const session = ctx.runtime.session;
+    return session.subscribe((event) => {
+      // 新会话落盘后 sessionFile 会变化（生成时间戳文件）：池 key 跟随，
+      // 否则列表的 running 匹配（按文件路径）会失配，徽标永远不亮
+      try {
+        const sf = session.sessionFile;
+        if (sf && ctx.key !== PiBridge.normPath(sf)) {
+          this.#pool.delete(ctx.key);
+          ctx.key = PiBridge.normPath(sf);
+          this.#pool.set(ctx.key, ctx);
+          if (this.#focusedKey === ctx.key || this.session === session) this.#focusedKey = ctx.key;
+        }
+      } catch {}
+      this._accountUsage(event, ctx);
+      this.emit("pi:event", { sessionId: session.sessionId, event });
       if (event?.type === "message_end" || event?.type === "agent_end" || event?.type === "agent_settled") {
         this._noteSession();
-        this.pushState();
+        if (ctx.key === this.#focusedKey) this.pushState();
       }
     });
   }
 
-  _accountUsage(event) {
+  /* 切换焦点：同步 this.session/this.runtime/this.usage 兼容引用；按 LRU 淘汰空闲会话 */
+  #focus(ctx) {
+    this.#focusedKey = ctx.key;
+    ctx.lastFocus = ++this.#focusSeq;
+    this.session = ctx.runtime.session;
+    this.runtime = ctx.runtime;
+    this.unsubscribe = ctx.unsubscribe;
+    this.usage = ctx.usage;
+    if (this.#pool.size > PiBridge.POOL_LIMIT) {
+      let oldest = null;
+      for (const c of this.#pool.values()) {
+        if (c.busy || c.runtime.session.isStreaming) continue; // 执行中的会话不淘汰
+        if (!oldest || c.lastFocus < oldest.lastFocus) oldest = c;
+      }
+      if (oldest && oldest !== ctx) {
+        this.#pool.delete(oldest.key);
+        try { oldest.unsubscribe?.(); } catch {}
+        oldest.runtime.dispose().catch(() => {});
+      }
+    }
+  }
+
+  #focusedCtx() {
+    return this.#pool.get(this.#focusedKey) || null;
+  }
+
+  async #disposeCtx(ctx) {
+    try { ctx.unsubscribe?.(); } catch {}
+    try { await ctx.runtime.dispose(); } catch {}
+  }
+
+  async #resetPool() {
+    for (const ctx of this.#pool.values()) await this.#disposeCtx(ctx);
+    this.#pool.clear();
+    this.#focusedKey = null;
+    this.session = null;
+    this.runtime = null;
+    this.unsubscribe = null;
+  }
+
+  /* runtime 工厂：每会话独立 services（cwd、扩展开关、默认智能体注入） */
+  #createRuntimeFactory() {
+    return async ({ cwd, sessionManager, sessionStartEvent }) => {
+      const { createAgentSessionServices, createAgentSessionFromServices } = await loadPi();
+      const services = await createAgentSessionServices({
+        cwd,
+        resourceLoaderOptions: {
+          extensionsOverride: (base) => {
+            // 缓存全部已发现的扩展（含即将被禁用的），供能力页展示与开关
+            this._allExtensions = (base.extensions || []).map((x) => ({
+              name: path.basename(x.path || "") || "extension",
+              path: x.path || "",
+            }));
+            const disabled = new Set(this.store.data.disabledExtensions || []);
+            const extensions = base.extensions.filter((x) => !disabled.has(x.path));
+            // Halo 默认智能体：完整 Extension 对象（path 指向真实存在的文件，loader stat 需要）；
+            // handler 在每轮 agent 启动前实时读 store，把选中智能体的提示追加到系统提示
+            try {
+              const extFile = path.join(path.dirname(this.store.file), "halo-default-agent-ext.mjs");
+              if (fs.existsSync(extFile)) {
+                const self = this;
+                extensions.push({
+                  path: extFile,
+                  resolvedPath: extFile,
+                  hidden: true,
+                  sourceInfo: { path: extFile, source: "halo", scope: "temporary", origin: "top-level" },
+                  handlers: new Map([
+                    ["before_agent_start", [async (event) => {
+                      const want = self.store.data.defaultAgent;
+                      if (!want) return undefined;
+                      try {
+                        const agents = await scanAgents(self.cwd);
+                        const ag = agents.find((a) => a.name === want);
+                        if (!ag || !ag.prompt) return undefined;
+                        const basePrompt = event.systemPrompt || "";
+                        return { systemPrompt: basePrompt + "\n\n# 当前智能体设定：" + ag.name + "\n\n" + ag.prompt };
+                      } catch { return undefined; }
+                    }]],
+                  ]),
+                  tools: new Map(),
+                  messageRenderers: new Map(),
+                  commands: new Map(),
+                  flags: new Map(),
+                  shortcuts: new Map(),
+                });
+              }
+            } catch {}
+            return { ...base, extensions };
+          },
+        },
+      });
+      this.services = services;
+      return {
+        ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
+        services,
+        diagnostics: services.diagnostics,
+      };
+    };
+  }
+
+  /* 每会话用量累计：ctx.usage 独立记账；焦点会话的 this.usage 引用同一对象 */
+  _accountUsage(event, ctx) {
     let u = null;
     if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage) u = event.message.usage;
     else if (event?.type === "turn_end" && event.message?.usage) u = event.message.usage;
     if (u) {
-      this.usage.input += u.input || 0;
-      this.usage.output += u.output || 0;
-      this.usage.cacheRead += u.cacheRead || 0;
-      this.usage.cacheWrite += u.cacheWrite || 0;
-      this.usage.cost += u.cost?.total || 0;
-      this.pushState();
+      const usage = ctx?.usage || this.usage;
+      usage.input += u.input || 0;
+      usage.output += u.output || 0;
+      usage.cacheRead += u.cacheRead || 0;
+      usage.cacheWrite += u.cacheWrite || 0;
+      usage.cost += u.cost?.total || 0;
+      if (ctx?.key === this.#focusedKey) this.pushState();
     }
   }
 
@@ -448,7 +731,14 @@ export class PiBridge {
         u.cacheWrite += s.cacheWrite || 0;
         u.cost += s.cost?.total || 0;
       }
-      this.usage = u;
+      // 原地更新焦点 ctx.usage（保持引用一致，后台会话记账不串线）
+      const cur = this.#focusedCtx();
+      if (cur) {
+        Object.assign(cur.usage, u);
+        this.usage = cur.usage;
+      } else {
+        this.usage = u;
+      }
     } catch {
       this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     }
@@ -517,6 +807,46 @@ export class PiBridge {
         source: status.source || "",
         usingSub,
       });
+      // 多账户保管库：账户列表 + 当前生效账户（凭据与 auth.json 指纹比对）
+      try {
+        const liveCred = this.#piCredential(id);
+        const liveFp = HaloAuthVault.fingerprint(liveCred);
+        // 旧条目补全邮箱/套餐（access token 是 JWT，本地解码即可，不联网）
+        let metaDirty = false;
+        const entries = this.vault.list(id);
+        for (const a of entries) {
+          if (!a.email) {
+            const meta = HaloAuthVault.jwtMeta(a.credential);
+            if (meta?.email || meta?.plan) {
+              if (meta.email) a.email = meta.email;
+              if (meta.plan) a.plan = meta.plan;
+              if (!a.userNamed && meta.email) a.label = meta.email; // 默认名升级为邮箱
+              metaDirty = true;
+            }
+          }
+        }
+        // 同一邮箱挂多个账户（如同号多 workspace）：追加 accountId 片段以便区分
+        const emailCount = new Map();
+        for (const a of entries) {
+          if (a.email && !a.userNamed) emailCount.set(a.email, (emailCount.get(a.email) || 0) + 1);
+        }
+        for (const a of entries) {
+          if (a.email && !a.userNamed && emailCount.get(a.email) > 1) {
+            a.label = `${a.email} · ${String(a.credential?.accountId || "").slice(0, 8)}`;
+          }
+        }
+        if (metaDirty) this.vault.save();
+        const accounts = entries.map((a) => ({
+          id: a.id, label: a.label, type: a.type, savedAt: a.savedAt, fingerprint: a.fingerprint,
+          email: a.email || null, plan: a.plan || null,
+          quota: this.#accountQuotaCache.get(`${id}:${a.id}`)?.data || null,
+        }));
+        const row = out[out.length - 1];
+        row.accounts = accounts;
+        row.hasStored = !!liveCred;
+        row.currentId = (accounts.find((a) => a.fingerprint && a.fingerprint === liveFp) || {}).id || null;
+        row.activeId = this.vault.data.active[id] || null;
+      } catch {}
     }
     out.sort((a, b) => (b.configured - a.configured) || a.name.localeCompare(b.name));
     return out;
@@ -547,6 +877,11 @@ export class PiBridge {
     };
     try {
       const cred = await mr.login(providerId, type, interaction);
+      // 多账户：登录成功后自动把本次身份存入保管库（同账户自动去重、只刷新令牌）
+      try {
+        const stored = this.#piCredential(providerId) || cred;
+        if (stored?.type) this.vault.upsert(providerId, stored);
+      } catch (e) { console.log(`[auth] vault capture failed: ${providerId}`, e?.message || e); }
       console.log(`[auth] done: ${providerId} (${cred?.type || type})`);
       this.emit("pi:event", { event: { type: "auth_event", phase: "done", providerId, credentialType: cred?.type || type } });
       this.pushState();
@@ -584,6 +919,109 @@ export class PiBridge {
     return true;
   }
 
+  /* ---------------- 多账户：保存 / 切换 / 删除 / 重命名 ---------------- */
+
+  /** 把当前生效的登录凭据保存为一个账户（同身份去重） */
+  async authAccountCapture(providerId, label) {
+    const cred = this.#piCredential(providerId);
+    if (!cred?.type) throw new Error("该供应商当前没有可保存的登录凭据");
+    const entry = this.vault.upsert(providerId, cred, label);
+    if (!entry) throw new Error("凭据保存失败");
+    return { id: entry.id, label: entry.label, providerId };
+  }
+
+  /** 一键切换账户：把保存的凭据写回 auth.json，并同步模型快照与可用性 */
+  async authAccountSwitch(providerId, accountId) {
+    await loadPi();
+    const entry = this.vault.find(providerId, accountId);
+    if (!entry?.credential) throw new Error("账户不存在或凭据已丢失");
+    const mr = this.modelRuntime;
+    if (!mr) throw new Error("Model runtime not ready");
+    await this.#writeStoredCredential(providerId, entry.credential);
+    try { await mr.refresh({ providers: [providerId], allowNetwork: false }); } catch {}
+    this.vault.setActive(providerId, accountId);
+    // 切换后立即拉一次新账户额度：随切换结果返回，底部额度条与账户芯片同步更新
+    let quota = null;
+    try {
+      quota = await this.#quotaFetch(providerId, this.#piCredential(providerId) || entry.credential);
+      if (quota) {
+        this.#quotaCache.set(providerId, { ts: Date.now(), data: quota });
+        this.#accountQuotaCache.set(`${providerId}:${accountId}`, { ts: Date.now(), data: quota });
+      }
+    } catch {}
+    this.pushState();
+    console.log(`[auth] account switched: ${providerId} -> ${entry.label}`);
+    return { providerId, accountId, label: entry.label, quota };
+  }
+
+  async authAccountRemove(providerId, accountId) {
+    return { removed: this.vault.remove(providerId, accountId) };
+  }
+
+  async authAccountRename(providerId, accountId, label) {
+    if (!this.vault.rename(providerId, accountId, label)) throw new Error("账户不存在");
+    return true;
+  }
+
+  /** 批量拉取某供应商下每个账户的剩余额度（并行，逐账户 60s 缓存） */
+  async authAccountsQuota(providerId) {
+    const kind = this.#quotaKindFor(providerId);
+    if (kind === "context") return []; // 该供应商没有额度接口
+    const accounts = this.vault.list(providerId);
+    if (!accounts.length) return [];
+    let live = null;
+    try { live = this.#piCredential(providerId); } catch {}
+    const liveFp = HaloAuthVault.fingerprint(live);
+    return Promise.all(accounts.map(async (a) => {
+      const key = `${providerId}:${a.id}`;
+      const hit = this.#accountQuotaCache.get(key);
+      if (hit && Date.now() - hit.ts < 60_000) return { id: a.id, quota: hit.data };
+      try {
+        // 当前生效账户直接用 auth.json 里的凭据（由 pi 管理新鲜度）；其余账户用保管库副本
+        const isLive = a.fingerprint && a.fingerprint === liveFp;
+        const cred = isLive ? (live || a.credential) : await this.#freshCredential(providerId, a.credential);
+        const quota = await this.#quotaFetch(providerId, cred);
+        this.#accountQuotaCache.set(key, { ts: Date.now(), data: quota });
+        return { id: a.id, quota };
+      } catch {
+        const quota = { kind, error: true };
+        this.#accountQuotaCache.set(key, { ts: Date.now(), data: quota });
+        return { id: a.id, quota };
+      }
+    }));
+  }
+
+  /** 非活跃账户的 OAuth 令牌过期时尽力刷新（只更新保管库，不碰 auth.json；防止轮换后旧令牌失效） */
+  async #freshCredential(providerId, cred) {
+    if (!cred || cred.type !== "oauth") return cred;
+    if (!cred.expires || cred.expires > Date.now() + 120_000) return cred;
+    const mr = this.modelRuntime;
+    const provs = mr?.getProviders?.() || [];
+    const arr = Array.isArray(provs) ? provs : Object.values(provs || {});
+    const oauth = arr.find((p) => (p.id || p.providerId) === providerId)?.auth?.oauth;
+    if (!oauth?.refresh) return cred;
+    const fresh = await oauth.refresh(cred, AbortSignal.timeout(15000));
+    const entry = this.vault.list(providerId).find((a) => a.credential?.refresh === cred.refresh || a.credential === cred);
+    if (entry) { entry.credential = fresh; entry.savedAt = Date.now(); this.vault.save(); }
+    return fresh;
+  }
+
+  /** 写入凭据：优先走 pi 的 CredentialStore.modify（跨进程文件锁），兜底直写 auth.json */
+  async #writeStoredCredential(providerId, credential) {
+    const creds = this.modelRuntime?.credentials;
+    if (creds && typeof creds.modify === "function") {
+      await creds.modify(providerId, async () => credential);
+      return;
+    }
+    const file = path.join(os.homedir(), ".pi", "agent", "auth.json");
+    let data = {};
+    try { data = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
+    if (credential) data[providerId] = credential;
+    else delete data[providerId];
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  }
+
   setThinkingLevel(level) {
     this.session?.setThinkingLevel(level);
     this.store.set("thinkingLevel", level);
@@ -594,30 +1032,63 @@ export class PiBridge {
   /* ---------------- prompting ---------------- */
 
   async prompt(text, opts = {}) {
-    if (!this.session) throw new Error("Session not ready");
-    await this.session.prompt(text, opts);
-    return this.publicState();
+    const ctx = this.#focusedCtx();
+    if (!ctx) throw new Error("Session not ready");
+    ctx.busy = (ctx.busy || 0) + 1;
+    try {
+      await ctx.runtime.session.prompt(text, opts);
+      return this.publicState();
+    } finally {
+      ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
+    }
   }
 
   async steer(text) {
-    await this.session?.steer(text);
-    return this.publicState();
+    const ctx = this.#focusedCtx();
+    if (!ctx) return this.publicState();
+    ctx.busy = (ctx.busy || 0) + 1;
+    try {
+      await ctx.runtime.session.steer(text);
+      return this.publicState();
+    } finally {
+      ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
+    }
   }
 
   async followUp(text) {
-    await this.session?.followUp(text);
-    return this.publicState();
+    const ctx = this.#focusedCtx();
+    if (!ctx) return this.publicState();
+    ctx.busy = (ctx.busy || 0) + 1;
+    try {
+      await ctx.runtime.session.followUp(text);
+      return this.publicState();
+    } finally {
+      ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
+    }
   }
 
   async abort() {
-    await this.session?.abort();
-    return this.publicState();
+    const ctx = this.#focusedCtx();
+    if (!ctx) return this.publicState();
+    ctx.busy = 0;
+    try {
+      await ctx.runtime.session.abort();
+      return this.publicState();
+    } finally {
+      ctx.busy = 0;
+    }
   }
 
   async compact(customInstructions) {
-    if (!this.session) throw new Error("Session not ready");
-    const res = await this.session.compact(customInstructions);
-    return { ok: true, summary: String(res?.summary || "").slice(0, 400) };
+    const ctx = this.#focusedCtx();
+    if (!ctx) throw new Error("Session not ready");
+    ctx.busy = (ctx.busy || 0) + 1;
+    try {
+      const res = await ctx.runtime.session.compact(customInstructions);
+      return { ok: true, summary: String(res?.summary || "").slice(0, 400) };
+    } finally {
+      ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
+    }
   }
 
   /* ---------------- sessions ---------------- */
@@ -628,7 +1099,7 @@ export class PiBridge {
     try {
       // NOTE: listAll() returns [] in pi 0.84.x — use list(), which returns
       // {path,id,cwd,name,created,modified,messageCount,firstMessage,...}
-      const all = await SessionManager.list(this.cwd);
+      const all = await SessionManager.list(this.cwd, this.sessionDir || undefined);
       for (const s of Array.isArray(all) ? all : []) {
         const f = s.path || s.file || s.sessionFile || "";
         const mc = s.messageCount ?? null;
@@ -642,6 +1113,7 @@ export class PiBridge {
           name: s.name || s.firstMessage || "",
           modified: s.modified || s.mtime || null,
           messageCount: mc,
+          running: !!this.#pool.get(PiBridge.normPath(f))?.runtime.session.isStreaming, // 后台执行中
         });
       }
     } catch {}
@@ -686,19 +1158,18 @@ export class PiBridge {
       a.cost += u.cost?.total || 0;
       map.set(key, a);
     };
-    const scan = (dir) => {
+    const scan = async (dir) => {
       let entries = [];
-      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
         const full = path.join(dir, e.name);
-        if (e.isDirectory()) { scan(full); continue; }
+        if (e.isDirectory()) { await scan(full); continue; }
         if (!e.isFile() || !e.name.endsWith(".jsonl")) continue;
-        let text = "";
-        try { text = fs.readFileSync(full, "utf8"); } catch { continue; }
-        const lines = text.split("\n");
+        // 流式逐行处理：会话文件可能很大，整文件读入会撑高内存峰值
         let cwd = "";
         let counted = false;
-        for (const line of lines) {
+        const rl = createInterface({ input: fs.createReadStream(full), crlfDelay: Infinity });
+        for await (const line of rl) {
           if (!line || line[0] !== "{") continue;
           // 快速预筛：不含 usage 的行直接跳过（session/model_change 等头部行除外）
           const isSessionHead = line.includes('"type":"session"');
@@ -717,7 +1188,7 @@ export class PiBridge {
         }
       }
     };
-    scan(root);
+    await scan(root);
     const r4 = (n) => Math.round(n * 10000) / 10000;
     const models = [...byModel.entries()].map(([key, a]) => ({ key, ...a, cost: r4(a.cost) }))
       .sort((x, y) => y.totalTokens - x.totalTokens);
@@ -741,6 +1212,7 @@ export class PiBridge {
    * 未接入的 provider 显示占位提示（不伪装百分比）
    */
   #quotaCache = new Map(); // provider → { ts, data }
+  #accountQuotaCache = new Map(); // `${provider}:${accountId}` → { ts, data }（账户芯片额度，60s）
 
   #quotaKindFor(provider) {
     if (provider === "autoclaw") return "points";
@@ -777,10 +1249,23 @@ export class PiBridge {
     return t.startsWith("Bearer ") ? t : `Bearer ${t}`;
   }
 
-  /** AutoClaw 控制台接口签名：X-Auth-Sign = md5(appid & 秒级时间戳 & appkey) */
+  /** AutoClaw 控制台接口签名：X-Auth-Sign = md5(appid & 秒级时间戳 & appkey)。
+   *  appid/appkey 可用环境变量或 halo-settings.json 覆盖（autoclawAppId/autoclawAppKey），
+   *  内置值仅作向后兼容回退 —— 生产使用建议通过环境变量注入。 */
+  #autoclawConfig() {
+    // 内置 appKey 仅为开箱即用回退（已公开于 GitHub 历史）；
+    // 生产使用请设置环境变量 HALO_AUTOCLAW_APP_KEY 或在设置中配置，并在 AutoClaw 后台轮换。
+    const appId = process.env.HALO_AUTOCLAW_APP_ID || this.store.data.autoclawAppId || "100003";
+    const appKey = process.env.HALO_AUTOCLAW_APP_KEY || this.store.data.autoclawAppKey || "38d2391985e2369a5fb8227d8e6cd5e5";
+    if (!process.env.HALO_AUTOCLAW_APP_KEY && !this.store.data.autoclawAppKey && !this._autoclawWarned) {
+      this._autoclawWarned = true;
+      console.warn("[PiBridge] AutoClaw 使用内置 APP_KEY（公开密钥）。建议设置 HALO_AUTOCLAW_APP_KEY 并在 AutoClaw 后台轮换密钥。");
+    }
+    return { appId, appKey };
+  }
+
   #autoclawHeaders() {
-    const APP_ID = "100003";
-    const APP_KEY = "38d2391985e2369a5fb8227d8e6cd5e5";
+    const { appId, appKey } = this.#autoclawConfig();
     const ts = String(Math.floor(Date.now() / 1000));
     return {
       "Content-Type": "application/json",
@@ -790,9 +1275,9 @@ export class PiBridge {
       "X-Product": "autoclaw",
       "X-Channel": "official",
       "X-Lang": "zh-CN",
-      "X-Auth-Appid": APP_ID,
+      "X-Auth-Appid": appId,
       "X-Auth-TimeStamp": ts,
-      "X-Auth-Sign": crypto.createHash("md5").update(`${APP_ID}&${ts}&${APP_KEY}`).digest("hex"),
+      "X-Auth-Sign": crypto.createHash("md5").update(`${appId}&${ts}&${appKey}`).digest("hex"),
       "X-Trace-Id": crypto.randomUUID(),
       authorization: this.#autoclawToken(),
     };
@@ -807,8 +1292,8 @@ export class PiBridge {
     return { kind: "points", label: "积分", value: Number(j.data.total_balance) || 0 };
   }
 
-  async #quotaDeepSeek() {
-    const cred = this.#piCredential("deepseek");
+  async #quotaDeepSeek(cred) {
+    cred = cred || this.#piCredential("deepseek");
     if (!cred?.key) throw new Error("DeepSeek 未配置 API Key");
     const r = await fetch("https://api.deepseek.com/user/balance", {
       headers: { Authorization: `Bearer ${cred.key}`, Accept: "application/json" },
@@ -820,8 +1305,8 @@ export class PiBridge {
     return { kind: "balance", label: "余额", value: Number(info.total_balance) || 0, currency: info.currency || "CNY" };
   }
 
-  async #quotaCodex() {
-    const cred = this.#piCredential("openai-codex");
+  async #quotaCodex(cred) {
+    cred = cred || this.#piCredential("openai-codex");
     if (!cred?.access || !cred?.accountId) throw new Error("OpenAI Codex 未登录");
     const r = await this.#proxiedFetch("https://chatgpt.com/backend-api/wham/usage", {
       headers: {
@@ -851,8 +1336,8 @@ export class PiBridge {
   }
 
   /** Z.AI / 智谱 GLM Coding 订阅：token 窗口用量百分比（认证为裸 token，无 Bearer 前缀） */
-  async #quotaZai(provider) {
-    const cred = this.#piCredential(provider);
+  async #quotaZai(provider, cred) {
+    cred = cred || this.#piCredential(provider);
     if (!cred?.key) throw new Error(provider === "zai" ? "Z.AI 未配置 API Key" : "智谱 GLM Coding 未配置 API Key");
     const base = provider === "zai" ? "https://api.z.ai" : "https://open.bigmodel.cn";
     const r = await fetch(`${base}/api/monitor/usage/quota/limit`, {
@@ -879,8 +1364,8 @@ export class PiBridge {
   }
 
   /** Moonshot 平台预付余额：.ai 全球站 USD / .cn 国内站 CNY，含代金券 */
-  async #quotaMoonshot(provider, base, currency) {
-    const cred = this.#piCredential(provider);
+  async #quotaMoonshot(provider, base, currency, cred) {
+    cred = cred || this.#piCredential(provider);
     if (!cred?.key) throw new Error("Moonshot 未配置 API Key");
     const r = await this.#proxiedFetch(`${base}/v1/users/me/balance`, {
       headers: { Authorization: `Bearer ${cred.key}`, Accept: "application/json" },
@@ -895,8 +1380,8 @@ export class PiBridge {
   }
 
   /** OpenRouter 预付信用：total_credits - total_usage，USD */
-  async #quotaOpenrouter() {
-    const cred = this.#piCredential("openrouter");
+  async #quotaOpenrouter(cred) {
+    cred = cred || this.#piCredential("openrouter");
     if (!cred?.key) throw new Error("OpenRouter 未配置 API Key");
     const r = await this.#proxiedFetch("https://openrouter.ai/api/v1/credits", {
       headers: { Authorization: `Bearer ${cred.key}` },
@@ -911,9 +1396,9 @@ export class PiBridge {
   }
 
   /** 尽力而为接口：拿不到就返回 null（渲染层显示 —，不显示错误态） */
-  async #quotaOpenaiPlatform() {
+  async #quotaOpenaiPlatform(cred) {
     try {
-      const cred = this.#piCredential("openai");
+      cred = cred || this.#piCredential("openai");
       if (!cred?.key) return null;
       const r = await this.#proxiedFetch("https://api.openai.com/v1/dashboard/billing/credit_grants", {
         headers: { Authorization: `Bearer ${cred.key}` },
@@ -927,9 +1412,9 @@ export class PiBridge {
     } catch { return null; }
   }
 
-  async #quotaMinimax(provider) {
+  async #quotaMinimax(provider, cred) {
     try {
-      const cred = this.#piCredential(provider);
+      cred = cred || this.#piCredential(provider);
       if (!cred?.key) return null;
       const base = provider === "minimax-cn" ? "https://api.minimaxi.com" : "https://api.minimax.io";
       const r = await fetch(`${base}/v1/get_balance?key=${encodeURIComponent(cred.key)}`, { signal: AbortSignal.timeout(8000) });
@@ -942,25 +1427,30 @@ export class PiBridge {
     } catch { return null; }
   }
 
-  /** 当前 provider 的剩余额度；60s 内存缓存，失败时沿用上次数据 */
-  async modelQuota(provider) {
+  /** 按指定凭据拉取额度（cred 缺省 = auth.json 当前凭据） */
+  async #quotaFetch(provider, cred) {
+    switch (provider) {
+      case "autoclaw": return this.#quotaAutoclaw();
+      case "deepseek": return this.#quotaDeepSeek(cred);
+      case "openai-codex": return this.#quotaCodex(cred);
+      case "zai": case "zai-coding-cn": return this.#quotaZai(provider, cred);
+      case "moonshotai": return this.#quotaMoonshot(provider, "https://api.moonshot.ai", "USD", cred);
+      case "moonshotai-cn": return this.#quotaMoonshot(provider, "https://api.moonshot.cn", "CNY", cred);
+      case "openrouter": return this.#quotaOpenrouter(cred);
+      case "minimax": case "minimax-cn": return this.#quotaMinimax(provider, cred);
+      case "openai": return this.#quotaOpenaiPlatform(cred);
+    }
+    return null;
+  }
+
+  /** 当前 provider 的剩余额度；内存缓存仅作防抖，force=true 跳过（每轮对话结束/切换账户后强制拉新） */
+  async modelQuota(provider, force = false) {
     const kind = this.#quotaKindFor(provider);
     if (kind === "context") return { kind: "context" };
     const hit = this.#quotaCache.get(provider);
-    if (hit && Date.now() - hit.ts < 60_000) return hit.data;
+    if (!force && hit && Date.now() - hit.ts < 15_000) return hit.data;
     try {
-      let data = null;
-      switch (provider) {
-        case "autoclaw": data = await this.#quotaAutoclaw(); break;
-        case "deepseek": data = await this.#quotaDeepSeek(); break;
-        case "openai-codex": data = await this.#quotaCodex(); break;
-        case "zai": case "zai-coding-cn": data = await this.#quotaZai(provider); break;
-        case "moonshotai": data = await this.#quotaMoonshot(provider, "https://api.moonshot.ai", "USD"); break;
-        case "moonshotai-cn": data = await this.#quotaMoonshot(provider, "https://api.moonshot.cn", "CNY"); break;
-        case "openrouter": data = await this.#quotaOpenrouter(); break;
-        case "minimax": case "minimax-cn": data = await this.#quotaMinimax(provider); break;
-        case "openai": data = await this.#quotaOpenaiPlatform(); break;
-      }
+      const data = await this.#quotaFetch(provider);
       if (data) {
         this.#quotaCache.set(provider, { ts: Date.now(), data });
         return data;
@@ -971,9 +1461,10 @@ export class PiBridge {
     return hit?.data || { kind, error: true };
   }
 
-  async openSession(file) {
-    await this.runtime.switchSession(file);
-    this._bindSession();
+  /** 打开会话：池中已有则仅切换焦点（任务后台继续），否则创建独立 runtime */
+  async openSession(file, opts = {}) {
+    const ctx = await this.#ensureSession(file, opts);
+    this.#focus(ctx);
     await this.restoreModel();
     this._noteSession();
     this._recomputeUsageFromSession();
@@ -981,39 +1472,51 @@ export class PiBridge {
     return this.publicState();
   }
 
+  /** 新会话：新建独立 runtime 并聚焦；旧会话（含执行中的任务）保留在池中后台继续 */
   async newSession() {
-    await this.runtime.newSession();
-    this._bindSession();
+    const cur = this.#focusedCtx();
+    // 焦点是尚未落盘的幽灵空会话（0 条消息）：丢弃它，避免空会话堆积。
+    // 任务进行中（busy/流式）绝不丢弃 —— 后台任务必须继续执行。
+    let dropGhost = false;
+    try {
+      dropGhost = !!cur && !cur.busy && !cur.runtime.session.isStreaming && !cur.runtime.session.sessionManager?.isPersisted?.();
+    } catch {}
+    let ctx = await this.#ensureFresh();
+    if (dropGhost && cur) {
+      this.#pool.delete(cur.key);
+      await this.#disposeCtx(cur);
+    }
+    this.#focus(ctx);
     await this.restoreModel();
     this._noteSession();
-    this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    this._recomputeUsageFromSession();
     this.pushState();
     return this.publicState();
   }
 
-  /** 删除会话记录文件；若删除的是当前会话，先切到新会话再删文件 */
+  /** 删除会话记录文件；执行中的会话拒绝删除；若删除的是焦点会话，聚焦到最近使用的其他会话 */
   async deleteSession(file) {
     const abs = path.resolve(file);
     if (!/\.jsonl$/i.test(abs)) throw new Error("不是会话记录文件");
+    const key = PiBridge.normPath(abs);
+    const ctx = this.#pool.get(key);
     let switched = false;
-    const current = this.session?.sessionFile;
-    const isCurrent = current && path.resolve(current) === abs;
-    if (!fs.existsSync(abs)) {
-      // 文件不存在：若是当前空会话（尚未落盘的幽灵条目），视为“丢弃”直接开新会话
-      if (!isCurrent) throw new Error("会话记录不存在");
-      if (this.session?.isStreaming) throw new Error("任务进行中，先中止再删除");
-      await this.runtime.newSession();
-      this._bindSession();
-      this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-      this.pushState();
-      return { switched: true };
-    }
-    if (isCurrent) {
-      if (this.session?.isStreaming) throw new Error("任务进行中，先中止再删除");
-      await this.runtime.newSession();
-      this._bindSession();
-      this.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-      switched = true;
+    if (ctx) {
+      if (ctx.busy || ctx.runtime.session.isStreaming) throw new Error("任务进行中，先中止再删除");
+      await this.#disposeCtx(ctx);
+      this.#pool.delete(key);
+      if (this.#focusedKey === key) {
+        // 聚焦到最近使用的其他会话；池空则新建
+        let next = null;
+        for (const c of this.#pool.values()) if (!next || c.lastFocus > next.lastFocus) next = c;
+        if (next) this.#focus(next);
+        else {
+          const fresh = await this.#ensureFresh();
+          this.#focus(fresh);
+        }
+        this._recomputeUsageFromSession();
+        switched = true;
+      }
     }
     fs.rmSync(abs, { force: true });
     this.pushState();
@@ -1086,10 +1589,15 @@ export class PiBridge {
     else list.add(extPath);
     this.store.set("disabledExtensions", [...list]);
     const sf = this.session?.sessionFile;
-    if (sf && this.runtime) {
+    if (sf) {
+      // 仅重载焦点会话使扩展生效；执行中拒绝（后台任务不中断）
+      const cur = this.#focusedCtx();
+      if (cur?.busy || cur?.runtime.session.isStreaming) return { error: "任务进行中，扩展切换将在下次会话重建时生效" };
       try {
-        await this.runtime.switchSession(sf);
-        this._bindSession();
+        await this.#disposeCtx(cur);
+        this.#pool.delete(cur.key);
+        const ctx = await this.#ensureSession(sf);
+        this.#focus(ctx);
         await this.restoreModel();
         this._recomputeUsageFromSession();
       } catch (e) {
@@ -1101,9 +1609,6 @@ export class PiBridge {
   }
 
   async dispose() {
-    try {
-      this.unsubscribe?.();
-      this.session?.dispose?.();
-    } catch {}
+    await this.#resetPool();
   }
 }

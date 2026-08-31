@@ -2,15 +2,14 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: halo-preview:; frame-src halo-preview:; connect-src 'self'; object-src 'none'; base-uri 'none'" />
 <title>Pi Halo · 星环</title>
-<script>
-  /* paint the saved theme before first frame to avoid flash */
-  try { document.documentElement.dataset.theme = localStorage.getItem("halo-theme") || "dark"; } catch {}
-</script>
+<script src="js/theme.js"></script>
 <link rel="stylesheet" href="css/app.css" />
 <link rel="stylesheet" href="vendor/xterm.css" />
 <script src="vendor/xterm.js"></script>
 <script src="vendor/addon-fit.js"></script>
+<script src="js/markdown.js"></script>
 </head>
 <body>
 <div id="app">

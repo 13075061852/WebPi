@@ -77,7 +77,6 @@ console.log("app ready, injecting scenarios...");
 
 // make the layout deterministic for the shot
 await evalJS(`
-  window.Nebula.setZoom(1);
   document.body.classList.add('enter');
 `);
 
@@ -122,6 +121,24 @@ await evalJS(`(async () => {
 await sleep(600);
 await screenshot("test/shot-happy.png");
 
+// ---- DOM 结构断言（不只截图，验证渲染结果） ----
+const domCheck = await evalJS(`({
+  turns: document.querySelectorAll("#messages > .turn").length,
+  mdText: [...document.querySelectorAll("#messages .md")].map(n => n.textContent).join("|"),
+  hasBold: !!document.querySelector("#messages .md b"),
+  toolCards: document.querySelectorAll("#messages .tool").length,
+  toolDone: !!document.querySelector("#messages .tool.done"),
+  queueChips: document.querySelectorAll("#queueRow .queue-chip").length,
+  stats: document.querySelector("#chatStats")?.textContent || "",
+})`);
+console.log("dom check:", JSON.stringify(domCheck));
+if (!domCheck.turns || !domCheck.mdText.includes("项目结构") || !domCheck.hasBold || !domCheck.toolCards || !domCheck.toolDone || !domCheck.queueChips || !domCheck.stats) {
+  console.log("DOM VERIFY FAILED");
+  electron.kill();
+  process.exit(1);
+}
+console.log("DOM VERIFY OK");
+
 // ---- Scenario B: error path with retry ----
 await evalJS(`(async () => {
   const d = window.__haloDispatch;
@@ -137,16 +154,7 @@ await evalJS(`(async () => {
 await sleep(500);
 await screenshot("test/shot-error.png");
 
-// ---- zoom clamp sanity ----
-const zoom = await evalJS(`
-  window.Nebula.setZoom(0.1);
-  new Promise(r => setTimeout(r, 300)).then(() => {
-    const z1 = window.Nebula.getZoom();
-    window.Nebula.setZoom(9);
-    return new Promise(r => setTimeout(r, 300)).then(() => [z1, window.Nebula.getZoom()]);
-  });
-`);
-console.log("zoom clamp [low, high] =", zoom, "(expect ≈0.75 / ≈1.6)");
+// ---- zoom clamp sanity（nebula.js 已于 4c0d779 移除，画布不再存在于 UI 中，跳过） ----
 
 console.log("console errors during test:", consoleLogs.length ? consoleLogs : "none");
 

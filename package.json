@@ -6,16 +6,48 @@
   "type": "commonjs",
   "scripts": {
     "start": "node scripts/start.mjs",
-    "test:render": "node test/e2e-render.mjs"
+    "test:render": "node test/e2e/e2e-render.mjs",
+    "test:reallink": "node test/e2e/e2e-reallink.mjs",
+    "test:workspace": "node test/e2e/e2e-workspace.mjs",
+    "test:treewatch": "node test/e2e/e2e-treewatch.mjs",
+    "test:multisession": "node test/e2e/verify-multisession.mjs",
+    "test:multisession-ui": "node test/e2e/e2e-multisession.mjs",
+    "test:inject": "node test/check-touch-script.mjs",
+    "check": "node scripts/check-syntax.mjs",
+    "lint": "eslint src scripts test --max-warnings 0",
+    "dist": "electron-builder --win",
+    "dist:dir": "electron-builder --win dir"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "build": {
+    "appId": "com.pihalo.app",
+    "productName": "Pi Halo",
+    "files": ["src/**/*", "assets/**/*", "package.json"],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "shortcutName": "Pi Halo"
+    }
   },
   "author": "Pi Halo",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^44.0.0"
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
+    "eslint": "^9.0.0",
+    "globals": "^17.11.0"
   },
   "dependencies": {
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0",
     "iconv-lite": "^0.7.3"
   }
 }

@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # 全量语法检查（ESM/CJS 混合，node --check 逐个验证）
+      - run: npm run check
+      # 注入脚本语法（离线验证 executeJavaScript 的字符串）
+      - run: node test/check-touch-script.mjs
+      # 静态检查
+      - run: npm run lint

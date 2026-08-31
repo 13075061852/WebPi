@@ -202,7 +202,7 @@ button:active { transform: scale(0.96); }
 #layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr) 452px;
+  grid-template-columns: 248px minmax(0, 1fr) 486px;
   min-height: 0;
   /* 侧栏展开/收起：轨道宽度插值（两侧轨道类型一致才能平滑动画） */
   transition: grid-template-columns 0.3s cubic-bezier(0.22, 1, 0.36, 1);
@@ -230,7 +230,7 @@ body.focus-mode #center { display: none; }
 #sidebar > * { min-width: 247px; }
 
 /* ---------- 侧栏展开/收起（宽度动画收起；入口在预览栏左端 #btnSidebar） ---------- */
-body.sb-collapsed:not(.focus-mode) #layout { grid-template-columns: 0px minmax(0, 1fr) 452px; }
+body.sb-collapsed:not(.focus-mode) #layout { grid-template-columns: 0px minmax(0, 1fr) 486px; }
 body.sb-collapsed #sidebar { border-right-color: transparent; }
 #btnSidebar {
   flex: none;
@@ -362,6 +362,18 @@ body.sb-collapsed #btnSidebar { color: var(--acc); }
 }
 .session-item .s-name { font-size: 12.5px; color: var(--txt); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item .s-meta { font-size: 10.5px; color: var(--txt-faint); font-family: var(--mono); }
+.session-item .s-busy {
+  display: inline-block; width: 7px; height: 7px; margin-right: 6px;
+  border-radius: 50%; background: #4ade80;
+  box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.55);
+  animation: s-busy-pulse 1.6s ease-out infinite;
+  vertical-align: 1px;
+}
+@keyframes s-busy-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(74, 222, 128, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+}
 .session-item .s-del {
   flex: none; width: 26px; height: 26px; margin-right: 7px;
   display: grid; place-items: center;
@@ -1331,6 +1343,7 @@ body.focus-mode #btnFocus { color: var(--acc); }
   padding: 6px 8px 8px;
 }
 .cb-left, .cb-right { display: flex; align-items: center; gap: 6px; }
+.cb-left { flex: 1; min-width: 0; } /* 左侧可收缩：空间不足时模型名先省略，额度/思考芯片不折行 */
 .cb-left > button, .chip {
   display: flex; align-items: center; gap: 5px;
   height: 28px;
@@ -1339,6 +1352,8 @@ body.focus-mode #btnFocus { color: var(--acc); }
   border: 1px solid transparent;
   color: var(--txt-faint);
   font-size: 11.5px;
+  white-space: nowrap;
+  flex: none;
   transition: all 0.22s;
 }
 .cb-left > button:hover, .chip:hover {
@@ -1347,27 +1362,13 @@ body.focus-mode #btnFocus { color: var(--acc); }
   border-color: var(--hair-2);
 }
 .chip .ic { width: 13px; height: 13px; }
-/* 输入框：当前模型上下文剩余额度（替代原技能按钮，非交互） */
-.chip.quota { cursor: default; gap: 7px; }
+/* 输入框：当前模型上下文剩余额度（仅以文字呈现，进度横线已移除） */
+.chip.quota { cursor: default; }
 .chip.quota:hover { color: var(--txt-faint); background: transparent; border-color: transparent; }
-.q-track {
-  display: inline-block; width: 30px; height: 3px;
-  border-radius: 2px; overflow: hidden;
-  background: rgba(var(--ink-rgb), 0.14);
-}
-#ctxQuotaBar {
-  display: block; height: 100%; width: 0%;
-  border-radius: 2px;
-  background: var(--txt-faint);
-  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1), background 0.3s;
-}
-#ctxQuotaText { font-size: 11px; }
-.chip.quota.low #ctxQuotaBar { background: #d08b3c; }
+#ctxQuotaText { font-size: 11px; white-space: nowrap; }
 .chip.quota.low #ctxQuotaText { color: #d08b3c; }
-/* 积分/余额制：无上限不画条 */
-.chip.quota.kind-points .q-track,
-.chip.quota.kind-plain .q-track { display: none; }
-#modelChipName { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#btnModel { min-width: 0; }
+#modelChipName { max-width: 120px; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 #btnSend {
   width: 34px; height: 34px; border-radius: 50%;
@@ -1717,6 +1718,38 @@ body.focus-mode #btnFocus { color: var(--acc); }
 }
 .auth-keyrow input:focus, .auth-inline-input input:focus { border-color: rgba(var(--ink-rgb), 0.35); }
 .auth-inline-input { display: inline-flex; margin: 4px 0; }
+
+/* 多账户切换（账户芯片条） */
+.auth-accts { display: flex; align-items: center; gap: 6px; margin-top: 9px; flex-wrap: wrap; }
+.auth-accts.busy { opacity: 0.55; pointer-events: none; }
+.acc-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 6px 3px 9px; border: 1px solid var(--hair-2); border-radius: 999px;
+  font-size: 11px; color: var(--txt-dim); cursor: pointer; user-select: none;
+  transition: border-color 0.18s, background 0.18s, color 0.18s, transform 0.18s var(--ease-b);
+}
+.acc-chip:hover { border-color: rgba(var(--ink-rgb), 0.4); color: var(--txt); transform: translateY(-1px); }
+.acc-chip.on { background: var(--acc); border-color: var(--acc); color: var(--acc-ink); }
+.acc-chip.confirm-del { border-color: rgba(224, 96, 92, 0.55); color: var(--err); }
+.acc-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--txt-faint); flex-shrink: 0; }
+.acc-chip.on .acc-dot { background: var(--acc-ink); }
+.acc-chip .acc-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acc-main { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.acc-quota { font-family: var(--mono); font-size: 10px; opacity: 0.78; white-space: nowrap; }
+.acc-quota::before { content: "·"; margin-right: 5px; opacity: 0.55; }
+.acc-x {
+  border: none; background: transparent; color: inherit; opacity: 0.45;
+  font-size: 11px; line-height: 1; padding: 2px 4px; border-radius: 999px; cursor: pointer;
+  transition: opacity 0.15s, color 0.15s;
+}
+.acc-x:hover { opacity: 1; color: var(--err); }
+.acc-chip.confirm-del .acc-x:hover { color: var(--err); }
+.acc-input {
+  border: 1px solid rgba(var(--ink-rgb), 0.35); border-radius: 999px;
+  background: transparent; color: var(--txt);
+  font-size: 11px; padding: 2px 9px; outline: none; width: 130px;
+  user-select: text;
+}
 
 /* help */
 .help-body { padding: 14px 16px; }

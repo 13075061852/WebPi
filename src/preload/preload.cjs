@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld("halo", {
   setThinking: (level) => ipcRenderer.invoke("halo:set-thinking", level),
   listSessions: () => ipcRenderer.invoke("halo:list-sessions"),
   usageSummary: (days) => ipcRenderer.invoke("halo:usage-summary", { days }),
-  modelQuota: (provider) => ipcRenderer.invoke("halo:model-quota", provider),
+  modelQuota: (provider, force) => ipcRenderer.invoke("halo:model-quota", provider, force),
   openSession: (file) => ipcRenderer.invoke("halo:open-session", file),
   newSession: () => ipcRenderer.invoke("halo:new-session"),
   deleteSession: (file) => ipcRenderer.invoke("halo:delete-session", file),
@@ -38,6 +38,12 @@ contextBridge.exposeInMainWorld("halo", {
   authRespond: (value) => ipcRenderer.invoke("halo:auth-respond", value),
   authCancel: () => ipcRenderer.invoke("halo:auth-cancel"),
   authLogout: (providerId) => ipcRenderer.invoke("halo:auth-logout", providerId),
+  // 多账户（订阅登录身份保管库 + 一键切换）
+  authAccountCapture: (providerId, label) => ipcRenderer.invoke("halo:auth-account-capture", providerId, label),
+  authAccountSwitch: (providerId, accountId) => ipcRenderer.invoke("halo:auth-account-switch", providerId, accountId),
+  authAccountRemove: (providerId, accountId) => ipcRenderer.invoke("halo:auth-account-remove", providerId, accountId),
+  authAccountRename: (providerId, accountId, label) => ipcRenderer.invoke("halo:auth-account-rename", providerId, accountId, label),
+  authAccountQuotas: (providerId) => ipcRenderer.invoke("halo:auth-account-quotas", providerId),
   extToggle: (extPath, enabled) => ipcRenderer.invoke("halo:ext-toggle", extPath, enabled),
 
   // dialogs
@@ -84,6 +90,7 @@ contextBridge.exposeInMainWorld("halo", {
   onError: listen("halo:error"),
   onWinState: listen("halo:winstate"),
   onWindowShown: listen("halo:window-shown"),
+  onTreeChanged: listen("halo:tree-changed"),
 
   // splash -> main
   splashDone: () => ipcRenderer.invoke("halo:splash-done"),

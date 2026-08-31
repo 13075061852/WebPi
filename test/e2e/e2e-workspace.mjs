@@ -68,6 +68,10 @@ for (let i = 0; i < 30; i++) {
 console.log("bridge:", JSON.stringify({ ready: st?.ready, model: st?.model?.id }));
 await evalJS(`window.halo.setModel("deepseek", "deepseek-v4-flash")`);
 
+// 先开新会话，避免上次会话上下文污染（多会话改造后恢复会话可能带旧任务）
+await evalJS(`document.querySelector("#btnNewSession").click()`);
+await sleep(1500);
+
 console.log("prompting agent to create an HTML page...");
 const p = evalJS(`window.halo.prompt("在当前目录创建 hello.html：一个居中显示的深色问候页面，标题'你好，星环'，副标题'由 pi Halo 生成'，带渐变文字动画。创建完成后回复完成。").then(() => "resolved").catch(e => "rejected: " + e.message)`);
 
@@ -83,30 +87,20 @@ for (let i = 0; i < 90; i++) {
 }
 await sleep(2500);
 
-// verify: preview auto-switched, activity recorded, tree loaded
+// verify: preview auto-switched, tree loaded, changed markers present
 const check = await evalJS(`({
-  activeTab: document.querySelector(".ctab.active")?.textContent,
   pvName: document.querySelector("#pvName")?.textContent,
   iframe: !!document.querySelector("#pvBody iframe"),
-  actCount: document.querySelectorAll("#wsDetail .act-item").length,
   treeRows: document.querySelectorAll("#wsTree .trow").length,
   changedRows: document.querySelectorAll("#wsTree .trow.changed").length,
 })`);
 console.log("verify:", JSON.stringify(check));
 await screenshot("test/shot-autopreview.png");
 
-// switch to workspace and screenshot tree + activity
-await evalJS(`document.querySelector('.ctab[data-cpane="workspace"]').click()`);
+// screenshot the sidebar file tree (workspace tree lives in the sidebar since the UI restructure)
+await evalJS(`document.querySelector("#btnSidebar")?.click()`);
 await sleep(800);
 await screenshot("test/shot-workspace.png");
-
-// open a file viewer via activity item (diff)
-const hasDiff = await evalJS(`!!document.querySelector("#wsDetail .act-item.hasdiff")`);
-if (hasDiff) {
-  await evalJS(`document.querySelector("#wsDetail .act-item.hasdiff").click()`);
-  await sleep(600);
-  await screenshot("test/shot-diff.png");
-}
 
 electron.kill();
 process.exit(0);

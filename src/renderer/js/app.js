@@ -9,6 +9,13 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
+/* ---- 渲染层常量（与主进程 LIMITS 对应，收敛魔法数字） ---- */
+const CONFIRM_RESET_MS = 2600;        // 两步删除确认：未二次确认时恢复的毫秒数
+const TRUNC_TOOL_ARG = 120;           // 工具参数展示截断长度
+const PTY_SCROLLBACK = 4000;          // PTY 回滚缓冲行数
+const PTY_RESUME_MS = 300;            // 终端面板重开后续接 shell 的延迟
+const IMG_DOWNSCALE = { maxBytes: 400 * 1024, maxEdge: 1600, quality: 0.85 }; // 附件图片降采样阈值
+
 // 预览帧触摸脚本回报滚动位置（调试/验证用）
 window.addEventListener("message", (e) => {
   const d = e.data;
@@ -38,8 +45,7 @@ const S = {
   sessions: [],
   renderQueued: false,
   agentStartedAt: 0,
-  lastEventAt: 0,             // stall watchdog: last pi event timestamp
-  stallTimer: null,
+  pendingRestore: false,      // 核心就绪后待执行的会话恢复
   /* workspace / preview */
   activity: [],               // [{path, tool, time, diff}]
   treeData: null,
@@ -47,18 +53,8 @@ const S = {
   selectedFile: null,
   previewFile: null,
   treeTimer: null,
-  quota: { provider: null, data: null },   // 当前模型剩余额度（积分/百分比，60s 缓存）
-  quotaTimer: null,
+  quota: { provider: null, data: null },   // 当前模型剩余额度（每轮对话结束动态刷新）
   creating: null,             // { parent: string|null, kind: "file"|"dir" } 行内新建状态
-};
-
-const TOOL_ICONS = {
-  read: "◈", write: "✎", edit: "✧", bash: "❯", powershell: "❯",
-  grep: "⌕", find: "⌕", ls: "▤", todo: "☑",
-};
-const TOOL_COLORS = {
-  read: "var(--txt-dim)", bash: "var(--txt)", powershell: "var(--txt)", edit: "var(--txt-dim)",
-  write: "var(--txt)", grep: "var(--txt-dim)", find: "var(--txt-dim)", ls: "var(--txt-faint)",
 };
 
 /* ---------- theme: 黑 / 白 ---------- */
@@ -136,17 +132,24 @@ function applyState(st) {
   }
 }
 
-/* 当前模型的剩余额度：切模型时刷新（主进程另有 60s 接口缓存） */
+/* 当前模型的剩余额度：切模型 / 每轮对话结束时刷新（force 跳过主进程防抖缓存） */
+let quotaFetching = false;
 async function loadQuota(provider, force = false) {
   if (!provider) return;
   if (S.quota.provider === provider && !force) return;
   if (!window.halo?.modelQuota) return;
-  const r = await window.halo.modelQuota(provider).catch(() => null);
-  if (!r?.ok) return;
-  // 过程中模型又切了：丢弃过期结果
-  if ((S.state?.model?.provider || null) !== provider) return;
-  S.quota = { provider, data: r.data };
-  renderQuotaChip();
+  if (quotaFetching) return; // 已有请求在途：本轮结束时会再次刷新，无需并发
+  quotaFetching = true;
+  try {
+    const r = await window.halo.modelQuota(provider, force).catch(() => null);
+    if (!r?.ok) return;
+    // 过程中模型又切了：丢弃过期结果
+    if ((S.state?.model?.provider || null) !== provider) return;
+    S.quota = { provider, data: r.data };
+    renderQuotaChip();
+  } finally {
+    quotaFetching = false;
+  }
 }
 
 function renderQuotaChip() {
@@ -163,7 +166,7 @@ function renderQuotaChip() {
     el.classList.add("kind-plain");
     $("#ctxQuotaBar").style.width = "100%";
     $("#ctxQuotaText").textContent = `${q.label} ${(q.value ?? 0).toLocaleString()}`;
-    el.title = `${q.label}余额（AutoClaw 积分制，每分钟刷新）`;
+    el.title = `${q.label}余额（AutoClaw 积分制，每轮对话后刷新）`;
     return;
   }
   if (q?.kind === "balance" && !q.error) {
@@ -172,7 +175,7 @@ function renderQuotaChip() {
     const sym = q.currency === "CNY" ? "¥" : q.currency === "USD" ? "$" : "";
     $("#ctxQuotaBar").style.width = "100%";
     $("#ctxQuotaText").textContent = `${sym}${(q.value ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    el.title = `${q.label}（每分钟刷新）${q.voucher > 0 ? ` · 代金券 ${sym}${q.voucher.toLocaleString()}` : ""}`;
+    el.title = `${q.label}（每轮对话后刷新）${q.voucher > 0 ? ` · 代金券 ${sym}${q.voucher.toLocaleString()}` : ""}`;
     return;
   }
   if (q?.kind === "windows" && Array.isArray(q.windows) && q.windows.length) {
@@ -185,7 +188,7 @@ function renderQuotaChip() {
     $("#ctxQuotaBar").style.width = (tight.remaining * 100).toFixed(1) + "%";
     $("#ctxQuotaText").textContent = parts.map((p) => p.text).join(" · ");
     el.classList.toggle("low", tight.remaining < 0.15);
-    el.title = `订阅额度 · ${parts.map((p) => p.title).join("，")}（每分钟刷新）`;
+    el.title = `订阅额度 · ${parts.map((p) => p.title).join("，")}（每轮对话后刷新）`;
     return;
   }
   // 没有真实额度数据：一律不显示百分比，只提示
@@ -200,6 +203,20 @@ function renderQuotaChip() {
       : "该模型暂无额度接口";
   el.dataset.portal = portal;
   el.style.cursor = portal ? "pointer" : "default";
+}
+
+/** 账户芯片上的额度摘要：订阅制“5h 82% · 7d 41%”、余额制“$12.34”、积分制“1,234 分”；无接口返回空 */
+function formatQuotaShort(q) {
+  if (!q || q.kind === "context") return "";
+  if (q.error) return "额度 —";
+  if (q.kind === "windows" && Array.isArray(q.windows) && q.windows.length)
+    return q.windows.map((w) => `${w.label} ${(w.remaining * 100).toFixed(0)}%`).join(" · ");
+  if (q.kind === "balance") {
+    const sym = q.currency === "CNY" ? "¥" : q.currency === "USD" ? "$" : "";
+    return `${sym}${(q.value ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  }
+  if (q.kind === "points") return `${(q.value ?? 0).toLocaleString()} 分`;
+  return "";
 }
 
 function renderStats(u = {}) {
@@ -259,50 +276,30 @@ function setStreamingUI(v) {
   S.streaming = v;
   $("#btnSend").classList.toggle("streaming", v);
   $("#btnSend").title = v ? "中止 (Esc)" : "发送";
-  if (v) { startStallWatchdog(); startStatusTicker(); }
-  else { stopStallWatchdog(); stopStatusTicker(); }
+  if (v) startStatusTicker();
+  else stopStatusTicker();
   updateTurnStatus();
 }
 
-/* ---- stall watchdog: surface silent gateways instead of looking frozen ---- */
-const STALL_MS = 10000;
-function startStallWatchdog() {
-  stopStallWatchdog();
-  S.lastEventAt = Date.now();
-  S.stallTimer = setInterval(() => {
-    const idle = Date.now() - S.lastEventAt;
-    if (idle < STALL_MS) return;
-    // 工具执行中（web_search 等网络 I/O）静默是正常现象，可能持续几十秒，
-    // 不显示“网关无响应”警告以免误报（回合状态行已有“正在执行 X”提示）
-    if (S.streamingTool) { hideStallHint(); return; }
-    showStallHint(Math.floor(idle / 1000));
-  }, 1000);
-}
-function stopStallWatchdog() {
-  if (S.stallTimer) { clearInterval(S.stallTimer); S.stallTimer = null; }
-  hideStallHint();
-}
-function showStallHint(sec) {
-  // 用户要求：不再显示“网关无响应”停滞提示（工具执行/长思考静默均属正常）
-}
-function hideStallHint() { const el = $("#stallHint"); if (el) el.remove(); }
+/* stall watchdog 已移除：工具执行/长思考静默属正常现象，不再显示停滞提示；
+ * 回合状态行（turn-status）已实时反映“正在思考 / 正在执行 X”。 */
 
 /* ============================================================
    pi event stream -> UI
    ============================================================ */
 function wirePi() {
   // lightweight diagnostics: real-link event tracing (visible via CDP)
-  window.__piDebug = { count: 0, types: [] };
-  window.halo.onPiEvent(({ event }) => {
+  window.__piDebug = { count: 0, types: [], ignored: 0 };
+  window.halo.onPiEvent(({ sessionId, event }) => {
     try {
       window.__piDebug.count++;
       window.__piDebug.types.push(event?.type);
       if (window.__piDebug.types.length > 200) window.__piDebug.types.shift();
     } catch {}
-    handlePiEvent(event);
+    handlePiEvent(event, sessionId);
   });
   // debug/test hook: inject synthetic events without the main process
-  window.__haloDispatch = handlePiEvent;
+  window.__haloDispatch = (event, sessionId) => handlePiEvent(event, sessionId);
   window.__renderUserMsg = renderUserMsg;
   window.__mdRender = mdRender; // 调试/验证钩子
   window.halo.onState((st) => applyState(st));
@@ -311,12 +308,25 @@ function wirePi() {
     $("#winMax").title = maximized ? "还原" : "最大化";
     $("#winMax").classList.toggle("maxed", maximized);
   });
+  // 项目内文件变化（含外部编辑器修改）→ 防抖刷新文件树
+  window.halo.onTreeChanged?.(() => scheduleTreeRefresh());
 }
 
-function handlePiEvent(event) {
+/* 后台会话事件刷新：仅更新左侧会话列表的运行徽标，不打扰当前视图 */
+const refreshSessionsDebounced = debounce(() => { try { loadSessions(); } catch {} }, 400);
+
+function handlePiEvent(event, sessionId) {
   if (!event) return;
-  S.lastEventAt = Date.now();
-  hideStallHint();
+  // 多会话并发：只渲染焦点会话的事件；其他会话事件仅刷新列表运行状态
+  if (sessionId && S.state?.sessionId && sessionId !== S.state.sessionId) {
+    window.__piDebug.ignored++;
+    refreshSessionsDebounced();
+    return;
+  }
+  // 焦点/后台会话的生命周期变化 → 刷新左侧运行徽标（message_start 时新会话落盘进列表）
+  if (event.type === "agent_start" || event.type === "message_start" || event.type === "message_end" || event.type === "agent_end" || event.type === "agent_settled") {
+    refreshSessionsDebounced();
+  }
   switch (event.type) {
       case "message_start": onMessageStart(event.message); break;
       case "message_update": onMessageUpdate(event.assistantMessageEvent); break;
@@ -361,6 +371,8 @@ function handlePiEvent(event) {
         finalizeTurn();
         refreshState();
         loadSessions();
+        // 每轮对话结束：立即刷新额度（不再依赖定时轮询）
+        loadQuota(S.state?.model?.provider, true);
         break;
 
       case "queue_update": {
@@ -373,10 +385,10 @@ function handlePiEvent(event) {
       case "compaction_start": toast("正在压缩上下文…", ""); break;
       case "compaction_end": toast("上下文已压缩 ✓", "ok"); break;
       case "auth_event": onAuthEvent(event); break;
-    }
   }
+}
 
-  async function refreshState() {
+async function refreshState() {
   const st = await window.halo.getState();
   if (st?.data) applyState(st.data);
 }
@@ -517,7 +529,7 @@ function onMessageUpdate(ev) {
     S.thinkStreamed = true;
     const t = ensureThink();
     t.buf += ev.delta || "";
-    t.body.innerHTML = rich(t.buf);
+    streamRender(t.body, t.buf);
     t.preview.textContent = thinkPreviewText(t.buf); // 收起后单行预览实时跟随
     t.body.scrollTop = t.body.scrollHeight;
     scrollDown();
@@ -571,7 +583,8 @@ function scheduleRender() {
 function renderAssistant() {
   const el = S.assistant;
   if (!el) return;
-  el.innerHTML = rich(S.assistantText);
+  // 增量流式渲染：已冻结段落不重渲，只有尾部随 delta 更新（长回复 O(n) 而非 O(n²)）
+  streamRender(el, S.assistantText);
   scrollDown();
 }
 
@@ -655,7 +668,7 @@ function onToolStart(ev) {
     <div class="tool-line">
       <span class="tool-dot"></span>
       <span class="tool-name">${esc(toolName)}</span>
-      <span class="tool-arg">${esc(trunc(toolDesc(toolName, args), 120))}</span>
+      <span class="tool-arg">${esc(trunc(toolDesc(toolName, args), TRUNC_TOOL_ARG))}</span>
       <span class="tool-elapsed"></span>
     </div>
     <div class="tool-out" hidden></div>`;
@@ -681,7 +694,7 @@ function onToolUpdate(ev) {
   const rec = S.toolCards.get(ev.toolCallId);
   if (!rec) return;
   const args = ev.partial?.args || ev.args;
-  if (args) rec.arg.textContent = trunc(toolDesc(rec.toolName, args), 120);
+  if (args) rec.arg.textContent = trunc(toolDesc(rec.toolName, args), TRUNC_TOOL_ARG);
 }
 
 function onToolEnd(ev) {
@@ -831,13 +844,15 @@ async function restoreHistory() {
   const r = await window.halo.snapshotMessages();
   const msgs = r?.data || [];
   if (!msgs.length) return;
-  $("#messages").classList.add("restoring"); // 历史回放不播入场动效（切换会话/启动时保持安静）
+  // 历史回放不播入场动效（切换会话/启动时保持安静）
+  $("#messages").classList.add("restoring");
   const toolCards = new Map(); // toolCallId -> 卡片引用，用于回填 toolResult
-  for (const m of msgs) {
+  /* 逐条恢复（分块渲染：每帧最多 CHUNK 条，大会话不阻塞 UI） */
+  const restoreOne = (m) => {
     if (m.role === "user") {
       const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
       if (text.trim()) { finalizeTurn(); renderUserMsg(text, []); }
-      continue;
+      return;
     }
     if (m.role === "toolResult") {
       // 回填到对应工具卡片：状态点/耗时/输出
@@ -854,9 +869,9 @@ async function restoreHistory() {
           if (secs >= 0.5) rec.elapsedEl.textContent = `${secs.toFixed(1)}s`;
         }
       }
-      continue;
+      return;
     }
-    if (m.role !== "assistant") continue;
+    if (m.role !== "assistant") return;
     const turn = ensureTurn();
     for (const c of m.content || []) {
       if (c.type === "thinking") {
@@ -876,14 +891,14 @@ async function restoreHistory() {
           <div class="tool-line">
             <span class="tool-dot"></span>
             <span class="tool-name">${esc(c.name)}</span>
-            <span class="tool-arg">${esc(trunc(toolDesc(c.name, c.arguments), 120))}</span>
+            <span class="tool-arg">${esc(trunc(toolDesc(c.name, c.arguments), TRUNC_TOOL_ARG))}</span>
             <span class="tool-elapsed"></span>
           </div>
           <div class="tool-out" hidden></div>`;
         const out = $(".tool-out", card);
         $(".tool-line", card).addEventListener("click", () => { if (out.dataset.has) out.hidden = !out.hidden; });
         turn.appendChild(card);
-        toolCards.set(c.id, { card, out, elapsedEl: $(".tool-elapsed", card), startedAt: m.timestamp ? new Date(m.timestamp).getTime() : 0 });
+        toolCards.set(c.id, { card, out, arg: $(".tool-arg", card), elapsedEl: $(".tool-elapsed", card), toolName: c.name, startedAt: m.timestamp ? new Date(m.timestamp).getTime() : 0 });
       } else if (c.type === "text") {
         if (!c.text || !c.text.trim()) continue;
         const md = document.createElement("div");
@@ -893,9 +908,25 @@ async function restoreHistory() {
         turn.__texts.push(c.text);
       }
     }
-  }
-  // 没等到结果的工具调用（会话中断残留）标成完成，避免永久转动
-  for (const rec of toolCards.values()) {
+  };
+  await new Promise((resolve) => {
+    let i = 0;
+    const CHUNK = 24;
+    const step = () => {
+      const end = Math.min(i + CHUNK, msgs.length);
+      for (; i < end; i++) restoreOne(msgs[i]);
+      if (i < msgs.length) requestAnimationFrame(step);
+      else resolve();
+    };
+    step();
+  });
+  // 没等到结果的工具调用：会话仍在执行则交给实时事件流续接（同步到 S.toolCards），否则标成完成
+  const live = !!S.state?.isStreaming;
+  for (const [id, rec] of toolCards) {
+    if (rec.card.classList.contains("running") && live) {
+      S.toolCards.set(id, rec);
+      continue;
+    }
     if (rec.card.classList.contains("running")) {
       rec.card.classList.remove("running");
       rec.card.classList.add("done");
@@ -931,10 +962,10 @@ async function loadSessions() {
     const file = (s.file || "").split(/[\\/]/).pop().replace(/\.jsonl$/, "");
     const main = document.createElement("button");
     main.className = "s-main";
-    main.innerHTML = `<span class="s-name">${esc(s.name || friendlySession(file))}</span>
-      <span class="s-meta">${s.modified ? new Date(s.modified).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}${s.messageCount != null ? " · " + s.messageCount + "条" : ""}</span>`;
+    main.innerHTML = `<span class="s-name">${s.running ? `<i class="s-busy" title="后台执行中"></i>` : ""}${esc(s.name || friendlySession(file))}</span>
+      <span class="s-meta">${s.running ? "执行中 · " : ""}${s.modified ? new Date(s.modified).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}${s.messageCount != null ? " · " + s.messageCount + "条" : ""}</span>`;
     main.addEventListener("click", () => {
-      if (S.streaming) return toast("任务进行中，无法切换会话", "err");
+      // 多会话并发：执行中也可切换会话，后台任务继续运行
       openSession(s.file);
     });
     const del = document.createElement("button");
@@ -959,7 +990,7 @@ function requestDeleteSession(s, item, del) {
     item._confirmTimer = setTimeout(() => {
       item.classList.remove("confirm");
       del.title = "删除会话";
-    }, 2600);
+    }, CONFIRM_RESET_MS);
     return;
   }
   clearTimeout(item._confirmTimer);
@@ -1028,7 +1059,7 @@ async function openSession(file) {
 }
 
 async function newSession() {
-  if (S.streaming) return toast("任务进行中，先按 Esc 中止", "err");
+  // 多会话并发：执行中也可开新会话，原任务后台继续
   clearChat();
   await window.halo.newSession();
   toast("新会话已开启", "ok");
@@ -1225,6 +1256,10 @@ function wireUI() {
     renderAuthRows();
   });
   $("#authList").addEventListener("click", onAuthListClick);
+  $("#authList").addEventListener("dblclick", (e) => {
+    const chip = e.target.closest("[data-acc-chip]");
+    if (chip) beginAccountRename(chip);
+  });
   $("#authList").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.target.matches("[data-auth-prompt-input]")) window.halo.authRespond(e.target.value.trim());
     if (e.key === "Enter" && e.target.matches("[data-auth-input]")) saveApiKey(e.target.dataset.authInput);
@@ -1275,7 +1310,7 @@ function wireUI() {
       fontFamily: 'Cascadia Mono, Consolas, "Courier New", monospace',
       fontSize: 12.5,
       cursorBlink: true,
-      scrollback: 4000,
+      scrollback: PTY_SCROLLBACK,
     });
     fitAddon = new window.FitAddon.FitAddon();
     term.loadAddon(fitAddon);
@@ -1325,7 +1360,7 @@ function wireUI() {
     window.halo.onPtyExit(() => {
       termBusy = false; termLine = "";
       term?.write("\r\n\x1b[90m· 进程已退出\x1b[0m\r\n");
-      if (termPane.classList.contains("term-open")) setTimeout(() => window.halo.ptyStart(), 300); // 自动续上干净 shell
+      if (termPane.classList.contains("term-open")) setTimeout(() => window.halo.ptyStart(), PTY_RESUME_MS); // 自动续上干净 shell
     });
   }
   $("#btnTerm").addEventListener("click", () => {
@@ -1408,12 +1443,8 @@ function wireUI() {
 
   wireCenter();
 
-  // 额度：初始拉取 + 每 60s 刷新（积分/订阅余额变动）
+  // 额度：初始拉取；此后在每轮对话结束（agent_settled）时动态刷新
   if (S.state?.model?.provider) loadQuota(S.state.model.provider, true);
-  setInterval(() => {
-    const p = S.state?.model?.provider;
-    if (p) loadQuota(p, true);
-  }, 60_000);
 }
 
 /* ============================================================
@@ -1607,7 +1638,7 @@ function startCreate(kind) {
   renderTree();
 }
 
-const PREVIEWABLE = ["html", "htm", "png", "jpg", "jpeg", "gif", "webp", "svg", "md", "markdown"];
+/* 预览支持的类型由 setPreview 内联判断（html/图片/md/文本） */
 
 function recordActivity(rec) {
   // 仅记录：文件树用 .changed 标记新改动文件
@@ -1616,7 +1647,7 @@ function recordActivity(rec) {
 }
 
 /* ---- preview ---- */
-const previewURL = (p) => "halo-preview://local/" + encodeURI(p.replace(/\\/g, "/")).replace(/^([A-Za-z]:)/, "$1");
+/* ---- 预览 URL（定义在 markdown.js，函数声明挂全局，供两处使用） ---- */
 const currentPreviewDevice = () => {
   const c = $("#pvBody").classList;
   return c.contains("dev-tablet") ? "tablet" : c.contains("dev-mobile") ? "mobile" : "desktop";
@@ -1722,12 +1753,14 @@ const normImageMime = (m) => (m === "image/jpg" ? "image/jpeg" : m);
 
 async function attachImages() {
   const r = await window.halo.pickImages();
-  const imgs = (r?.data || []).map((i) => ({
+  const d = r?.data || { files: [], skipped: [] };
+  const imgs = (d.files || []).map((i) => ({
     ...i,
     mediaType: normImageMime(i.mediaType) || sniffImageMime(i.data) || "image/png",
   }));
   S.images.push(...imgs);
   renderAttachments();
+  if (d.skipped?.length) toast(`已跳过超大图片：${d.skipped.join("、")}（单张上限 25MB）`, "err");
 }
 
 function addImageFile(file) {
@@ -1747,8 +1780,8 @@ function addImageFile(file) {
 async function attachPrepared(img) {
   try {
     const bytes = Math.floor((img.data.length * 3) / 4);
-    if (bytes > 400 * 1024) {
-      const small = await downscaleImage(img.data, img.mediaType, 1600, 0.85);
+    if (bytes > IMG_DOWNSCALE.maxBytes) {
+      const small = await downscaleImage(img.data, img.mediaType, IMG_DOWNSCALE.maxEdge, IMG_DOWNSCALE.quality);
       if (small && small.data.length < img.data.length) {
         S.images.push({ name: img.name.replace(/\.png$/i, ".jpg"), mediaType: small.mediaType, data: small.data });
         renderAttachments();
@@ -1894,9 +1927,20 @@ function closeModal(m) {
   setTimeout(() => (el.hidden = true), 280);
 }
 
+/* 提示气泡：错误/警告始终显示（静默失败 = 用户无感知，属缺陷）；
+ * 成功/信息提示默认静音（尊重“不弹提示”的偏好），localStorage "halo.toasts"="all" 时恢复全部 */
 function toast(text, kind = "") {
-  // 用户要求：所有操作提示（含错误/警告）一律不再弹出；函数保留以兼容调用点的提前返回
-  return;
+  if (!text) return;
+  try {
+    if (kind !== "err" && kind !== "warn" && localStorage.getItem("halo.toasts") !== "all") return;
+  } catch {}
+  const wrap = $("#toasts");
+  if (!wrap) return;
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? " " + kind : "");
+  el.textContent = text;
+  wrap.appendChild(el);
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 450); }, 3600);
 }
 
 function autoGrow() {
@@ -1939,6 +1983,7 @@ async function renderAuthList() {
     return;
   }
   renderAuthRows();
+  loadAccountQuotas(); // 异步补齐每个账户的剩余额度
 }
 
 function renderAuthRows() {
@@ -1955,11 +2000,28 @@ function renderAuthRows() {
     const actions = [
       p.canOAuth ? `<button class="mini-btn" data-auth-oauth="${esc(p.id)}">${p.subscription ? "订阅登录" : "OAuth 登录"}</button>` : "",
       p.canApiKey ? `<button class="mini-btn" data-auth-key="${esc(p.id)}">API Key</button>` : "",
+      p.hasStored && !p.currentId ? `<button class="mini-btn" data-acc-capture="${esc(p.id)}" title="把当前登录身份保存为一个账户，之后可一键切回">存为账户</button>` : "",
       p.configured ? `<button class="mini-btn" data-auth-logout="${esc(p.id)}">登出</button>` : "",
     ].filter(Boolean).join("");
+    const curId = p.currentId || p.activeId || null;
+    const acctsHtml = (p.accounts || []).length ? `<div class="auth-accts" data-acc-strip="${esc(p.id)}">
+      ${(p.accounts || []).map((a) => {
+        const on = a.id === curId;
+        const qt = formatQuotaShort(a.quota);
+        const tip = [on ? "当前使用中" : "点击切换使用该账户额度",
+          a.plan ? `订阅 ${a.plan}` : "", "双击重命名",
+          a.savedAt ? `保存于 ${relTime(new Date(a.savedAt).toISOString())}` : ""].filter(Boolean).join(" · ");
+        return `<span class="acc-chip${on ? " on" : ""}" data-acc-chip="${esc(p.id)}" data-acc-id="${esc(a.id)}" title="${esc(tip)}">
+          <span class="acc-main"><i class="acc-dot"></i><span class="acc-label">${esc(a.label)}</span></span>
+          ${qt ? `<span class="acc-quota">${esc(qt)}</span>` : ""}
+          <button class="acc-x" data-acc-x="${esc(p.id)}" data-acc-id="${esc(a.id)}" title="删除该账户（不影响其他账户）">×</button>
+        </span>`;
+      }).join("")}
+    </div>` : "";
     return `<div class="auth-row" data-auth-row="${esc(p.id)}">
       <div class="auth-name"><span>${esc(p.name)}</span>${status}<small>${esc(p.id)}</small></div>
       <div class="auth-actions">${actions}</div>
+      ${acctsHtml}
       <div class="auth-progress" data-auth-progress="${esc(p.id)}" hidden></div>
       <div class="auth-keyrow" data-auth-keyrow="${esc(p.id)}" hidden>
         <input type="password" placeholder="粘贴 API Key…" data-auth-input="${esc(p.id)}" />
@@ -1979,6 +2041,13 @@ function onAuthListClick(e) {
     return;
   }
   if (e.target.closest("[data-auth-prompt-cancel]")) { window.halo.authCancel(); return; }
+  // 多账户（注意：acc-x 需先于 acc-chip 判断，× 按钮嵌在芯片内）
+  const accDel = e.target.closest("[data-acc-x]");
+  if (accDel) { removeAccount(accDel.dataset.accX, accDel.dataset.accId, accDel); return; }
+  const accChip = e.target.closest("[data-acc-chip]");
+  if (accChip) { switchAccount(accChip.dataset.accChip, accChip.dataset.accId); return; }
+  const accSave = e.target.closest("[data-acc-capture]");
+  if (accSave) { captureAccount(accSave.dataset.accCapture); return; }
   const oauth = e.target.closest("[data-auth-oauth]");
   if (oauth) { startAuthLogin(oauth.dataset.authOauth, "oauth"); return; }
   const key = e.target.closest("[data-auth-key]");
@@ -2004,7 +2073,7 @@ async function startAuthLogin(providerId, type) {
   }, 1000);
   try {
     await window.halo.authLogin(providerId, type);
-  } catch (e) {
+  } catch (_e) {
     /* error already toasted via auth_event; refresh statuses */
     renderAuthRows();
     updateAuthSummary();
@@ -2035,6 +2104,126 @@ async function doLogout(providerId) {
   updateAuthSummary();
   await loadModels();
   await ensureModelAvailable();
+}
+
+/* ---------------- 多账户：保存 / 一键切换 / 删除 / 重命名 ----------------
+   账户身份保存在 ~/.pi/agent/halo-accounts.json；切换 = 把保存的凭据
+   写回 auth.json（与 pi CLI 共享），额度随账户一起切换。 */
+
+async function switchAccount(providerId, accountId) {
+  const strip = $(`[data-acc-strip="${CSS.escape(providerId)}"]`);
+  if (strip?.classList.contains("busy")) return;
+  strip?.classList.add("busy");
+  S.quota = { provider: providerId, data: null }; // 切换中先置空，避免闪烁旧账户额度
+  renderQuotaChip();
+  try {
+    const r = await window.halo.authAccountSwitch(providerId, accountId);
+    if (r?.ok) {
+      toast(`已切换账户：${r.data.label}`, "ok");
+      // 切换结果已带上新账户的额度：直接更新底部额度条，不显示旧账户的过期数据
+      if (r.data.quota) { S.quota = { provider: providerId, data: r.data.quota }; renderQuotaChip(); }
+    } else {
+      toast(`切换失败：${r?.error || "未知错误"}`, "err");
+      loadQuota(providerId, true); // 失败恢复：重新拉当前（未变）账户的额度
+    }
+  } catch (e) {
+    toast(`切换失败：${e?.message || e}`, "err");
+    loadQuota(providerId, true);
+  }
+  strip?.classList.remove("busy");
+  await renderAuthList();
+  updateAuthSummary();
+  await loadModels();
+  await ensureModelAvailable();
+}
+
+async function captureAccount(providerId) {
+  const r = await window.halo.authAccountCapture(providerId)
+    .catch((e) => ({ ok: false, error: e?.message || String(e) }));
+  if (r?.ok) {
+    toast(`已保存账户「${r.data.label}」`, "ok");
+    await renderAuthList();
+  } else {
+    toast(`保存失败：${r?.error || "未知错误"}`, "err");
+  }
+}
+
+function removeAccount(providerId, accountId, btn) {
+  const chip = btn.closest(".acc-chip");
+  if (!chip) return;
+  if (!chip.dataset.confirm) {
+    // 两步确认：第一次点 × 变为「确认?」，2.6s 内再点才真正删除
+    chip.dataset.confirm = "1";
+    chip.classList.add("confirm-del");
+    btn.textContent = "确认?";
+    setTimeout(() => {
+      if (chip.isConnected && chip.dataset.confirm) {
+        delete chip.dataset.confirm;
+        chip.classList.remove("confirm-del");
+        btn.textContent = "×";
+      }
+    }, CONFIRM_RESET_MS);
+    return;
+  }
+  window.halo.authAccountRemove(providerId, accountId).then(async (r) => {
+    if (r?.ok) { toast("已删除账户", "ok"); await renderAuthList(); }
+    else toast(`删除失败：${r?.error || "未知错误"}`, "err");
+  });
+}
+
+function beginAccountRename(chip) {
+  if ($(".acc-input", chip)) return;
+  const labelEl = $(".acc-label", chip);
+  if (!labelEl) return;
+  const old = labelEl.textContent;
+  const input = document.createElement("input");
+  input.className = "acc-input";
+  input.value = old;
+  labelEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = async (save) => {
+    if (done) return;
+    done = true;
+    const val = input.value.trim();
+    if (save && val && val !== old) {
+      const r = await window.halo.authAccountRename(chip.dataset.accChip, chip.dataset.accId, val).catch(() => null);
+      if (r?.ok) { // 同步本地缓存，避免重渲染回退旧名称
+        const acc = (authRows.find((x) => x.id === chip.dataset.accChip)?.accounts || []).find((a) => a.id === chip.dataset.accId);
+        if (acc) acc.label = val;
+      }
+    }
+    renderAuthRows(); // 内存数据重渲染，不重新拉取
+  };
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); commit(true); }
+    else if (ev.key === "Escape") { ev.stopPropagation(); commit(false); }
+  });
+  input.addEventListener("blur", () => commit(true));
+}
+
+/* 拉取各供应商下每个账户的剩余额度，到达后合并进本地缓存并重绘芯片 */
+const accQuotaInFlight = new Set();
+function loadAccountQuotas() {
+  for (const p of authRows) {
+    if (!(p.accounts || []).length || accQuotaInFlight.has(p.id)) continue;
+    accQuotaInFlight.add(p.id);
+    window.halo.authAccountQuotas(p.id)
+      .then((r) => {
+        if (!r?.ok || !Array.isArray(r.data)) return;
+        const row = authRows.find((x) => x.id === p.id);
+        if (!row) return;
+        let changed = false;
+        for (const q of r.data) {
+          const acc = (row.accounts || []).find((a) => a.id === q.id);
+          if (acc && JSON.stringify(acc.quota) !== JSON.stringify(q.quota)) { acc.quota = q.quota; changed = true; }
+        }
+        if (changed) renderAuthRows();
+      })
+      .catch(() => {})
+      .finally(() => accQuotaInFlight.delete(p.id));
+  }
 }
 
 /* 登出/登录后保持当前对话模型可用：不可用则自动切换，全部不可用则提示登录 */
@@ -2511,163 +2700,4 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-/* ---- 轻量语法高亮（文件预览代码视图） ---- */
-const escFile = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const HL_KW = {
-  js: "const let var function return if else for while do switch case break continue new class extends import export from default try catch finally throw typeof instanceof in of this null undefined true false async await yield static get set delete void super",
-  py: "def class import from return if elif else for while in not and or try except finally with as lambda None True False pass break continue raise global nonlocal yield async await assert del is",
-  sh: "if then else elif fi for while do done case esac function echo export local return set source alias until select time",
-  css: "important media supports keyframes root",
-};
-const HL_LANG = {
-  py: "py",
-  js: "js", mjs: "js", cjs: "js", ts: "js", tsx: "js", jsx: "js", java: "js", c: "js", cpp: "js", h: "js", hpp: "js", go: "js", rs: "js", php: "js", rb: "js", swift: "js", kt: "js", cs: "js",
-  css: "css", json: "json",
-  html: "html", htm: "html", xml: "html", vue: "html", svelte: "html", svg: "html",
-  sh: "sh", bash: "sh", bat: "sh", ps1: "sh", yaml: "sh", yml: "sh", toml: "sh", ini: "sh", conf: "sh", env: "sh",
-};
-const langOf = (ext) => HL_LANG[ext] || null;
-const HL_RE = {
-  js: /(\/\*[\s\S]*?\*\/|\/\/[^\n]*)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|import|export|from|default|try|catch|finally|throw|typeof|instanceof|in|of|this|null|undefined|true|false|async|await|yield|static|get|set|delete|void|super)\b|\b(\d+(?:\.\d+)?)\b|([A-Za-z_$][\w$]*)(?=\s*\()/g,
-  py: /(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|\b(def|class|import|from|return|if|elif|else|for|while|in|not|and|or|try|except|finally|with|as|lambda|None|True|False|pass|break|continue|raise|global|nonlocal|yield|async|await|assert|del|is)\b|\b(\d+(?:\.\d+)?)\b|([A-Za-z_][\w]*)(?=\s*\()/g,
-  sh: /(#[^\n]*)|("(?:[^"\\\n]|\\.)*"|'[^'\n]*')|\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|echo|export|local|return|set|source|alias|until|select|time)\b|\b(\d+(?:\.\d+)?)\b|([A-Za-z_][\w-]*)(?=\s*\()/g,
-  css: /(\/\*[\s\S]*?\*\/)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|([\w-]+)(?=\s*:)|(#[0-9a-fA-F]{3,8}\b|\b\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw|vmin|vmax|s|ms|deg|fr)?\b)|(@[\w-]+|[.#][\w-]+)/g,
-  json: /("(?:[^"\\\n]|\\.)*")(?=\s*:)|("(?:[^"\\\n]|\\.)*")|\b(true|false|null)\b|(-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)/g,
-  html: /(&lt;!--[\s\S]*?--&gt;)|(&lt;\/?[\w-]+)|([\w-]+)(?==)|("(?:[^"\\\n]|\\.)*")|(&gt;)/g,
-};
-const HL_CLS = ["c-com", "c-str", "c-kw", "c-num", "c-fn"];
-function hlFile(code, lang) {
-  const s = escFile(code);
-  const re = HL_RE[lang];
-  if (!re) return s;
-  let out = "", last = 0, m;
-  re.lastIndex = 0;
-  while ((m = re.exec(s))) {
-    if (m.index > last) out += s.slice(last, m.index);
-    const gi = m.slice(1).findIndex((g) => g !== undefined);
-    out += `<span class="${HL_CLS[gi] || "c-fn"}">${m[0]}</span>`;
-    last = m.index + m[0].length;
-    if (m[0].length === 0) re.lastIndex++;
-  }
-  out += s.slice(last);
-  return out;
-}
-
-/* 完整 markdown 渲染（聊天回复 + md 文件预览共用）：标题/表格/列表/引用/任务/删除线/链接/图片/代码 */
-const mdUrl = (u, mdPath) => {
-  u = String(u || "").trim();
-  if (/^(https?:|mailto:|halo-preview:|data:image\/)/i.test(u)) return u.replace(/"/g, "%22");
-  if (mdPath && !/^[a-z]+:/i.test(u)) {
-    const dir = mdPath.replace(/[\\/][^\\/]*$/, "");
-    const parts = dir.split(/[\\/]/);
-    for (const seg of u.replace(/^\.\//, "").split(/[\\/]/)) {
-      if (seg === "..") parts.pop();
-      else if (seg !== "." && seg) parts.push(seg);
-    }
-    return previewURL(parts.join("/"));
-  }
-  return null;
-};
-function mdInline(s, mdPath) {
-  const codes = [];
-  s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(`<code>${c}</code>`); return `\u0000C${codes.length - 1}\u0000`; });
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => {
-    const u = mdUrl(url, mdPath);
-    return u ? `<img src="${u}" alt="${alt.replace(/"/g, "&quot;")}" loading="lazy">` : _;
-  });
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text, url) => {
-    const u = mdUrl(url, mdPath);
-    return u ? `<a href="${u}" target="_blank" rel="noopener">${text}</a>` : text;
-  });
-  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<i>$2</i>");
-  s = s.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
-  s = s.replace(/\u0000C(\d+)\u0000/g, (_, k) => codes[+k]);
-  return s;
-}
-const mdSplitRow = (line) => {
-  let l = line.trim();
-  if (l.startsWith("|")) l = l.slice(1);
-  if (l.endsWith("|")) l = l.slice(0, -1);
-  return l.split("|").map((c) => c.trim());
-};
-const LI_RE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
-function mdList(lines, i, mdPath) {
-  const ordered = /\d/.test(lines[i].match(LI_RE)[2][0]);
-  const base = lines[i].match(LI_RE)[1].length;
-  let out = ordered ? "<ol>" : "<ul>";
-  while (i < lines.length) {
-    const m = lines[i].match(LI_RE);
-    if (m && m[1].length === base) {
-      let text = m[3];
-      const task = text.match(/^\[( |x|X)\]\s+(.*)$/);
-      out += "<li>" + (task ? `<input type="checkbox" disabled ${task[1] !== " " ? "checked" : ""}> ` + mdInline(task[2], mdPath) : mdInline(text, mdPath));
-      i++;
-      if (i < lines.length && LI_RE.test(lines[i]) && lines[i].match(LI_RE)[1].length > base) {
-        const r = mdList(lines, i, mdPath);
-        out += r.html; i = r.next;
-      }
-      out += "</li>";
-    } else if (!lines[i].trim() && i + 1 < lines.length && LI_RE.test(lines[i + 1])) {
-      i++;
-    } else break;
-  }
-  return { html: out + (ordered ? "</ol>" : "</ul>"), next: i };
-}
-function mdBlocks(lines, mdPath) {
-  const out = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    let m = line.match(/^\s*(`{3,}|~{3,})\s*(\w*)\s*$/);
-    if (m) {
-      const buf = []; i++;
-      while (i < lines.length && !new RegExp("^\\s*" + m[1]).test(lines[i])) { buf.push(lines[i]); i++; }
-      i++;
-      out.push(`<pre><code>${buf.join("\n").replace(/\n$/, "")}</code></pre>`);
-      continue;
-    }
-    if (!line.trim()) { i++; continue; }
-    m = line.match(/^(#{1,6})\s+(.*)$/);
-    if (m) { const h = m[1].length; out.push(`<h${h}>${mdInline(m[2], mdPath)}</h${h}>`); i++; continue; }
-    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push("<hr>"); i++; continue; }
-    if (line.includes("|") && i + 1 < lines.length && /^\s*\|?[\s:|-]*-[\s:|-]*$/.test(lines[i + 1]) && lines[i + 1].includes("-")) {
-      const aligns = mdSplitRow(lines[i + 1]).map((c) => (c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : "left"));
-      const head = mdSplitRow(line);
-      i += 2;
-      const rows = [];
-      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) { rows.push(mdSplitRow(lines[i])); i++; }
-      const th = head.map((c, k) => `<th style="text-align:${aligns[k] || "left"}">${mdInline(c, mdPath)}</th>`).join("");
-      const tb = rows.map((r) => "<tr>" + head.map((_, k) => `<td style="text-align:${aligns[k] || "left"}">${mdInline(r[k] ?? "", mdPath)}</td>`).join("") + "</tr>").join("");
-      out.push(`<div class="md-table-wrap"><table><thead><tr>${th}</tr></thead><tbody>${tb}</tbody></table></div>`);
-      continue;
-    }
-    if (/^\s*&gt;/.test(line)) {
-      const buf = [];
-      while (i < lines.length && /^\s*&gt;/.test(lines[i])) { buf.push(lines[i].replace(/^\s*&gt;\s?/, "")); i++; }
-      out.push(`<blockquote>${mdBlocks(buf, mdPath)}</blockquote>`);
-      continue;
-    }
-    if (LI_RE.test(line)) {
-      const r = mdList(lines, i, mdPath);
-      out.push(r.html); i = r.next;
-      continue;
-    }
-    const buf = [line]; i++;
-    while (i < lines.length && lines[i].trim() &&
-      !/^\s*(`{3,}|~{3,})/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) &&
-      !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
-      !/^\s*&gt;/.test(lines[i]) && !LI_RE.test(lines[i])) {
-      buf.push(lines[i]); i++;
-    }
-    out.push(`<p>${buf.map((l) => mdInline(l, mdPath)).join("<br>")}</p>`);
-  }
-  return out.join("");
-}
-function mdRender(src, mdPath) {
-  return mdBlocks(escFile(src).split("\n"), mdPath ?? null);
-}
-
-function rich(src) {
-  return mdRender(src, null);
-}
+/* markdown 渲染（rich/mdRender/hlFile/langOf 等）已移至 js/markdown.js（经典脚本，全局函数） */
