@@ -55,6 +55,8 @@ const S = {
   treeTimer: null,
   quota: { provider: null, data: null },   // 当前模型剩余额度（每轮对话结束动态刷新）
   creating: null,             // { parent: string|null, kind: "file"|"dir" } 行内新建状态
+  sessionSwitchSeq: 0,        // 丢弃快速切换产生的过期恢复结果
+  switchingSession: false,   // 切换期间由历史快照接管，避免旧会话事件串入新视图
 };
 
 /* ---------- theme: 黑 / 白 ---------- */
@@ -124,7 +126,9 @@ function applyState(st) {
   $("#btnSend").disabled = !ready;
   $("#btnSend").classList.toggle("dim", !ready);
 
-  setStreamingUI(st.isStreaming || S.streaming);
+  // 焦点会话是唯一真源。不能与旧的本地 streaming 状态取 OR，否则从运行中的
+  // 会话切到空闲会话后仍会把“发送”误判成 steer，导致第二个会话无法启动。
+  setStreamingUI(!!st.isStreaming);
 
   if (st.ready && S.pendingRestore) {
     S.pendingRestore = false;
@@ -317,6 +321,10 @@ const refreshSessionsDebounced = debounce(() => { try { loadSessions(); } catch 
 
 function handlePiEvent(event, sessionId) {
   if (!event) return;
+  if (S.switchingSession) {
+    refreshSessionsDebounced();
+    return;
+  }
   // 多会话并发：只渲染焦点会话的事件；其他会话事件仅刷新列表运行状态
   if (sessionId && S.state?.sessionId && sessionId !== S.state.sessionId) {
     window.__piDebug.ignored++;
@@ -401,11 +409,16 @@ function ensureTurn() {
   const wrap = document.createElement("div");
   wrap.className = "turn";
   wrap.__texts = []; // 本轮各段原始文本
+  wrap.__startedAt = Date.now();
+  wrap.__toolCount = 0;
   wrap.innerHTML = `
     <div class="turn-status" hidden>
       <span class="pi-orb">π</span>
-      <span class="turn-status-text">正在思考…</span>
-      <span class="turn-status-hint">Esc 中止</span>
+      <span class="turn-status-copy">
+        <b class="turn-status-text">正在思考…</b>
+        <span class="turn-status-meta">刚刚开始</span>
+      </span>
+      <kbd class="turn-status-hint">Esc 中止</kbd>
     </div>`;
   $("#messages").appendChild(wrap);
   S.turn = wrap;
@@ -417,28 +430,31 @@ function finalizeTurn() {
   const turn = S.turn;
   S.turn = null;
   if (!turn) return;
-  // 兜底：回合结束时若思考块还开着（如无正文输出、异常中止等场景），统一折叠为一行摘要
   collapseThink();
   $$(".think[open]", turn).forEach((d) => { d.open = false; });
-  // 回合结束，等待动画随之消失
   $(".turn-status", turn)?.remove();
-  // 思考 + 工具调用整体打包为「执行过程」折叠组：默认收起，只留最终输出在外
-  const procNodes = $$(".think, .tool, .stall-hint", turn);
-  if (procNodes.length) {
-    const nThink = $$(".think", turn).length;
-    const nTool = $$(".tool", turn).length;
-    const parts = [];
-    if (nThink) parts.push(`思考 ${nThink}`);
-    if (nTool) parts.push(`工具 ${nTool}`);
-    const wrap = document.createElement("details");
-    wrap.className = "tproc";
-    wrap.innerHTML = `<summary><span class="proc-chevron">▶</span><span class="proc-label">执行过程</span><span class="proc-meta">${parts.join(" · ")}</span></summary><div class="tproc-body"></div>`;
-    procNodes[0].parentNode.insertBefore(wrap, procNodes[0]);
-    const body = $(".tproc-body", wrap);
-    for (const n of procNodes) body.appendChild(n); // appendChild 移动节点，保持原有顺序
+  // 只把最后一段正文视为最终回答；此前的阶段性说明与思考、工具一起收进过程。
+  const finalAnswer = $$(".md", turn).at(-1) || null;
+  const processNodes = $$(".think, .tool, .stall-hint, .md", turn).filter((node) => node !== finalAnswer);
+  if (processNodes.length) {
+    const elapsed = Math.max(1, Math.round((Date.now() - (turn.__startedAt || Date.now())) / 1000));
+    const errors = $$(".tool.error", turn).length;
+    const group = document.createElement("details");
+    group.className = "process-group";
+    group.innerHTML = `
+      <summary>
+        <span class="process-chevron">▶</span>
+        <span class="process-label">执行过程</span>
+        <span class="process-meta">${processNodes.length} 个步骤 · ${elapsed}s${errors ? ` · ${errors} 个失败` : ""}</span>
+      </summary>
+      <div class="process-body"></div>`;
+    processNodes[0].parentNode.insertBefore(group, processNodes[0]);
+    const body = $(".process-body", group);
+    for (const node of processNodes) body.appendChild(node);
   }
-  // 空回合（没有任何实质内容）直接移除
-  if (!$(".md, .think, .tool, .error-card, .stall-hint", turn)) { turn.remove(); return; }
+  // 最终答案保持展开，思考与工具默认收起；需要时可从“执行过程”查看完整时间线。
+  turn.classList.add("complete");
+  if (!$(".md, .think, .tool, .error-card, .stall-hint", turn)) turn.remove();
 }
 
 /* 回合内等待状态：π 动画图标 + 当前动作 + Esc 提示（行首，替代文末光标） */
@@ -451,11 +467,20 @@ function turnStatusText() {
   return "";
 }
 function updateTurnStatus() {
-  const row = S.turn && $(".turn-status", S.turn);
+  const turn = S.turn;
+  const row = turn && $(".turn-status", turn);
   if (!row) return;
   const txt = turnStatusText();
   row.hidden = !txt;
-  if (txt) $(".turn-status-text", row).textContent = txt;
+  if (!txt) return;
+  $(".turn-status-text", row).textContent = txt;
+  const elapsed = Math.max(0, Math.round((Date.now() - (turn.__startedAt || Date.now())) / 1000));
+  const toolCount = turn.__toolCount || 0;
+  $(".turn-status-meta", row).textContent =
+    `${elapsed < 2 ? "刚刚开始" : `已运行 ${elapsed}s`}${toolCount ? ` · ${toolCount} 个工具` : ""}`;
+  // 状态条始终跟随最新步骤，避免长思考/多工具后停留在回合顶部而离开视口。
+  if (turn.lastElementChild !== row) turn.appendChild(row);
+  scrollDown();
 }
 function startStatusTicker() {
   if (_statusTimer) return;
@@ -465,27 +490,28 @@ function stopStatusTicker() {
   if (_statusTimer) { clearInterval(_statusTimer); _statusTimer = null; }
 }
 
-/* 思考过程：折叠为一行「◆ 思考 Ns」，点击展开斜体浅色内容 */
+/* 思考过程：流式展开；阶段结束后保留为一行自然语言步骤，点击可看全文。 */
 function ensureThink() {
   if (S.thinking) return S.thinking;
   const d = document.createElement("details");
   d.className = "think";
-  d.innerHTML = `<summary><span class="diamond">◆</span><span class="think-label">思考中…</span><span class="think-preview"></span></summary><div class="think-body"></div>`;
+  d.innerHTML = `<summary><span class="diamond">◆</span><span class="think-preview">正在分析下一步…</span><span class="think-label">思考中</span></summary><div class="think-body"></div>`;
   ensureTurn().appendChild(d);
+  updateTurnStatus();
   d.open = true;
   S.thinking = { el: d, body: $(".think-body", d), label: $(".think-label", d), preview: $(".think-preview", d), buf: "", t0: Date.now() };
   return S.thinking;
 }
 
 const thinkPreviewText = (buf) =>
-  String(buf).replace(/[*_#`>]/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
+  String(buf).replace(/[*_#`>]/g, "").replace(/\s+/g, " ").trim().slice(0, 96);
 
 function collapseThink() {
   const t = S.thinking;
   if (!t) return;
   const secs = Math.max(1, Math.round((Date.now() - t.t0) / 1000));
-  t.label.textContent = `思考 ${secs}s`;
-  t.preview.textContent = thinkPreviewText(t.buf);
+  t.label.textContent = `${secs}s`;
+  t.preview.textContent = thinkPreviewText(t.buf) || "完成阶段分析";
   t.el.open = false;
   S.thinking = null;
 }
@@ -497,6 +523,7 @@ function ensureTextBlock() {
   md.className = "md";
   ensureTurn().appendChild(md);
   S.assistant = md;
+  updateTurnStatus();
   return md;
 }
 
@@ -508,6 +535,7 @@ function finalizeMessage() {
     if (S.assistantText.trim() && S.turn) S.turn.__texts.push(S.assistantText);
   }
   S.assistant = null;
+  updateTurnStatus();
   S.assistantText = "";
 }
 
@@ -637,14 +665,21 @@ async function retryLast() {
   } catch (e) { toast(`发送失败：${e?.message || e}`, "err"); }
 }
 
-/* ---- tool cards ---- */
+/* ---- tool timeline ---- */
+const TOOL_LABELS = {
+  read: "读取", write: "写入", edit: "编辑", grep: "搜索", glob: "查找",
+  find: "查找", ls: "浏览", bash: "运行", powershell: "运行",
+  web_search: "联网搜索", browser: "浏览器", task: "委派",
+};
+const AUTO_OPEN_TOOLS = new Set(["grep", "glob", "find"]);
+const toolLabel = (name) => TOOL_LABELS[name] || name;
 function toolDesc(toolName, args = {}) {
   const a = args || {};
   switch (toolName) {
     case "read": case "write": case "edit": return a.path || "";
     case "bash": case "powershell": return a.command || a.cmd || "";
     case "grep": return `${a.pattern || ""}${a.path ? "  ·  " + a.path : ""}`;
-    case "find": return a.pattern || a.path || "";
+    case "glob": case "find": return a.pattern || a.path || "";
     case "ls": return a.path || ".";
     default: return Object.entries(a).slice(0, 2).map(([k, v]) => `${k}: ${trunc(String(v), 60)}`).join("  ·  ");
   }
@@ -660,23 +695,28 @@ function onToolStart(ev) {
   collapseThink(); // 工具开跑前收起思考阶段，只留一行摘要
   S.streamingTool = toolName;
   setStreamingUI(true);
+  const turn = ensureTurn();
+  turn.__toolCount = (turn.__toolCount || 0) + 1;
+  updateTurnStatus();
 
-  // 轻量工具行：状态点 + 工具名 + 参数摘要 + 耗时，点击展开输出
+  // 时间线工具步骤：动作 + 目标；输出按需展开，搜索类结果默认展示。
   const card = document.createElement("div");
   card.className = "tool running";
   card.innerHTML = `
-    <div class="tool-line">
+    <div class="tool-line" title="${esc(toolName)}">
       <span class="tool-dot"></span>
-      <span class="tool-name">${esc(toolName)}</span>
+      <span class="tool-name">${esc(toolLabel(toolName))}</span>
       <span class="tool-arg">${esc(trunc(toolDesc(toolName, args), TRUNC_TOOL_ARG))}</span>
       <span class="tool-elapsed"></span>
+      <span class="tool-chevron">⌄</span>
     </div>
     <div class="tool-out" hidden></div>`;
   $(".tool-line", card).addEventListener("click", () => {
     const out = $(".tool-out", card);
     if (out.dataset.has) out.hidden = !out.hidden;
   });
-  ensureTurn().appendChild(card);
+  turn.appendChild(card);
+  updateTurnStatus();
   S.toolCards.set(toolCallId, {
     card,
     out: $(".tool-out", card),
@@ -738,7 +778,7 @@ function onToolEnd(ev) {
   } else {
     out.textContent = text ? trunc(text, 4000) : (isError ? "（无输出）" : "（完成）");
   }
-  if (isError) out.hidden = false; // B7: auto-expand failures
+  if (isError || (AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim())) out.hidden = false;
   scrollDown();
 }
 
@@ -861,7 +901,7 @@ async function restoreHistory() {
         const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
         rec.out.dataset.has = "1";
         rec.out.textContent = text ? trunc(text, 4000) : (m.isError ? "（无输出）" : "（完成）");
-        if (m.isError) rec.out.hidden = false;
+        if (m.isError || (AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim())) rec.out.hidden = false;
         rec.card.classList.remove("running");
         rec.card.classList.add(m.isError ? "error" : "done");
         if (m.timestamp && rec.startedAt) {
@@ -879,20 +919,21 @@ async function restoreHistory() {
         // 与实时渲染一致：折叠的思考块，点开看全文
         const d = document.createElement("details");
         d.className = "think";
-        d.innerHTML = `<summary><span class="diamond">◆</span><span class="think-label">思考过程</span><span class="think-preview"></span></summary><div class="think-body"></div>`;
+        d.innerHTML = `<summary><span class="diamond">◆</span><span class="think-preview"></span><span class="think-label">思考</span></summary><div class="think-body"></div>`;
         turn.appendChild(d);
         $(".think-body", d).innerHTML = rich(c.thinking);
         $(".think-preview", d).textContent = thinkPreviewText(c.thinking);
       } else if (c.type === "toolCall") {
-        // 与实时渲染一致的工具行，输出区待对应 toolResult 回填
+        // 与实时渲染一致的工具时间线，输出区待对应 toolResult 回填
         const card = document.createElement("div");
         card.className = "tool running";
         card.innerHTML = `
-          <div class="tool-line">
+          <div class="tool-line" title="${esc(c.name)}">
             <span class="tool-dot"></span>
-            <span class="tool-name">${esc(c.name)}</span>
+            <span class="tool-name">${esc(toolLabel(c.name))}</span>
             <span class="tool-arg">${esc(trunc(toolDesc(c.name, c.arguments), TRUNC_TOOL_ARG))}</span>
             <span class="tool-elapsed"></span>
+            <span class="tool-chevron">⌄</span>
           </div>
           <div class="tool-out" hidden></div>`;
         const out = $(".tool-out", card);
@@ -962,8 +1003,9 @@ async function loadSessions() {
     const file = (s.file || "").split(/[\\/]/).pop().replace(/\.jsonl$/, "");
     const main = document.createElement("button");
     main.className = "s-main";
-    main.innerHTML = `<span class="s-name">${s.running ? `<i class="s-busy" title="后台执行中"></i>` : ""}${esc(s.name || friendlySession(file))}</span>
-      <span class="s-meta">${s.running ? "执行中 · " : ""}${s.modified ? new Date(s.modified).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}${s.messageCount != null ? " · " + s.messageCount + "条" : ""}</span>`;
+    main.innerHTML = `<span class="s-head"><span class="s-name">${esc(s.name || friendlySession(file))}</span>
+      ${s.running ? `<span class="s-run"><i class="s-busy"></i>运行中</span>` : ""}</span>
+      <span class="s-meta">${s.modified ? new Date(s.modified).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}${s.messageCount != null ? " · " + s.messageCount + "条" : ""}</span>`;
     main.addEventListener("click", () => {
       // 多会话并发：执行中也可切换会话，后台任务继续运行
       openSession(s.file);
@@ -1047,23 +1089,40 @@ async function restoreWorkspace() {
 }
 
 async function openSession(file) {
+  const seq = ++S.sessionSwitchSeq;
+  S.switchingSession = true;
+  clearChat();
   try {
-    clearChat();
     const r = await window.halo.openSession(file);
-    if (r?.data) applyState(r.data); // 同步 sessionFile，左侧“当前”标记立刻跟上
+    if (seq !== S.sessionSwitchSeq) return;
+    clearChat();
+    if (r?.data) applyState(r.data); // 清理旧视图后再同步焦点流状态，运行中的会话仍显示“中止”
     await restoreHistory();
+    if (seq !== S.sessionSwitchSeq) return;
     loadSessions();
   } catch (e) {
-    toast(`打开失败：${e?.message || e}`, "err");
+    if (seq === S.sessionSwitchSeq) toast(`打开失败：${e?.message || e}`, "err");
+  } finally {
+    if (seq === S.sessionSwitchSeq) S.switchingSession = false;
   }
 }
 
 async function newSession() {
   // 多会话并发：执行中也可开新会话，原任务后台继续
+  const seq = ++S.sessionSwitchSeq;
+  S.switchingSession = true;
   clearChat();
-  await window.halo.newSession();
-  toast("新会话已开启", "ok");
-  loadSessions();
+  try {
+    const r = await window.halo.newSession();
+    if (seq !== S.sessionSwitchSeq) return;
+    if (r?.data) applyState(r.data);
+    toast("新会话已开启", "ok");
+    loadSessions();
+  } catch (e) {
+    if (seq === S.sessionSwitchSeq) toast(`新建失败：${e?.message || e}`, "err");
+  } finally {
+    if (seq === S.sessionSwitchSeq) S.switchingSession = false;
+  }
 }
 
 function clearChat() {
@@ -1072,8 +1131,14 @@ function clearChat() {
   S.assistant = null;
   S.turn = null;
   S.assistantText = "";
+  S.thinking = null;
+  S.streamingTool = null;
+  S.retrying = null;
   S.lastUserPrompt = null;
   S.activity = [];
+  S.queued = { steering: [], followUp: [] };
+  renderQueue();
+  setStreamingUI(false);
 }
 
 async function loadResources() {
