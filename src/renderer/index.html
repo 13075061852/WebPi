@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: halo-preview:; frame-src halo-preview:; connect-src 'self'; object-src 'none'; base-uri 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: halo-preview:; frame-src halo-preview: http://127.0.0.1:* https://127.0.0.1:*; connect-src 'self'; object-src 'none'; base-uri 'none'" />
 <title>Pi Halo · 星环</title>
 <script src="js/theme.js"></script>
 <link rel="stylesheet" href="css/app.css" />
@@ -16,27 +16,11 @@
   <!-- ======================= titlebar ======================= -->
   <header id="titlebar" class="fx t-d">
     <div class="tb-left">
-      <div class="logo" title="Pi Halo">
-        <svg viewBox="0 0 200 200" aria-hidden="true">
-          <circle cx="100" cy="100" r="86" fill="none" stroke="currentColor" stroke-opacity="0.25" stroke-width="4"/>
-          <g fill="none" stroke="currentColor" stroke-width="15" stroke-linecap="round">
-            <path d="M48,66 C74,55 136,54 156,62"/>
-            <path d="M74,67 C71,98 68,124 58,146"/>
-            <path d="M126,66 C128,98 131,126 142,146"/>
-          </g>
-        </svg>
-      </div>
-      <span class="app-name">Pi <b>Halo</b></span>
-      <span class="app-tag">星环</span>
+      <img class="logo" src="../../assets/icon-rounded.png" alt="" draggable="false" />
+      <span class="app-name">星环</span>
     </div>
 
-    <div class="tb-center">
-      <button id="projectChip" title="切换项目目录">
-        <svg viewBox="0 0 24 24" class="ic"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
-        <span id="projectName">…</span>
-        <svg viewBox="0 0 24 24" class="ic chev"><path d="m6 9 6 6 6-6"/></svg>
-      </button>
-    </div>
+    <div class="tb-center" aria-hidden="true"></div>
 
     <div class="tb-right">
       <button id="themeToggle" class="tb-btn" title="切换 黑 / 白 主题">
@@ -60,13 +44,10 @@
           <svg viewBox="0 0 24 24" class="ic"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
           <span>项目</span>
         </button>
-        <button class="nav-item" data-tab="sessions">
-          <svg viewBox="0 0 24 24" class="ic"><path d="M4 6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg>
-          <span>会话</span>
-        </button>
+
         <button class="nav-item" data-tab="skills">
           <svg viewBox="0 0 24 24" class="ic"><path d="m12 3 2.1 5.3L19 10l-4.9 1.7L12 17l-2.1-5.3L5 10l4.9-1.7Z M18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8Z"/></svg>
-          <span>能力</span>
+          <span>服务器</span>
         </button>
       </nav>
 
@@ -82,7 +63,7 @@
       <!-- tab: sessions -->
       <div class="side-section" data-pane="sessions">
         <div class="side-label row">
-          <span>会话历史</span>
+          <span id="sessionProjectName">当前项目</span>
           <button id="btnNewSession" class="mini-btn" title="新会话">＋ 新会话</button>
         </div>
         <div id="sessionList" class="session-list"></div>
@@ -90,18 +71,18 @@
 
       <!-- tab: skills -->
       <div class="side-section" data-pane="skills">
-        <div class="side-label">技能 · Skills</div>
+        <div class="side-label row"><span>服务器</span><button id="serverAdd" class="mini-btn">＋ 添加</button></div><div id="serverList"></div><div class="server-legacy" hidden><div class="side-label">技能 · Skills</div>
         <div id="skillList" class="res-list"></div>
         <div class="side-label">模板 · Prompts</div>
         <div id="promptList" class="res-list"></div>
         <div class="side-label">扩展 · Extensions</div>
-        <div id="extList" class="res-list"></div>
+        <div id="extList" class="res-list"></div></div>
       </div>
 
       <!-- bottom: workspace files -->
       <div class="side-files">
         <div class="side-label row">
-          <span>文件</span>
+          <span id="sideFilesTitle">文件</span>
           <span class="sf-actions">
             <button id="btnNewFile" class="mini-icon" title="新建文件">
               <svg viewBox="0 0 24 24" class="ic"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M12 12v6M9 15h6"/></svg>
@@ -114,7 +95,7 @@
             </button>
           </span>
         </div>
-        <div id="wsTree" class="ws-tree"></div>
+        <div id="wsTree" class="ws-tree"></div><div id="serverPorts" hidden></div>
       </div>
 
       <!-- bottom: settings + auth -->
@@ -161,7 +142,9 @@
           </div>
         </div>
         <div id="termView">
-          <button id="termClose" title="关闭控制台">✕</button>
+          <div class="term-toolbar"><div id="termTabs" role="tablist" aria-label="项目终端"></div><div class="term-actions">
+<button id="termAdd" title="新建终端">＋</button><button id="termSplit" title="切换平铺视图">◫</button>
+</div></div>
           <div id="termHost"></div>
         </div>
         <div class="pv-devices">
@@ -205,7 +188,9 @@
       <footer id="composer">
         <div id="attachRow" hidden></div>
         <div class="input-shell">
+          <div id="mentionMenu" hidden><div class="mention-heading"></div><div id="mentionOptions" role="listbox" aria-label="项目文件与文件夹"></div><div class="mention-help">↑↓ 选择 · Enter 插入 · Esc 关闭</div></div>
           <textarea id="input" rows="1" placeholder="描述你要完成的任务…  Enter 发送 · Shift+Enter 换行"></textarea>
+        </div>
           <div class="composer-bar">
             <div class="cb-left">
               <button id="btnAttach" title="附加图片"><svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg></button>
@@ -223,7 +208,6 @@
               </button>
             </div>
           </div>
-        </div>
       </footer>
     </section>
   </div>
@@ -272,7 +256,7 @@
     <button class="modal-x set-close" data-close>&times;</button>
     <div class="set-side">
       <div class="set-brand">
-        <span class="set-mark">π</span>
+        <img class="set-mark" src="../../assets/icon-rounded.png" alt="" />
         <span>设置</span>
       </div>
       <button class="set-nav active" data-pane="pkgs">
@@ -293,7 +277,7 @@
       </button>
     </div>
     <div class="set-main">
-      <div id="setPane-pkgs" class="set-pane active">
+      <div id="setPane-pkgs" class="set-pane active"><div class="settings-title"><h3>插件与技能</h3><p>为星环添加适合你的工具与能力</p></div>
         <div class="set-head">
           <div class="set-search" id="pkgSearch">
             <input id="pkgSearchInput" type="text" placeholder="搜索 pi 生态的插件 / 技能 / 主题…" />
@@ -329,8 +313,8 @@
         <span>更改将在新会话生效</span>
         <button id="pkgApply" class="mini-btn accent">立即重载</button>
       </div>
-      <div class="set-pane" id="setPane-appearance"><div class="set-soon">外观设置即将推出（主题切换 · 字号 · 布局密度）</div></div>
-      <div class="set-pane" id="setPane-usage">
+      <div class="set-pane" id="setPane-appearance"><div class="settings-title"><h3>外观</h3><p>用风景与材质，打造你的工作空间</p></div><div class="set-body"><div class="set-sec"><div class="wallpaper-transparency"><label for="wallpaperTransparency">背景透出程度<output id="wallpaperTransparencyValue" for="wallpaperTransparency">35%</output></label><input id="wallpaperTransparency" type="range" min="0" max="100" step="1" value="35" aria-describedby="wallpaperTransparencyHint"><p id="wallpaperTransparencyHint">数值越大，面板越透明、背景越清晰。仅对图片主题生效，自动保存。</p></div><h4>界面主题</h4><div class="theme-choices"><button class="theme-choice" data-theme-choice="light"><span class="theme-sample light"><i></i><i></i><i></i></span><span>浅色</span></button><button class="theme-choice" data-theme-choice="dark"><span class="theme-sample dark"><i></i><i></i><i></i></span><span>深色</span></button></div><h4 class="wallpaper-heading">风景主题</h4><div class="theme-choices wallpaper-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="nebula"><span class="theme-sample wallpaper-sample nebula"><i></i><i></i><i></i></span><span>星云夜航</span><small>深空星云 · 冷紫玻璃</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="mist"><span class="theme-sample wallpaper-sample mist"><i></i><i></i><i></i></span><span>雾山青岚</span><small>层叠山色 · 青玉磨砂</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="dunes"><span class="theme-sample wallpaper-sample dunes"><i></i><i></i><i></i></span><span>落日沙丘</span><small>暖沙落日 · 琥珀柔光</small></button></div><h4 class="wallpaper-heading">职业灵感</h4><div class="theme-choices wallpaper-choices career-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="blueprint"><span class="theme-sample wallpaper-sample blueprint"><i></i><i></i><i></i></span><span>精工蓝调</span><small>工程 · 科技｜钛金属与冷光</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="executive"><span class="theme-sample wallpaper-sample executive"><i></i><i></i><i></i></span><span>都会夜幕</span><small>金融 · 商务｜城市与香槟金</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="scholar"><span class="theme-sample wallpaper-sample scholar"><i></i><i></i><i></i></span><span>竹影书笺</span><small>文化 · 教育｜纸纹与竹影</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="studio"><span class="theme-sample wallpaper-sample studio"><i></i><i></i><i></i></span><span>灵感光谱</span><small>设计 · 创意｜磨砂玻璃与柔彩</small></button></div><h4 class="wallpaper-heading">插画世界</h4><div class="theme-choices wallpaper-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="garden"><span class="theme-sample wallpaper-sample garden"><i></i><i></i><i></i></span><span>花园奇遇</span><small>繁花与机器人 · 奶油柔粉</small></button></div><p class="settings-hint">职业标签仅供风格参考，可自由选择。图片与面板材质一起切换，自动保存。</p></div></div></div>
+      <div class="set-pane" id="setPane-usage"><div class="settings-title"><h3>用量统计</h3><p>了解各模型与项目的使用情况</p></div>
         <div class="set-head">
           <div class="set-tabs" id="usageRange">
             <button class="ptab active" data-d="7">近 7 天</button>
@@ -342,7 +326,7 @@
           <div id="usageContent"><div class="set-soon">正在统计…</div></div>
         </div>
       </div>
-      <div class="set-pane" id="setPane-login">
+      <div class="set-pane" id="setPane-login"><div class="settings-title"><h3>模型与登录</h3><p>管理登录方式，选择新会话默认使用的模型</p><button id="settingsAuth" class="mini-btn">管理登录账号 ↗</button></div>
         <div class="set-body">
           <div class="set-sec">
             <h4>默认模型 <span id="defModelName" class="set-count"></span></h4>
@@ -374,7 +358,9 @@
   </div>
 </div>
 
-<div id="toasts"></div>
+<div id="usageDetailModal" class="modal" hidden><div class="modal-panel usage-detail-panel"><div class="modal-head"><h3>用量明细</h3><button id="refreshUsageDetail" class="mini-btn">刷新</button><button class="modal-x" data-close aria-label="关闭">×</button></div><div id="usageDetailBody" class="modal-body"></div></div></div>
+<div id="serverModal" class="modal" hidden><div class="modal-panel"><div class="modal-head"><h3>添加服务器</h3><button class="modal-x" data-close>×</button></div><form id="serverForm" class="modal-body server-form"><label>名称<input name="name" required placeholder="例如：生产服务器" /></label><label>地址<input name="host" required placeholder="IP 或域名" /></label><div class="server-form-pair"><label>SSH 端口<input name="port" type="number" min="1" max="65535" value="22" required /></label><label>用户名<input name="username" required placeholder="root / ubuntu" /></label></div><label>认证方式<select name="auth"><option value="password">密码</option><option value="key">私钥文件</option></select></label><label><span id="serverSecretLabel">密码</span><input name="secret" type="password" required autocomplete="new-password" /></label><p class="settings-hint">凭据使用系统加密保存。首次连接记住主机指纹，指纹变化时拒绝连接。私钥需为无口令私钥。</p><div id="serverFormError" role="alert"></div><button type="submit" class="mini-btn accent">保存服务器</button></form></div></div><div id="toasts"></div>
+<script src="js/terminals.js"></script>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

@@ -2,7 +2,7 @@
 
 一款以 **pi 核心 agent** 为引擎的桌面可视化终端。pi 的一切规则原样保留 —— 扩展、技能、提示模板、AGENTS.md 上下文、会话树、消息队列（steer / follow-up）、压缩 —— 全部按 pi 自己的方式发现与加载；区别在于：你第一次能**看见** agent 在做什么。
 
-![icon](assets/icon.png)
+![icon](assets/icon-rounded.png)
 
 ## 亮点
 
@@ -81,6 +81,14 @@ npm run dist:dir   # 仅产出免安装目录（dist/win-unpacked/），快速�
 
 ## 快捷键
 
+### 项目终端
+
+预览栏右上角的终端按钮可打开或隐藏控制台。每个项目支持最多 8 个独立 CMD 终端，所有项目合计最多 24 个；通过「＋」新建、标签切换、「◫」平铺多个终端。隐藏控制台或切换项目时进程继续运行，标签上的「×」会结束该终端及其子进程。退出应用后终端不保留。
+
+终端使用 Windows ConPTY，支持方向键编辑、命令历史、Tab 补全和 Ctrl+C 中断。Ctrl+Shift+C 复制选中内容，Ctrl+Shift+V 粘贴；输入 `cls` 清屏。输出采用批量传输和背压控制，回滚历史限制为 5000 行。
+
+运行 `npm run test:terminals` 可验证多终端隔离、分屏、隐藏恢复、大量输出和 Ctrl+C。
+
 | 按键 | 作用 |
 |------|------|
 | `Enter` | 发送 / 运行中插入引导（steer） |
@@ -106,3 +114,14 @@ src/
 ```
 
 无打包步骤、无 UI 框架 —— 主进程与 pi 同进程直连（SDK 模式），事件零拷贝转发。
+
+### Windows 原生模块与打包验证
+
+Windows x64 包使用 node-pty 自带的 Node-API 预编译模块（保留 asarUnpack），关闭 electron-builder 的重复编译，避免 SSH 可选 CPU 检测模块要求本机安装 Visual Studio。升级原生依赖后应重新验证打包产物：
+
+```powershell
+npm run dist:dir
+$env:HALO_TEST_EXECUTABLE = "dist/win-unpacked/Pi Halo.exe"
+node test/e2e/e2e-terminals.mjs
+Remove-Item Env:HALO_TEST_EXECUTABLE
+```

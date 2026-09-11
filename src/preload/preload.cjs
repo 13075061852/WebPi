@@ -7,6 +7,16 @@ const listen = (channel) => (cb) => {
 };
 
 contextBridge.exposeInMainWorld("halo", {
+  serverNewSession: (id) => ipcRenderer.invoke("halo:server-new-session", id),
+  serverPreview: (id, item) => ipcRenderer.invoke("halo:server-preview", id, item),
+  serverPorts: (id) => ipcRenderer.invoke("halo:server-ports", id),
+  serverLatencies: (force = false) => ipcRenderer.invoke("halo:server-latencies", force),
+  serverLatency: (id) => ipcRenderer.invoke("halo:server-latency", id),
+  serverList: () => ipcRenderer.invoke("halo:server-list"),
+  serverReorder: (ids) => ipcRenderer.invoke("halo:server-reorder", ids),
+  serverSave: (input) => ipcRenderer.invoke("halo:server-save", input),
+  serverSelect: (id) => ipcRenderer.invoke("halo:server-select", id),
+  serverRemove: (id) => ipcRenderer.invoke("halo:server-remove", id),
   // state / session
   getState: () => ipcRenderer.invoke("halo:get-state"),
   init: (cwd) => ipcRenderer.invoke("halo:init", cwd),
@@ -30,6 +40,7 @@ contextBridge.exposeInMainWorld("halo", {
   deleteEntry: (target) => ipcRenderer.invoke("halo:delete-entry", { target }),
   previewTouch: (on) => ipcRenderer.invoke("halo:preview-touch", { on }),
   snapshotMessages: () => ipcRenderer.invoke("halo:snapshot-messages"),
+  snapshotView: () => ipcRenderer.invoke("halo:snapshot-view"),
   listResources: () => ipcRenderer.invoke("halo:list-resources"),
 
   // auth / login（与 pi CLI 共享认证）
@@ -71,13 +82,13 @@ contextBridge.exposeInMainWorld("halo", {
   readFile: (p) => ipcRenderer.invoke("halo:read-file", p),
   openPath: (p) => ipcRenderer.invoke("halo:open-path", p),
   openExternal: (url) => ipcRenderer.invoke("halo:open-external", url),
-  ptyStart: () => ipcRenderer.invoke("halo:pty-start"),
-  ptyWrite: (d) => ipcRenderer.invoke("halo:pty-write", d),
-  ptyKill: () => ipcRenderer.invoke("halo:pty-kill"),
-  onPtyOut: (cb) => ipcRenderer.on("halo:pty-out", (_e, d) => cb(d)),
-  onPtyDone: (cb) => ipcRenderer.on("halo:pty-done", () => cb()),
-  onPtyCwd: (cb) => ipcRenderer.on("halo:pty-cwd", (_e, d) => cb(d)),
-  onPtyExit: (cb) => ipcRenderer.on("halo:pty-exit", () => cb()),
+  ptyStart: (opts) => ipcRenderer.invoke("halo:pty-start", opts),
+  ptyWrite: (data) => ipcRenderer.invoke("halo:pty-write", data),
+  ptyKill: (id) => ipcRenderer.invoke("halo:pty-kill", id),
+  ptyResize: (data) => ipcRenderer.invoke("halo:pty-resize", data),
+  ptyAck: (data) => ipcRenderer.invoke("halo:pty-ack", data),
+  onPtyOut: listen("halo:pty-out"),
+  onPtyExit: listen("halo:pty-exit"),
 
   // window
   minimize: () => ipcRenderer.send("win:minimize"),
@@ -94,4 +105,5 @@ contextBridge.exposeInMainWorld("halo", {
 
   // splash -> main
   splashDone: () => ipcRenderer.invoke("halo:splash-done"),
+  onSplashExpand: listen("halo:splash-expand"),
 });

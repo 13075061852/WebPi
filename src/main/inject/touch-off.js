@@ -1,1 +1,1 @@
-(function(){window.__haloTouchOn=false;var st=document.getElementById("__halo-touch");if(st)st.remove();})()
+(function(){window.__haloTouchOn=false;if(window.__haloTouchCancel)window.__haloTouchCancel();["__halo-touch","__halo-home"].forEach(function(id){var st=document.getElementById(id);if(st)st.remove();});})()

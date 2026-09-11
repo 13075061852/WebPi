@@ -84,6 +84,11 @@ const mdSplitRow = (line) => {
   if (l.endsWith("|")) l = l.slice(0, -1);
   return l.split("|").map((c) => c.trim());
 };
+function mdTableStart(lines, i) {
+  if (!lines[i]?.includes("|") || !lines[i + 1]) return false;
+  const header = mdSplitRow(lines[i]), separator = mdSplitRow(lines[i + 1]);
+  return header.length > 1 && header.length === separator.length && separator.every(c => /^:?-+:?$/.test(c));
+}
 const LI_RE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 function mdList(lines, i, mdPath) {
   const ordered = /\d/.test(lines[i].match(LI_RE)[2][0]);
@@ -121,10 +126,10 @@ function mdBlocks(lines, mdPath) {
       continue;
     }
     if (!line.trim()) { i++; continue; }
-    m = line.match(/^(#{1,6})\s+(.*)$/);
+    m = line.match(/^ {0,3}(#{1,6})[\t ]+(.*)$/);
     if (m) { const h = m[1].length; out.push(`<h${h}>${mdInline(m[2], mdPath)}</h${h}>`); i++; continue; }
     if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push("<hr>"); i++; continue; }
-    if (line.includes("|") && i + 1 < lines.length && /^\s*\|?[\s:|-]*-[\s:|-]*$/.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+    if (mdTableStart(lines, i)) {
       const aligns = mdSplitRow(lines[i + 1]).map((c) => (c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : "left"));
       const head = mdSplitRow(line);
       i += 2;
@@ -148,9 +153,9 @@ function mdBlocks(lines, mdPath) {
     }
     const buf = [line]; i++;
     while (i < lines.length && lines[i].trim() &&
-      !/^\s*(`{3,}|~{3,})/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) &&
+      !/^\s*(`{3,}|~{3,})/.test(lines[i]) && !/^ {0,3}#{1,6}[\t ]/.test(lines[i]) &&
       !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
-      !/^\s*&gt;/.test(lines[i]) && !LI_RE.test(lines[i])) {
+      !/^\s*&gt;/.test(lines[i]) && !LI_RE.test(lines[i]) && !mdTableStart(lines, i)) {
       buf.push(lines[i]); i++;
     }
     out.push(`<p>${buf.map((l) => mdInline(l, mdPath)).join("<br>")}</p>`);
@@ -158,7 +163,7 @@ function mdBlocks(lines, mdPath) {
   return out.join("");
 }
 function mdRender(src, mdPath) {
-  return mdBlocks(escFile(src).split("\n"), mdPath ?? null);
+  return mdBlocks(escFile(src).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split("\n"), mdPath ?? null);
 }
 
 function rich(src) {

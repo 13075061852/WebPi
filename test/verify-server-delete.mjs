@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+import { PiBridge, HaloStore } from '../src/main/pi-bridge.mjs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+const dir = mkdtempSync(path.join(tmpdir(), 'halo-server-delete-'));
+const settings = path.join(dir, 'settings.json');
+const store = new HaloStore(settings);
+const bridge = new PiBridge(store, {}, { sessionDir: path.join(dir, 'sessions') });
+try {
+  await bridge.start(dir);
+  const first = await bridge.newSession('server-a');
+  const second = await bridge.newSession('server-b');
+  const rows = await bridge.serverConversations();
+  const file = rows.find(r => r.serverId === 'server-a').file;
+  store.set('serverSessions', { [file]: { serverId: 'server-a', file, name: 'draft', modified: Date.now() } });
+  store.set('serverLastSessions', { 'server-a': file });
+  assert.equal((await bridge.deleteSession(file)).switched, false);
+  assert.equal(bridge.serverTargets.has(first.sessionId), false);
+  assert.equal(store.data.serverSessions[file], undefined);
+  assert.equal(store.data.serverLastSessions['server-a'], undefined);
+  const remaining = await bridge.serverConversations();
+  assert.equal(remaining.some(r => r.serverId === 'server-a'), false);
+  assert.equal(remaining.filter(r => r.serverId === 'server-b').length, 1);
+  assert.equal((await bridge.deleteSession(remaining.find(r => r.serverId === 'server-b').file)).switched, true);
+  assert.equal(bridge.serverTargets.has(second.sessionId), false);
+  assert.equal((await bridge.serverConversations()).length, 0);
+  const saved = new HaloStore(settings);
+  assert.equal(saved.data.serverSessions[file], undefined);
+  assert.equal(saved.data.serverTargets[first.sessionId], undefined);
+  console.log('PASS server conversation deletion, focus fallback and persisted cleanup');
+} finally { await bridge.runtime?.dispose(); }
+process.exit(0);

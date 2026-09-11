@@ -2,13 +2,21 @@
  * 对任意文本前缀，增量渲染（冻结段落 + 尾部重渲）必须与全量 mdRender 输出完全一致。
  * 覆盖：段落、列表（含空行续项）、代码围栏（含空行）、表格、引用、标题、任务列表。 */
 import { readFileSync } from "node:fs";
+import assert from "node:assert/strict";
 
 const code = readFileSync("src/renderer/js/markdown.js", "utf8");
 const sandbox = {};
 const fn = new Function("window", code + "\n;return { mdRender, rich, mdStreamSplit, streamRender };");
 const { mdRender, mdStreamSplit, streamRender } = fn(sandbox);
+assert.equal(mdRender('\uFEFF# 标题\r\n\r\n  ## 章节\r\n正文\r\n'), '<h1>标题</h1><h2>章节</h2><p>正文</p>');
+assert.match(mdRender('```txt\r\n# 原样代码\r\n```'), /<pre><code># 原样代码<\/code><\/pre>/);
 
+const portTable = '**TCP 端口**\n| 端口 | 监听地址 | 进程 |\n|------|----------|------|\n| 22 | 0.0.0.0 / [::] | sshd |\n**UDP 端口**\n| 端口 | 监听地址 | 进程 |\n|------|----------|------|\n| 68 | 0.0.0.0 | dhclient |';
+assert.equal((mdRender(portTable).match(/<table>/g) || []).length, 2);
+assert.match(mdRender(portTable), /<td[^>]*>sshd<\/td>/);
+assert.doesNotMatch(mdRender('文字 | 分隔\n---'), /<table>/);
 const CASES = [
+  portTable,
   "简单段落。",
   "第一段。\n\n第二段。",
   "第一段。\n\n第二段。\n\n第三段。",
@@ -18,6 +26,7 @@ const CASES = [
   "| 列A | 列B |\n| --- | --- |\n| 1 | 2 |\n\n表格后的段落",
   "> 引用第一行\n> 引用第二行\n\n> 新引用",
   "# 标题\n\n正文",
+  "# Windows 标题\r\n\r\n## 章节\r\n\r\n正文",
   "- [x] 已完成\n- [ ] 未完成",
   "**加粗** 和 *斜体* 与 `代码` 混合\n\n第二段带 [链接](https://example.com)",
   "```\n无语言围栏\n```\n\n普通文本",

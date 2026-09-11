@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node scripts/start.mjs",
     "test:render": "node test/e2e/e2e-render.mjs",
+    "test:terminals": "node test/e2e/e2e-terminals.mjs",
     "test:reallink": "node test/e2e/e2e-reallink.mjs",
     "test:workspace": "node test/e2e/e2e-workspace.mjs",
     "test:treewatch": "node test/e2e/e2e-treewatch.mjs",
@@ -16,7 +17,8 @@
     "check": "node scripts/check-syntax.mjs",
     "lint": "eslint src scripts test --max-warnings 0",
     "dist": "electron-builder --win",
-    "dist:dir": "electron-builder --win dir"
+    "dist:dir": "electron-builder --win dir",
+    "test:audit": "node scripts/test-audit.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -24,20 +26,35 @@
   "build": {
     "appId": "com.pihalo.app",
     "productName": "Pi Halo",
-    "files": ["src/**/*", "assets/**/*", "package.json"],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
     "directories": {
       "output": "dist"
     },
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
-      "icon": "assets/icon.png"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon-rounded.png"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
       "shortcutName": "Pi Halo"
-    }
+    },
+    "npmRebuild": false
   },
   "author": "Pi Halo",
   "license": "MIT",
@@ -48,6 +65,8 @@
     "globals": "^17.11.0"
   },
   "dependencies": {
-    "iconv-lite": "^0.7.3"
+    "iconv-lite": "^0.7.3",
+    "node-pty": "^1.1.0",
+    "ssh2": "^1.17.0"
   }
 }

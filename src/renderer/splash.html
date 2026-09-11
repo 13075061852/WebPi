@@ -1,48 +1,15 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'" />
-<title>Pi Halo</title>
-<link rel="stylesheet" href="css/splash.css" />
-</head>
-<body>
-  <div id="stage">
-    <canvas id="stars"></canvas>
-    <div class="aurora aurora-a"></div>
-    <div class="aurora aurora-b"></div>
-
-    <svg id="glyph" viewBox="0 0 200 200" aria-hidden="true">
-      <defs>
-        <linearGradient id="pg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0"  stop-color="#ffffff"/>
-          <stop offset=".5" stop-color="#d4d4d8"/>
-          <stop offset="1"  stop-color="#71717a"/>
-        </linearGradient>
-        <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
-          <feGaussianBlur stdDeviation="5" result="b"/>
-          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
-      </defs>
-      <g class="ring-spin">
-        <circle class="halo-ring" cx="100" cy="100" r="84"/>
-        <circle class="halo-arc"  cx="100" cy="100" r="84"/>
-      </g>
-      <g filter="url(#glow)">
-        <path class="pi-bar" d="M42,63 C70,52 138,51 160,59"/>
-        <path class="pi-leg l" d="M70,64 C67,96 64,124 53,147 C49,156 40,158 36,151"/>
-        <path class="pi-leg r" d="M124,63 C126,97 129,127 140,147 C144,156 153,158 157,151"/>
-      </g>
-    </svg>
-
-    <div class="shock s1"></div>
-    <div class="shock s2"></div>
-
-    <div class="wordmark" aria-label="PI HALO">
-      <span>P</span><span>I</span><i></i><span>H</span><span>A</span><span>L</span><span>O</span>
-    </div>
-    <div class="subtitle">CELESTIAL AGENT CONSOLE</div>
-  </div>
-  <script src="js/splash.js"></script>
-</body>
-</html>
+<html lang="zh-CN"><head><meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'" />
+<title>Pi Halo</title><script src="js/theme.js"></script><link rel="stylesheet" href="css/splash.css" /></head>
+<body><main id="stage">
+<div class="brand"><span>PI HALO</span><span>星环</span></div>
+<div class="identity">
+<svg class="emblem" viewBox="0 0 120 120" aria-hidden="true">
+<circle class="track" cx="60" cy="60" r="45"/>
+<g class="orbit"><path d="M60 15a45 45 0 0 1 45 45"/><circle class="satellite" cx="105" cy="60" r="3"/></g>
+<circle class="inner" cx="60" cy="60" r="35"/>
+<path class="mark" d="M40 44h40M49 44l-3 32m24-32v26q0 7 8 5"/>
+</svg><h1>让想法，即刻启程。</h1><p>你的智能工作空间</p></div>
+<footer><span id="status" role="status">正在准备工作空间</span><span class="loading"><i></i><i></i><i></i></span></footer>
+</main><script src="js/splash.js"></script></body></html>

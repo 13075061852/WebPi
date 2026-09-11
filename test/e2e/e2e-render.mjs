@@ -4,12 +4,14 @@
  * Verifies the full renderer pipeline without depending on network/model access.
  */
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const PORT = 9333;
 const electron = spawn(
   process.platform === "win32" ? "node_modules/electron/dist/electron.exe" : "node_modules/.bin/electron",
-  [".", `--remote-debugging-port=${PORT}`],
+  [".", `--remote-debugging-port=${PORT}`, `--user-data-dir=${mkdtempSync(path.join(tmpdir(), 'halo-render-'))}`],
   { stdio: ["ignore", "pipe", "pipe"] }
 );
 electron.stderr.on("data", () => {});
@@ -139,6 +141,42 @@ if (!domCheck.turns || !domCheck.mdText.includes("项目结构") || !domCheck.ha
 }
 console.log("DOM VERIFY OK");
 
+// Long tool errors in a narrow chat must never overlap the live status row.
+await evalJS(`
+  document.querySelector('#messages').innerHTML = '';
+  document.querySelector('#messages').style.height = '340px';
+  document.querySelector('#messages').style.flex = 'none';
+  document.querySelector('#messages').style.width = '460px';
+  const d = window.__haloDispatch;
+  d({ type: 'agent_start' });
+  d({ type: 'tool_execution_start', toolCallId: 'layout-error', toolName: 'bash', args: { command: 'python -c "import matplotlib"' } });
+  d({ type: 'tool_execution_end', toolCallId: 'layout-error', isError: true,
+    result: { content: [{ type: 'text', text: 'Traceback (most recent call last):\\n' + '    diagnostic output\\n'.repeat(24) + "ModuleNotFoundError: No module named 'matplotlib'" }] } });
+`);
+await sleep(700);
+for (const theme of ['light', 'dark']) {
+  await evalJS(`document.documentElement.dataset.theme = '${theme}'`);
+  const layout = await evalJS(`(() => {
+    const messages = document.querySelector('#messages');
+    const tool = messages.querySelector('.tool');
+    const status = messages.querySelector('.turn-status');
+    return { separated: status.getBoundingClientRect().top >= tool.getBoundingClientRect().bottom + 8,
+      scrolls: messages.scrollHeight > messages.clientHeight,
+      fits: messages.scrollWidth <= messages.clientWidth,
+      logScrolls: tool.querySelector('.tool-out').scrollHeight > tool.querySelector('.tool-out').clientHeight };
+  })()`);
+  if (Object.values(layout).some(v => !v)) {
+    electron.kill();
+    throw new Error('Chat layout regression: ' + JSON.stringify(layout));
+  }
+  await screenshot('test/shot-output-' + theme + '.png');
+}
+await evalJS(`
+  window.__haloDispatch({ type: 'agent_end', messages: [], willRetry: false });
+  window.__haloDispatch({ type: 'agent_settled' });
+  document.querySelector('#messages').removeAttribute('style');
+`);
+
 // ---- Scenario B: error path with retry ----
 await evalJS(`(async () => {
   const d = window.__haloDispatch;
@@ -158,6 +196,21 @@ await screenshot("test/shot-error.png");
 
 console.log("console errors during test:", consoleLogs.length ? consoleLogs : "none");
 
+// Windows Markdown documents: real headings and readable document layout.
+await evalJS(`
+  const source = ['# AI 模型能力排行榜汇总', '', '> 数据抓取时间：**2026-09-11** ｜ 来源：示例数据', '', '## 1. 综合能力', '', '这是一份用于检查文档排版的示例，**并非真实排名**。', '', '### 1.1 文本综合', '', '| 排名 | 模型 | 分数 | 机构 |', '| ---: | --- | ---: | --- |', '| 1 | Example Alpha | 1507.2 | 示例机构 |', '| 2 | Example Beta | 1488.7 | 示例机构 |', '', '## 2. 使用说明', '', '- 标题层级清晰', '- 表格在窄窗口内滚动', '', '\`\`\`python', 'print("Hello, Markdown")', '\`\`\`'].join('\\r\\n');
+  document.querySelector('#pvBody').innerHTML = '<div class="md-view">' + mdRender(source) + '</div>';
+`);
+for (const theme of ['light', 'dark']) {
+  await evalJS(`document.documentElement.dataset.theme = '${theme}'`);
+  const valid = await evalJS(`(() => {
+    const doc = document.querySelector('.md-view');
+    return doc.querySelectorAll('h1').length === 1 && doc.querySelectorAll('h2').length === 2 &&
+      doc.querySelectorAll('td').length === 8 && doc.scrollWidth <= doc.clientWidth;
+  })()`);
+  if (!valid) { electron.kill(); throw new Error('Markdown preview regression'); }
+  await screenshot('test/shot-document-' + theme + '.png');
+}
 ws.close();
 electron.kill();
 process.exit(0);

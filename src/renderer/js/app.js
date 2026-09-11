@@ -12,8 +12,6 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 /* ---- 渲染层常量（与主进程 LIMITS 对应，收敛魔法数字） ---- */
 const CONFIRM_RESET_MS = 2600;        // 两步删除确认：未二次确认时恢复的毫秒数
 const TRUNC_TOOL_ARG = 120;           // 工具参数展示截断长度
-const PTY_SCROLLBACK = 4000;          // PTY 回滚缓冲行数
-const PTY_RESUME_MS = 300;            // 终端面板重开后续接 shell 的延迟
 const IMG_DOWNSCALE = { maxBytes: 400 * 1024, maxEdge: 1600, quality: 0.85 }; // 附件图片降采样阈值
 
 // 预览帧触摸脚本回报滚动位置（调试/验证用）
@@ -61,8 +59,10 @@ const S = {
 
 /* ---------- theme: 黑 / 白 ---------- */
 function applyTheme(t, { persist = true } = {}) {
-  document.documentElement.dataset.theme = t === "light" ? "light" : "dark";
-  if (persist) { try { localStorage.setItem("halo-theme", document.documentElement.dataset.theme); } catch {} }
+  const selected = ['light', 'dark', 'nebula', 'mist', 'dunes', 'scholar', 'studio', 'garden', 'blueprint', 'executive'].includes(t) ? t : 'dark';
+  document.documentElement.dataset.theme = ['light', 'mist', 'dunes', 'scholar', 'studio', 'garden'].includes(selected) ? 'light' : 'dark';
+  document.documentElement.dataset.wallpaper = ['nebula', 'mist', 'dunes', 'scholar', 'studio', 'garden', 'blueprint', 'executive'].includes(selected) ? selected : '';
+  if (persist) { try { localStorage.setItem("halo-theme", selected); } catch {} }
   document.dispatchEvent(new CustomEvent("themechange"));
 }
 
@@ -73,6 +73,7 @@ document.addEventListener("DOMContentLoaded", () => {
   requestAnimationFrame(() => document.body.classList.add("enter"));
   wireUI();
   wirePi();
+  initServerUI();
   refreshAll();
   updateAuthSummary();
   loadTree();
@@ -101,17 +102,272 @@ async function refreshAll() {
 /* ============================================================
    state application
    ============================================================ */
+let serverListRequest = 0;
+let draggedServer = null;
+const collapsedServers = new Set();
+let browsingServerId = null, portServerId = null, portRequest = 0, portPreviewRequest = 0;
+const portCache = new Map();
+let selectedPortKey = null;
+let previewService = null;
+function currentPreviewContext() {
+  if (S.previewFile) return {kind:'file', file:S.previewFile};
+  if (!previewService) return null;
+  const context = {...previewService, device:currentPreviewDevice()};
+  try {
+    const guest = document.querySelector('#pvBody webview');
+    if (guest) {context.url=guest.getURL(); context.title=guest.getTitle();}
+  } catch { /* Navigation may still be loading. */ }
+  return context;
+}
+const portKey = (id, item) => JSON.stringify([id, item.protocol, item.address, item.port]);
+function updatePortSelection() {
+  $$("#serverPorts .port-row").forEach(row => {
+    const selected = row.dataset.portKey === selectedPortKey;
+    row.classList.toggle("active", selected);
+    row.setAttribute("aria-pressed", String(selected));
+  });
+}
+function syncServerPorts(selected, items) {
+  const remote = document.querySelector('.nav-item.active')?.dataset.tab === "skills";
+  const id = remote ? (browsingServerId || selected) : null;
+  const server = items.find(s => s.id === id);
+  const next = server?.id || null;
+  $("#wsTree").hidden = remote;
+  $("#serverPorts").hidden = !remote;
+  $("#btnNewFile").hidden = $("#btnNewDir").hidden = remote;
+  $("#sideFilesTitle").textContent = next ? "监听端口 · " + server.name : remote ? "监听端口" : "文件";
+  if (remote && !next) $("#serverPorts").innerHTML = '<div class="res-empty">选择服务器查看监听端口</div>';
+  $("#treeRefresh").title = next ? "刷新服务器端口" : "刷新文件树";
+  if (portServerId !== next) { portPreviewRequest++; portServerId = next; portRequest++; if (next) loadServerPorts(); }
+}
+async function loadServerPorts(force = false) {
+  const id = portServerId; if (!id) return;
+  const seq = ++portRequest, box = $("#serverPorts");
+  box.innerHTML = '<div class="res-empty">正在读取监听端口…</div>';
+  const cached = portCache.get(id);
+  const result = !force && cached && Date.now()-cached.updated < 15000 ? { ok: true, data: cached } : await window.halo.serverPorts(id);
+  if (seq !== portRequest || id !== portServerId) return;
+  box.replaceChildren();
+  if (!result.ok) { const error = document.createElement("div"); error.className = "res-empty"; error.textContent = result.error + "，点击刷新重试"; box.appendChild(error); return; }
+  portCache.set(id, result.data);
+  const meta = document.createElement("div"); meta.className = "port-meta"; meta.textContent = result.data.items.length + " 个监听项 · " + new Date(result.data.updated).toLocaleTimeString(); box.appendChild(meta);
+  for (const item of result.data.items) {
+    const row = document.createElement("div"); row.className = "port-row"; row.dataset.portKey = portKey(id, item);
+    row.tabIndex = 0; row.setAttribute("role", "button"); row.title = "点击预览端口 " + item.port;
+    const open = async () => {
+      const request = ++portPreviewRequest;
+      selectedPortKey = portKey(id, item); updatePortSelection();
+      previewService = {kind:"service", serverId:id, port:item.port, protocol:item.protocol, address:item.address, process:item.process, status:"loading"};
+      S.previewFile = null; $("#pvMode").hidden = true;
+      const serverLabel = document.querySelector('.server-group[data-server-id="' + CSS.escape(id) + '"] .server-group-toggle span')?.textContent || "服务器";
+      $("#pvName").textContent = serverLabel + " · " + item.port;
+      const body = $("#pvBody"); body.innerHTML = '<div class="pv-empty"><p>正在连接网页服务…</p></div>';
+      const result = await window.halo.serverPreview(id, item);
+      if (request !== portPreviewRequest || id !== portServerId) return;
+      if (!result?.ok) { previewService.status = "failed"; body.innerHTML = '<div class="pv-empty"><p>' + esc(result?.error || "预览失败") + "</p></div>"; return; }
+      body.innerHTML = '<div class="dev-shell"><div class="dev-screen"><webview title="服务器端口预览" partition="server-preview"></webview></div></div>';
+      const guest = $("webview", body);
+      guest.addEventListener("did-fail-load", event => {
+        if (request === portPreviewRequest && event.isMainFrame && event.errorCode !== -3) {
+          if (previewService) previewService.status = "failed";
+          body.innerHTML = '<div class="pv-empty"><p>网页加载失败：' + esc(event.errorDescription || "请重新点击端口重试") + '</p></div>';
+        }
+      });
+      previewService.url = result.data;
+      guest.addEventListener("did-finish-load", () => { if (request === portPreviewRequest && previewService) previewService.status = "loaded"; });
+      guest.src = result.data;
+      updatePortSelection();
+      window.halo.previewTouch?.(currentPreviewDevice() !== "desktop");
+    };
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    row.innerHTML = '<div><b></b><span></span></div><small></small><small></small>';
+    $("b", row).textContent = item.port;
+    $("span", row).textContent = item.protocol;
+    const details = row.querySelectorAll("small"); details[0].textContent = item.process + (item.pid ? " · PID " + item.pid : ""); details[1].textContent = item.address;
+    box.appendChild(row);
+  }
+  updatePortSelection();
+  if (!result.data.items.length) box.appendChild(Object.assign(document.createElement("div"), { className: "res-empty", textContent: "暂无监听端口" }));
+}
+
+async function refreshServers() {
+  const request = ++serverListRequest;
+  const r = await window.halo.serverList();
+  if (request !== serverListRequest || !r?.ok || draggedServer) return;
+  const { items, selected, conversations = [] } = r.data;
+  syncServerPorts(selected, items);
+  const list = $("#serverList"); list.replaceChildren();
+  if (!items.length) list.innerHTML = '<div class="res-empty">添加服务器，通过 SSH 远程管理</div>';
+  for (const server of items) {
+    const group = document.createElement("div"); group.className = "server-group" + (server.connected ? " connected" : "");
+    group.innerHTML = '<div class="server-group-head"><button class="server-group-toggle"><svg viewBox="0 0 24 24" class="ic"><path d="M3 7h6l2 2h10l-3 11H3Z M3 7V4h6l2 3h8v2"/></svg><span></span></button><details class="server-group-menu" name="server-actions"><summary title="服务器操作">···</summary><div><button class="server-group-connect">连接</button><button class="server-group-edit">编辑</button><button class="server-group-remove">删除服务器</button></div></details><button class="server-group-new" title="新建服务器对话"><svg viewBox="0 0 24 24" class="ic"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6M14 5l5 5M10 14l1-5 7-7 5 5-7 7Z"/></svg></button></div><div class="server-conversations"></div>';
+    group.dataset.serverId = server.id;
+    const heading = $(".server-group-toggle", group); heading.draggable = true;
+    heading.addEventListener("dragstart", e => { draggedServer = server.id; closeServerMenus(); e.dataTransfer.setData("text/plain", server.id); e.dataTransfer.effectAllowed = "move"; group.classList.add("dragging"); });
+    heading.addEventListener("dragend", () => { draggedServer = null; $$(".server-group").forEach(g => g.classList.remove("dragging", "drop-before", "drop-after")); });
+    group.addEventListener("dragover", e => {
+      if (!draggedServer || draggedServer === server.id) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      $$(".server-group").forEach(g => g.classList.remove("drop-before", "drop-after"));
+      group.classList.add(e.clientY < group.getBoundingClientRect().top + group.offsetHeight / 2 ? "drop-before" : "drop-after");
+    });
+    group.addEventListener("drop", async e => {
+      if (!draggedServer || draggedServer === server.id) return;
+      e.preventDefault();
+      const ids = items.map(s => s.id).filter(id => id !== draggedServer);
+      ids.splice(ids.indexOf(server.id) + (group.classList.contains("drop-after") ? 1 : 0), 0, draggedServer);
+      draggedServer = null;
+      const result = await window.halo.serverReorder(ids);
+      if (!result.ok) toast(result.error, "err");
+      await refreshServers();
+    });
+    $(".server-group-edit", group).addEventListener("click", () => openServerForm(server));
+    $(".server-group-toggle span", group).textContent = server.name;
+    const latency = document.createElement("button"); latency.className = "server-latency"; latency.setAttribute("aria-busy", "true");
+    latency.title = "本机到服务器 SSH 端口的 TCP 连接耗时（含域名解析），点击重新测速，每分钟自动刷新";
+    latency.type = "button";
+    latency.setAttribute("aria-label", "重新测量 " + server.name + " 的延迟");
+    latency.addEventListener("click", async () => {
+      if (latencyPending.has(server.id)) return;
+      latencyPending.add(server.id); latency.disabled = true; latency.textContent = ""; latency.setAttribute("aria-busy", "true");
+      try {
+        const result = await window.halo.serverLatency(server.id);
+        if (!result?.ok) throw Error(result?.error || "测速失败");
+        displayServerLatency(result.data);
+      } catch (e) { latency.textContent = "重试"; toast(e.message, "err"); }
+      finally { latencyPending.delete(server.id); latency.disabled = false; latency.removeAttribute("aria-busy"); }
+    });
+    $(".server-group-toggle", group).after(latency);
+    const toggle = $(".server-group-toggle", group), children = $(".server-conversations", group);
+    toggle.title = server.username + "@" + server.host + " · " + (server.connected ? "已连接" : "未连接");
+    children.hidden = collapsedServers.has(server.id);
+    toggle.setAttribute("aria-expanded", String(!children.hidden));
+    toggle.addEventListener("click", () => { browsingServerId = server.id; syncServerPorts(selected, items); children.hidden = !children.hidden; if (children.hidden) collapsedServers.add(server.id); else collapsedServers.delete(server.id); toggle.setAttribute("aria-expanded", String(!children.hidden)); });
+    $(".server-group-connect", group).addEventListener("click", async (e) => {
+      e.currentTarget.disabled = true;
+      browsingServerId = server.id;
+      const result = await window.halo.serverSelect(server.id);
+      if (!result.ok) toast(result.error, "err");
+      else { applyState(result.data); await restoreHistory(); await loadSessions(); }
+      await refreshServers();
+    });
+    $(".server-group-remove", group).addEventListener("click", async () => {
+      const result = await window.halo.serverRemove(server.id);
+      if (!result.ok) toast(result.error, "err");
+      await refreshServers();
+    });
+    $(".server-group-new", group).addEventListener("click", async () => {
+      if (S.switchingSession) return;
+      S.switchingSession = true;
+      try {
+        const result = await window.halo.serverNewSession(server.id);
+        if (!result.ok) throw Error(result.error);
+        clearChat(); applyState(result.data); await restoreHistory();
+        collapsedServers.delete(server.id); await refreshServers(); await loadSessions(); $("#input").focus();
+      } catch (e) { toast(e.message, "err"); }
+      finally { finishSessionSwitch(); }
+    });
+    const rows = conversations.filter(c => c.serverId === server.id);
+    if (!rows.length) children.innerHTML = '<div class="server-conversation-empty">暂无对话，点击右上角新建</div>';
+    for (const conversation of rows) {
+      const button = document.createElement("button");
+      button.className = "server-conversation" + (normPath(conversation.file) === normPath(S.state?.sessionFile) ? " active" : "");
+      button.textContent = conversation.name;
+      button.title = conversation.name;
+      if (conversation.running) { const dot = document.createElement("i"); dot.className = "server-running-dot"; button.prepend(dot); }
+      button.addEventListener("click", () => { browsingServerId = server.id; openSession(conversation.file); });
+      const row = document.createElement("div"); row.className = "server-conversation-row";
+      const remove = document.createElement("button"); remove.className = "server-conversation-delete";
+      remove.title = "删除会话"; remove.setAttribute("aria-label", "删除会话 " + conversation.name);
+      remove.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>';
+      remove.addEventListener("click", () => requestDeleteSession(conversation, row, remove));
+      row.append(button, remove); children.appendChild(row);
+    }
+    if (server.id === selected) group.classList.add("current");
+    list.appendChild(group);
+  }
+  refreshServerLatencies();
+}
+const latencyPending = new Set();
+function displayServerLatency(item) {
+  const el = document.querySelector('.server-group[data-server-id="'+CSS.escape(item.id)+'"] .server-latency');
+  if (!el || Number(el.dataset.checkedAt || 0) > item.checkedAt) return;
+  el.removeAttribute("aria-busy");
+  el.dataset.checkedAt = item.checkedAt;
+  el.textContent = item.status === "ok" ? item.ms + " ms" : item.status === "timeout" ? "超时" : "不可达";
+  el.dataset.quality = item.status !== "ok" ? "error" : item.ms < 100 ? "fast" : item.ms < 250 ? "normal" : "slow";
+}
+let latencyLoading = false;
+async function refreshServerLatencies(force = false) {
+  if (latencyLoading) return;
+  latencyLoading = true;
+  try {
+    const r = await window.halo.serverLatencies(force);
+    for (const item of r?.data || []) displayServerLatency(item);
+  } finally { latencyLoading = false; }
+}
+function closeServerMenus() {
+  $$(".server-group-menu[open]").forEach(menu => { menu.open = false; });
+}
+function updateServerAuthField() {
+  const form = $("#serverForm"), key = form.elements.auth.value === "key";
+  form.elements.secret.type = key ? "text" : "password";
+  form.elements.secret.required = !form.dataset.serverId || form.elements.auth.value !== form.dataset.originalAuth;
+  form.elements.secret.placeholder = form.elements.secret.required ? "" : "留空保留原凭据";
+  $("#serverSecretLabel").textContent = key ? "私钥文件完整路径" : "密码";
+}
+function openServerForm(server = null) {
+  const form = $("#serverForm"); form.reset();
+  form.dataset.serverId = server?.id || ""; form.dataset.originalAuth = server?.auth || "password";
+  if (server) for (const key of ["name", "host", "port", "username", "auth"]) form.elements[key].value = server[key];
+  $("#serverModal h3").textContent = server ? "编辑服务器" : "添加服务器";
+  $("#serverFormError").textContent = "";
+  updateServerAuthField(); openModal("serverModal");
+}
+function initServerUI() {
+  setInterval(() => refreshServerLatencies(true), 60000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshServerLatencies(); });
+  document.addEventListener("pointerdown", (e) => { if (!e.target.closest(".server-group-menu")) closeServerMenus(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $(".server-group-menu[open]")) {
+      const trigger = $(".server-group-menu[open] summary");
+      e.preventDefault(); e.stopImmediatePropagation(); closeServerMenus(); trigger?.focus();
+    }
+  }, true);
+  $("#serverList").addEventListener("click", (e) => {
+    if (e.target.closest(".server-group-menu button")) closeServerMenus();
+  }, true);
+  $("#serverAdd").addEventListener("click", () => openServerForm());
+  const form = $("#serverForm");
+  form.elements.auth.addEventListener("change", updateServerAuthField);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault(); const button = form.querySelector('[type="submit"]'); button.disabled = true;
+    try {
+      const result = await window.halo.serverSave({ ...Object.fromEntries(new FormData(form)), id: form.dataset.serverId || undefined });
+      if (!result.ok) { $("#serverFormError").textContent = result.error; return; }
+      form.reset(); portCache.clear(); portServerId = null; closeModal($("#serverModal")); await refreshServers();
+    } finally { button.disabled = false; }
+  });
+  document.addEventListener("projectstatechange", refreshServers);
+  document.querySelectorAll('.nav-item').forEach(button => button.addEventListener("click", refreshServers));
+  $("#treeRefresh").addEventListener("click", (e) => { if (portServerId) { e.stopImmediatePropagation(); loadServerPorts(true); } }, true);
+  refreshServers();
+}
+
 function applyState(st) {
   if (!st) return;
   S.state = st;
+  document.dispatchEvent(new Event("projectstatechange"));
   if (st.sessionFile) saveWorkspace();
   if (st.cwd) {
     const name = st.cwd.split(/[\\/]/).filter(Boolean).pop() || st.cwd;
-    $("#projectName").textContent = name;
-    $("#projectChip").title = st.cwd;
+    $("#sessionProjectName").textContent = name;
+    $("#sessionProjectName").title = st.cwd;
   }
   const m = st.model;
   $("#modelChipName").textContent = m ? m.name : "模型";
+  $("#btnModel").title = m ? m.name : "选择模型";
 
   const tl = st.thinkingLevel || "off";
 
@@ -206,7 +462,7 @@ function renderQuotaChip() {
       ? "该模型为 Token 资源包制（网页登录态鉴权，本地无法读取）· 点击打开官网用量页"
       : "该模型暂无额度接口";
   el.dataset.portal = portal;
-  el.style.cursor = portal ? "pointer" : "default";
+  el.style.cursor = "pointer";
 }
 
 /** 账户芯片上的额度摘要：订阅制“5h 82% · 7d 41%”、余额制“$12.34”、积分制“1,234 分”；无接口返回空 */
@@ -294,16 +550,23 @@ function setStreamingUI(v) {
 function wirePi() {
   // lightweight diagnostics: real-link event tracing (visible via CDP)
   window.__piDebug = { count: 0, types: [], ignored: 0 };
-  window.halo.onPiEvent(({ sessionId, event }) => {
+  window.halo.onPiEvent(({ sessionId, event, seq }) => {
     try {
       window.__piDebug.count++;
       window.__piDebug.types.push(event?.type);
       if (window.__piDebug.types.length > 200) window.__piDebug.types.shift();
     } catch {}
-    handlePiEvent(event, sessionId);
+    handlePiEvent(event, sessionId, seq);
   });
   // debug/test hook: inject synthetic events without the main process
-  window.__haloDispatch = (event, sessionId) => handlePiEvent(event, sessionId);
+  window.__haloDispatch = (event, sessionId, seq) => handlePiEvent(event, sessionId, seq);
+  window.__haloRestoreView = async (view) => {
+    ++S.sessionSwitchSeq;
+    S.switchingSession = true;
+    clearChat();
+    await restoreHistory(view);
+    finishSessionSwitch();
+  };
   window.__renderUserMsg = renderUserMsg;
   window.__mdRender = mdRender; // 调试/验证钩子
   window.halo.onState((st) => applyState(st));
@@ -317,11 +580,14 @@ function wirePi() {
 }
 
 /* 后台会话事件刷新：仅更新左侧会话列表的运行徽标，不打扰当前视图 */
-const refreshSessionsDebounced = debounce(() => { try { loadSessions(); } catch {} }, 400);
+const refreshSessionsDebounced = debounce(() => { try { loadSessions(); refreshServers(); } catch {} }, 400);
 
-function handlePiEvent(event, sessionId) {
+let pendingSessionEvents = [];
+let restoredEventSeq = 0;
+function handlePiEvent(event, sessionId, seq) {
   if (!event) return;
   if (S.switchingSession) {
+    pendingSessionEvents.push({ event, sessionId, seq });
     refreshSessionsDebounced();
     return;
   }
@@ -331,11 +597,25 @@ function handlePiEvent(event, sessionId) {
     refreshSessionsDebounced();
     return;
   }
+  if (seq && seq <= restoredEventSeq) return;
   // 焦点/后台会话的生命周期变化 → 刷新左侧运行徽标（message_start 时新会话落盘进列表）
   if (event.type === "agent_start" || event.type === "message_start" || event.type === "message_end" || event.type === "agent_end" || event.type === "agent_settled") {
     refreshSessionsDebounced();
   }
   switch (event.type) {
+      case "extension_notice": {
+        const note = document.createElement("div");
+        note.className = "extension-notice";
+        const label = document.createElement("div");
+        label.className = "extension-notice-label";
+        label.textContent = event.level === "error" ? "指令错误" : "扩展通知";
+        const pre = document.createElement("pre");
+        pre.textContent = String(event.message || "").replace(/\x1b\[[0-9;]*m/g, "");
+        note.append(label, pre);
+        $("#messages").appendChild(note);
+        scrollDown(true);
+        break;
+      }
       case "message_start": onMessageStart(event.message); break;
       case "message_update": onMessageUpdate(event.assistantMessageEvent); break;
       case "message_end": onMessageEnd(event.message); break;
@@ -413,7 +693,7 @@ function ensureTurn() {
   wrap.__toolCount = 0;
   wrap.innerHTML = `
     <div class="turn-status" hidden>
-      <span class="pi-orb">π</span>
+      <span class="pi-orb" aria-hidden="true"><svg viewBox="0 0 24 24"><circle class="orbit-track" cx="12" cy="12" r="9"/><g class="orbit-outer"><path d="M12 3a9 9 0 0 1 9 9"/><circle cx="21" cy="12" r="1.5"/></g><g class="orbit-inner"><path d="M12 7a5 5 0 0 1 0 10"/></g><circle class="orbit-core" cx="12" cy="12" r="1.5"/></svg></span>
       <span class="turn-status-copy">
         <b class="turn-status-text">正在思考…</b>
         <span class="turn-status-meta">刚刚开始</span>
@@ -442,17 +722,16 @@ function finalizeTurn() {
     const group = document.createElement("details");
     group.className = "process-group";
     group.innerHTML = `
-      <summary>
-        <span class="process-chevron">▶</span>
-        <span class="process-label">执行过程</span>
-        <span class="process-meta">${processNodes.length} 个步骤 · ${elapsed}s${errors ? ` · ${errors} 个失败` : ""}</span>
+      <summary title="展开执行过程 · ${processNodes.length} 个步骤${errors ? ` · ${errors} 个失败` : ""}">
+        <span class="process-label">用时 ${elapsed}秒</span>
+        <svg class="process-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>
       </summary>
       <div class="process-body"></div>`;
     processNodes[0].parentNode.insertBefore(group, processNodes[0]);
     const body = $(".process-body", group);
     for (const node of processNodes) body.appendChild(node);
   }
-  // 最终答案保持展开，思考与工具默认收起；需要时可从“执行过程”查看完整时间线。
+  // 最终答案保持展开，点击用时可查看完整执行过程。
   turn.classList.add("complete");
   if (!$(".md, .think, .tool, .error-card, .stall-hint", turn)) turn.remove();
 }
@@ -509,6 +788,7 @@ const thinkPreviewText = (buf) =>
 function collapseThink() {
   const t = S.thinking;
   if (!t) return;
+  if (t.frame) { cancelAnimationFrame(t.frame); t.frame = 0; streamRender(t.body, t.buf); }
   const secs = Math.max(1, Math.round((Date.now() - t.t0) / 1000));
   t.label.textContent = `${secs}s`;
   t.preview.textContent = thinkPreviewText(t.buf) || "完成阶段分析";
@@ -557,10 +837,14 @@ function onMessageUpdate(ev) {
     S.thinkStreamed = true;
     const t = ensureThink();
     t.buf += ev.delta || "";
-    streamRender(t.body, t.buf);
-    t.preview.textContent = thinkPreviewText(t.buf); // 收起后单行预览实时跟随
-    t.body.scrollTop = t.body.scrollHeight;
-    scrollDown();
+    if (!t.frame) t.frame = requestAnimationFrame(() => {
+      t.frame = 0;
+      if (S.thinking !== t) return;
+      streamRender(t.body, t.buf);
+      t.preview.textContent = thinkPreviewText(t.buf);
+      t.body.scrollTop = t.body.scrollHeight;
+      scrollDown();
+    });
   }
 }
 
@@ -661,7 +945,7 @@ async function retryLast() {
   const { text, images } = S.lastUserPrompt;
   renderUserMsg(text, images);
   try {
-    await window.halo.prompt(text, images.length ? { images: images.map(toPiImage) } : {});
+    await window.halo.prompt(text, { preview: currentPreviewContext(), ...(images.length ? { images: images.map(toPiImage) } : {}) });
   } catch (e) { toast(`发送失败：${e?.message || e}`, "err"); }
 }
 
@@ -791,8 +1075,17 @@ function renderQueue() {
     ...S.queued.followUp.map((t) => ({ t, k: "追加" })),
   ];
   row.hidden = items.length === 0;
+  row.setAttribute("aria-label", `等待消息，共 ${items.length} 条`);
   row.innerHTML = items.map((i) =>
-    `<div class="queue-chip"><small>${i.k}</small><span>${esc(trunc(i.t, 60))}</span></div>`).join("");
+    `<details class="queue-chip">
+      <summary title="点击展开完整消息">
+        <svg class="queue-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 4v8a2 2 0 0 0 2 2h8m-3-3 3 3-3 3M9 5h6M9 8h4"/></svg>
+        <span class="queue-text">${esc(i.t)}</span>
+        <small>${i.k === "引导" ? "调整方向" : "等待执行"}</small>
+        <svg class="queue-expand" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>
+      </summary>
+      <div class="queue-detail">${esc(i.t)}</div>
+    </details>`).join("");
 }
 
 /* ============================================================
@@ -805,6 +1098,65 @@ const toPiImage = (i) => ({
   mimeType: normImageMime(i.mediaType) || sniffImageMime(i.data) || "image/png",
   data: i.data,
 });
+
+let mentionItems = [], mentionIndex = 0, mentionStart = 0;
+function closeMentions() {
+  $("#mentionMenu").hidden = true;
+  $("#input").setAttribute("aria-expanded", "false");
+  $("#input").removeAttribute("aria-activedescendant");
+}
+function updateMentions() {
+  const input = $("#input"), before = input.value.slice(0, input.selectionStart);
+  const match = before.match(/(?:^|\s)@([^@\n]*)$/);
+  if (!match || input.selectionStart !== input.selectionEnd) return closeMentions();
+  mentionStart = before.length - match[1].length - 1;
+  const query = match[1].toLowerCase();
+  const cwd = S.state?.cwd || "";
+  const all = cwd ? [{ name: cwd.split(/[\\/]/).filter(Boolean).pop(), path: cwd, dir: true, root: true }] : [];
+  const walk = (nodes) => { for (const node of nodes || []) { all.push(node); if (node.children) walk(node.children); } };
+  walk(S.treeData?.tree);
+  mentionItems = all.filter((n) => (n.name + " " + n.path).toLowerCase().includes(query)).slice(0, 40);
+  mentionIndex = 0;
+  $(".mention-heading").textContent = "文件与文件夹 · " + (all[0]?.name || "当前项目");
+  const options = $("#mentionOptions"); options.replaceChildren();
+  for (const [i, item] of mentionItems.entries()) {
+    const button = document.createElement("button");
+    button.type = "button"; button.id = "mention-option-" + i;
+    button.className = "mention-option"; button.setAttribute("role", "option");
+    button.innerHTML = (item.dir ? FOLDER_IC : fileIconFor(item.name)) + '<span><b></b><small></small></span>';
+    $("b", button).textContent = item.root ? "当前项目 · " + item.name : item.name;
+    $("small", button).textContent = item.path;
+    button.title = item.path;
+    button.addEventListener("pointerdown", (e) => e.preventDefault());
+    button.addEventListener("click", () => insertMention(i));
+    options.appendChild(button);
+  }
+  if (!mentionItems.length) options.innerHTML = '<div class="mention-empty">未找到匹配的文件或文件夹</div>';
+  $("#mentionMenu").hidden = false;
+  input.setAttribute("aria-controls", "mentionOptions"); input.setAttribute("aria-expanded", "true");
+  highlightMention();
+}
+function highlightMention() {
+  $$(".mention-option").forEach((b, i) => { b.classList.toggle("active", i === mentionIndex); b.setAttribute("aria-selected", String(i === mentionIndex)); });
+  const option = $("#mention-option-" + mentionIndex);
+  if (option) { $("#input").setAttribute("aria-activedescendant", option.id); option.scrollIntoView({ block: "nearest" }); }
+}
+function insertMention(index) {
+  const item = mentionItems[index]; if (!item) return;
+  const input = $("#input");
+  const path = item.path.replace(/\\/g, "/");
+  input.setRangeText('@"' + path + '" ', mentionStart, input.selectionStart, "end");
+  closeMentions(); autoGrow(); input.focus();
+}
+function handleMentionKey(e) {
+  if ($("#mentionMenu").hidden || e.isComposing) return false;
+  if (!["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(e.key)) return false;
+  e.preventDefault(); e.stopPropagation();
+  if (e.key === "Escape") closeMentions();
+  else if (e.key === "Enter" || e.key === "Tab") insertMention(mentionIndex);
+  else if (mentionItems.length) { mentionIndex = (mentionIndex + (e.key === "ArrowUp" ? -1 : 1) + mentionItems.length) % mentionItems.length; highlightMention(); }
+  return true;
+}
 
 async function send() {
   const input = $("#input");
@@ -845,7 +1197,8 @@ async function send() {
   autoGrow();
 
   try {
-    await window.halo.prompt(text, sentImages.length ? { images: sentImages.map(toPiImage) } : {});
+    const result = await window.halo.prompt(text, { preview: currentPreviewContext(), ...(sentImages.length ? { images: sentImages.map(toPiImage) } : {}) });
+    if (result?.ok === false) throw new Error(result.error || "指令执行失败");
   } catch (e) {
     toast(`发送失败：${e?.message || e}`, "err");
     // A4: rollback so the user doesn't lose their text
@@ -858,6 +1211,8 @@ async function send() {
 }
 
 function renderUserMsg(text, images) {
+  // Older server chats persisted the internal routing instruction inside user text.
+  text = String(text || "").replace(/^\[当前会话托管服务器:[^\n]*涉及该服务器的命令和文件操作必须使用 ssh_exec，不要在本地 bash\/read\/write 执行远程操作。\]\s*/, "");
   // 对话开始后清掉遗留的系统提示，保持对话流只包含当前对话内容
   $$("#messages > .notice").forEach((n) => n.remove());
   const wrap = document.createElement("div");
@@ -867,6 +1222,11 @@ function renderUserMsg(text, images) {
   wrap.innerHTML = `
     ${imgs ? `<div class="imgs">${imgs}</div>` : ""}
     ${text ? `<div class="bubble">${rich(text)}</div>` : ""}`;
+  $$(".imgs img", wrap).forEach((img) => {
+    img.tabIndex = 0; img.setAttribute("role", "button"); img.setAttribute("aria-label", "放大查看截图");
+    img.addEventListener("click", () => openImagePreview(img.src, img.title));
+    img.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openImagePreview(img.src, img.title); } });
+  });
   $("#messages").appendChild(wrap);
   scrollDown(true);
 }
@@ -880,10 +1240,16 @@ function abort() {
 /* ============================================================
    history restore
    ============================================================ */
-async function restoreHistory() {
-  const r = await window.halo.snapshotMessages();
-  const msgs = r?.data || [];
-  if (!msgs.length) return;
+async function restoreHistory(viewOverride) {
+  const switchSeq = S.sessionSwitchSeq;
+  const r = viewOverride ? { ok: true, data: viewOverride } : await window.halo.snapshotView();
+  if (switchSeq !== S.sessionSwitchSeq) return;
+  if (!r?.ok) throw new Error(r?.error || "无法恢复会话");
+  const view = r.data;
+  applyState(view.state);
+  restoredEventSeq = view.seq;
+  const msgs = [...(view.messages || [])];
+  if (view.partial) msgs.push({ ...view.partial, __partial: true });
   // 历史回放不播入场动效（切换会话/启动时保持安静）
   $("#messages").classList.add("restoring");
   const toolCards = new Map(); // toolCallId -> 卡片引用，用于回填 toolResult
@@ -923,6 +1289,10 @@ async function restoreHistory() {
         turn.appendChild(d);
         $(".think-body", d).innerHTML = rich(c.thinking);
         $(".think-preview", d).textContent = thinkPreviewText(c.thinking);
+        if (m.__partial) {
+          S.thinkStreamed = true;
+          S.thinking = { el: d, body: $(".think-body", d), label: $(".think-label", d), preview: $(".think-preview", d), buf: c.thinking, t0: view.startedAt || Date.now() };
+        }
       } else if (c.type === "toolCall") {
         // 与实时渲染一致的工具时间线，输出区待对应 toolResult 回填
         const card = document.createElement("div");
@@ -947,6 +1317,7 @@ async function restoreHistory() {
         md.innerHTML = rich(c.text);
         turn.appendChild(md);
         turn.__texts.push(c.text);
+        if (m.__partial) { S.assistant = md; S.assistantText = c.text; }
       }
     }
   };
@@ -954,6 +1325,7 @@ async function restoreHistory() {
     let i = 0;
     const CHUNK = 24;
     const step = () => {
+      if (switchSeq !== S.sessionSwitchSeq) { resolve(); return; }
       const end = Math.min(i + CHUNK, msgs.length);
       for (; i < end; i++) restoreOne(msgs[i]);
       if (i < msgs.length) requestAnimationFrame(step);
@@ -961,8 +1333,9 @@ async function restoreHistory() {
     };
     step();
   });
+  if (switchSeq !== S.sessionSwitchSeq) return;
   // 没等到结果的工具调用：会话仍在执行则交给实时事件流续接（同步到 S.toolCards），否则标成完成
-  const live = !!S.state?.isStreaming;
+  const live = !!view.state?.isStreaming;
   for (const [id, rec] of toolCards) {
     if (rec.card.classList.contains("running") && live) {
       S.toolCards.set(id, rec);
@@ -975,16 +1348,25 @@ async function restoreHistory() {
       rec.out.textContent = "（无结果记录）";
     }
   }
-  finalizeTurn();
+  if (live) {
+    const turn = ensureTurn();
+    turn.__startedAt = view.startedAt || Date.now();
+    turn.__toolCount = $$(".tool", turn).length;
+    S.streamingTool = Object.values(view.activeTools || {}).join("、") || null;
+    setStreamingUI(true);
+    updateTurnStatus();
+  } else finalizeTurn();
   scrollDown();
   // 同步插入已完成（期间无帧绘制），此刻移除才不会触发入场动画
   $("#messages").classList.remove("restoring");
+  scrollDown(true);
 }
 
 /* ============================================================
    sessions / resources / models
    ============================================================ */
 async function loadSessions() {
+  loadProjects();
   const r = await window.halo.listSessions();
   S.sessions = r?.data || [];
   const cur = normPath(S.state?.sessionFile || "");
@@ -1040,17 +1422,18 @@ function requestDeleteSession(s, item, del) {
   if (isCurrent && S.streaming) return toast("任务进行中，先按 Esc 中止再删除", "err");
   del.disabled = true;
   window.halo.deleteSession(s.file)
-    .then((r) => {
+    .then(async (r) => {
       if (!r?.ok) throw new Error(r?.error || "删除失败");
       if (r.data?.switched) {
         clearChat();
-        toast("已删除当前会话，已开启新会话", "ok");
+        await restoreHistory();
+        toast("会话已删除", "ok");
       } else {
         toast("会话已删除", "ok");
       }
-      loadSessions();
+      await Promise.all([loadSessions(), refreshServers()]);
     })
-    .catch(() => loadSessions()); // 静默处理：失效条目直接刷新列表清掉，不再弹提示
+    .catch((e) => { toast(e.message || "删除失败", "err"); loadSessions(); refreshServers(); });
 }
 
 const normPath = (p) => String(p || "").replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
@@ -1067,7 +1450,7 @@ function saveWorkspace() {
 async function restoreWorkspace() {
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem("halo-workspace") || "null"); } catch {}
-  if (!saved || !saved.cwd) return;
+  if (!saved || !saved.cwd) { await restoreHistory(); return; }
   // 恢复项目目录
   if (normPath(saved.cwd) !== normPath(S.state?.cwd || "")) {
     const r = await window.halo.useProject(saved.cwd);
@@ -1082,10 +1465,10 @@ async function restoreWorkspace() {
     const hit = S.sessions.find((s) => normPath(s.file) === normPath(saved.session));
     if (hit) {
       await window.halo.openSession(hit.file);
-      await restoreHistory();
       toast("已恢复上次的会话", "ok");
     }
   }
+  await restoreHistory();
 }
 
 async function openSession(file) {
@@ -1103,11 +1486,12 @@ async function openSession(file) {
   } catch (e) {
     if (seq === S.sessionSwitchSeq) toast(`打开失败：${e?.message || e}`, "err");
   } finally {
-    if (seq === S.sessionSwitchSeq) S.switchingSession = false;
+    if (seq === S.sessionSwitchSeq) finishSessionSwitch();
   }
 }
 
 async function newSession() {
+  if (S.switchingSession) return;
   // 多会话并发：执行中也可开新会话，原任务后台继续
   const seq = ++S.sessionSwitchSeq;
   S.switchingSession = true;
@@ -1121,11 +1505,19 @@ async function newSession() {
   } catch (e) {
     if (seq === S.sessionSwitchSeq) toast(`新建失败：${e?.message || e}`, "err");
   } finally {
-    if (seq === S.sessionSwitchSeq) S.switchingSession = false;
+    if (seq === S.sessionSwitchSeq) finishSessionSwitch();
   }
 }
 
+function finishSessionSwitch() {
+  S.switchingSession = false;
+  const events = pendingSessionEvents;
+  pendingSessionEvents = [];
+  for (const item of events) handlePiEvent(item.event, item.sessionId, item.seq);
+}
+
 function clearChat() {
+  restoredEventSeq = 0;
   $("#messages").innerHTML = "";
   S.toolCards.clear();
   S.assistant = null;
@@ -1334,7 +1726,6 @@ function wireUI() {
 
   // attachments & project
   $("#btnAttach").addEventListener("click", attachImages);
-  $("#projectChip").addEventListener("click", pickProject);
   $("#projAdd").addEventListener("click", pickProject);
 
   // chat header
@@ -1343,110 +1734,12 @@ function wireUI() {
     $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
   });
 
-  // 预览区控制台：pv-head 按钮切换，视图覆盖预览区；终端配色跟随主题
-  const termPane = $("#cpane-preview");
-  let term = null, fitAddon = null;
-  let termCwd = "", termBusy = false, termLine = "";
-  const termHist = [];
-  let histIdx = -1, histDraft = "";
-  const TERM_PALETTE = {
-    dark: { black: "#2a2d33", red: "#e06c75", green: "#98c379", yellow: "#e5c07b", blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#d6d9de" },
-    light: { black: "#3b4048", red: "#c2382f", green: "#1a7f37", yellow: "#9a6700", blue: "#0b5cad", magenta: "#8250df", cyan: "#0f7d87", white: "#d6d9de" },
-  };
-  function termApplyTheme() {
-    if (!term) return;
-    const dark = document.documentElement.dataset.theme !== "light";
-    const cs = getComputedStyle(document.documentElement);
-    term.options.theme = {
-      background: cs.getPropertyValue("--bg0").trim() || (dark ? "#0b0b0c" : "#f6f6f4"),
-      foreground: cs.getPropertyValue("--txt").trim() || (dark ? "#f4f4f3" : "#17171a"),
-      cursor: dark ? "#9aa3b2" : "#5b6472",
-      selectionBackground: dark ? "#3a4150" : "#c9d4e3",
-      ...TERM_PALETTE[dark ? "dark" : "light"],
-    };
-  }
-  document.addEventListener("themechange", termApplyTheme);
-  const termPrompt = () => `\x1b[36m${termCwd || ""}>\x1b[0m`;
-  const termDrawPrompt = () => term?.write(termPrompt());
-  const termEraseInput = () => { term?.write("\x1b[2K\r" + termPrompt() + termLine); }; // 清行并重绘 提示符+当前输入
-  function termEnsure() {
-    if (term) return;
-    term = new window.Terminal({
-      fontFamily: 'Cascadia Mono, Consolas, "Courier New", monospace',
-      fontSize: 12.5,
-      cursorBlink: true,
-      scrollback: PTY_SCROLLBACK,
-    });
-    fitAddon = new window.FitAddon.FitAddon();
-    term.loadAddon(fitAddon);
-    term.open($("#termHost"));
-    termApplyTheme();
-    fitAddon.fit();
-    term.onData((d) => {
-      // Ctrl+C：重开干净 shell
-      if (d === "\x03") {
-        termLine = ""; histIdx = -1;
-        term.write("\r\n");
-        window.halo.ptyKill();
-        window.halo.ptyStart();
-        return;
-      }
-      // 方向键↑↓：本地历史切换（cmd 管道模式无历史，渲染层提供）
-      if (d === "\x1b[A" || d === "\x1b[B") {
-        if (!termHist.length) return;
-        if (histIdx === -1) { histDraft = termLine; histIdx = termHist.length; }
-        histIdx = Math.max(0, Math.min(termHist.length, histIdx + (d === "\x1b[A" ? -1 : 1)));
-        termLine = histIdx === termHist.length ? histDraft : termHist[histIdx];
-        termEraseInput();
-        return;
-      }
-      if (d.startsWith("\x1b")) return; // 其余转义序列（←→ 等）：忽略
-      // 逐字符处理（粘贴多行也能逐行提交）
-      for (const ch of d) {
-        if (ch === "\r") { // 回车：提交（cls 本地清屏；空行直接要新提示符）
-          const cmdText = termLine;
-          termLine = ""; histIdx = -1; histDraft = "";
-          term.write("\r\n");
-          if (/^(cls|clear)\s*$/i.test(cmdText)) { term.clear(); termDrawPrompt(); continue; }
-          if (cmdText.trim()) termHist.push(cmdText);
-          termBusy = true;
-          window.halo.ptyWrite(cmdText + "\r\n");
-          continue;
-        }
-        if (ch === "\x7f") { if (termLine.length) { termLine = termLine.slice(0, -1); term.write("\b \b"); } continue; }
-        if (ch === "\t" || ch === "\n") continue; // Tab 补全/裸 \n：管道模式无意义，忽略
-        termLine += ch;
-        term.write(ch);
-      }
-    });
-    window.halo.onPtyOut((t) => term?.write(t));
-    window.halo.onPtyCwd((cwd) => { termCwd = cwd; if (!termBusy) termDrawPrompt(); }); // 启动/重启后首个提示符
-    window.halo.onPtyDone(() => { termBusy = false; termDrawPrompt(); }); // 命令结束：画新提示符
-    window.halo.onPtyExit(() => {
-      termBusy = false; termLine = "";
-      term?.write("\r\n\x1b[90m· 进程已退出\x1b[0m\r\n");
-      if (termPane.classList.contains("term-open")) setTimeout(() => window.halo.ptyStart(), PTY_RESUME_MS); // 自动续上干净 shell
-    });
-  }
-  $("#btnTerm").addEventListener("click", () => {
-    termEnsure();
-    const open = termPane.classList.toggle("term-open");
-    $("#btnTerm").classList.toggle("active", open);
-    if (open) {
-      window.halo.ptyStart();
-      setTimeout(() => { fitAddon?.fit(); term?.focus(); }, 60);
-    }
-  });
-  window.addEventListener("resize", () => { if (termPane.classList.contains("term-open")) fitAddon?.fit(); });
-  $("#termClose").addEventListener("click", () => {
-    termPane.classList.remove("term-open");
-    $("#btnTerm").classList.remove("active");
-    window.halo.ptyKill();
-  });
+  window.initTerminals(() => S.state?.cwd || "", toast);
 
   // composer
   const input = $("#input");
   input.addEventListener("keydown", (e) => {
+    if (handleMentionKey(e)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (e.altKey) {
@@ -1458,6 +1751,15 @@ function wireUI() {
     }
   });
   input.addEventListener("input", autoGrow);
+  input.addEventListener("input", updateMentions);
+  input.addEventListener("click", updateMentions);
+  input.addEventListener("keyup", (e) => { if (["ArrowLeft", "ArrowRight"].includes(e.key)) updateMentions(); });
+  document.addEventListener("pointerdown", (e) => { if (!e.target.closest(".input-shell")) closeMentions(); });
+  let mentionContext = "";
+  document.addEventListener("projectstatechange", () => {
+    const context = (S.state?.cwd || "") + "|" + (S.state?.sessionId || "");
+    if (context !== mentionContext) { mentionContext = context; closeMentions(); }
+  });
   $("#btnSend").addEventListener("click", () => {
     // streaming + text -> steer; streaming + empty -> abort
     if (S.streaming) {
@@ -1476,6 +1778,7 @@ function wireUI() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if (document.querySelector(".image-viewer[open]")) return;
     const open = $(".modal.show");
     if (open) { closeModal(open); return; }
     if (S.streaming) abort();
@@ -1484,11 +1787,11 @@ function wireUI() {
   // think chip button
   $("#btnThink").addEventListener("click", () => { renderThinkList(); openModal("thinkModal"); });
   $("#btnModel").addEventListener("click", () => { loadModels(); openModal("modelModal"); });
-  // 额度占位点击：跳转对应官网用量页（如 LongCat Token 资源包）
-  $("#ctxQuota").addEventListener("click", () => {
-    const portal = $("#ctxQuota").dataset.portal;
-    if (portal) window.halo.openExternal(portal).catch(() => {});
-  });
+  $("#ctxQuota").addEventListener("click", openUsageDetails);
+  $("#ctxQuota").tabIndex = 0;
+  $("#ctxQuota").setAttribute("role", "button");
+  $("#ctxQuota").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openUsageDetails(); } });
+  $("#refreshUsageDetail").addEventListener("click", openUsageDetails);
 
   // paste images
   input.addEventListener("paste", (e) => {
@@ -1533,12 +1836,39 @@ function wireCenter() {
   $$(".pvdev").forEach((b) => b.addEventListener("click", () => {
     $$(".pvdev").forEach((x) => x.classList.toggle("active", x === b));
     const body = $("#pvBody");
+    if (body.classList.contains("dev-" + b.dataset.dev)) return;
+    animatePreviewViewport();
     body.classList.remove("dev-desktop", "dev-tablet", "dev-mobile");
     body.classList.add("dev-" + b.dataset.dev);
     window.halo.previewTouch?.(b.dataset.dev !== "desktop"); // 平板/手机模式：隐藏滚动条 + 触摸式拖动
     const size = $("#pvDevSize");
     if (size) size.textContent = devSize[b.dataset.dev] || "100%";
   }));
+}
+
+// Hide intermediate responsive layouts instead of stretching the page surface.
+let finishPreviewResize = null;
+function animatePreviewViewport() {
+  finishPreviewResize?.();
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const guest = document.querySelector('#pvBody .dev-screen webview');
+  if (!guest || !guest.offsetWidth || !guest.offsetHeight) return;
+  const original = guest.getAttribute('style');
+  const restore = () => { if (original === null) guest.removeAttribute('style'); else guest.setAttribute('style', original); };
+  const width = guest.offsetWidth, height = guest.offsetHeight;
+  guest.classList.add('viewport-changing');
+  Object.assign(guest.style, {position:'absolute', inset:'0', flex:'none', width:width+'px', height:height+'px'});
+  let revealTimer;
+  const cleanup = () => {
+    clearTimeout(timer); clearTimeout(revealTimer); restore();
+    guest.classList.remove('viewport-changing');
+    if (finishPreviewResize === cleanup) finishPreviewResize = null;
+  };
+  const timer = setTimeout(() => {
+    restore(); // Apply the target viewport once, then allow the guest to paint it.
+    revealTimer = setTimeout(cleanup, 100);
+  }, 430);
+  finishPreviewResize = cleanup;
 }
 
 /* ---- file tree ---- */
@@ -1635,6 +1965,8 @@ function renderTree() {
     addCreateRow(container, depth, dirPath);
     for (const n of nodes) {
       const row = document.createElement("div");
+      let kid = null;
+      let kidsBuilt = false;
       row.className = "trow" + (n.dir ? " dir" : " file") + (S.expanded.has(n.path) ? " open" : "") + (changedSet.has(norm(n.path)) ? " changed" : "") + (S.selectedFile === n.path ? " selected" : "");
       row.style.paddingLeft = 8 + depth * 14 + "px";
       row.innerHTML = n.dir
@@ -1644,8 +1976,26 @@ function renderTree() {
       row.addEventListener("click", () => {
         S.selectedFile = n.path;
         if (n.dir) {
-          S.expanded.has(n.path) ? S.expanded.delete(n.path) : S.expanded.add(n.path);
-          renderTree();
+          const open = !S.expanded.has(n.path);
+          open ? S.expanded.add(n.path) : S.expanded.delete(n.path);
+          row.classList.toggle("open", open);
+          row.setAttribute("aria-expanded", String(open));
+          $$(".trow.selected", el).forEach(r => r.classList.remove("selected"));
+          row.classList.add("selected");
+          if (open && !kidsBuilt) { build(n.children || [], depth + 1, kid, n.path); kidsBuilt = true; }
+          const height = kid.hidden ? 0 : kid.getBoundingClientRect().height;
+          const opacity = kid.hidden ? 0 : Number(getComputedStyle(kid).opacity);
+          kid._animation?.cancel();
+          kid.hidden = false;
+          kid.inert = !open;
+          const finish = () => { kid.hidden = !open; kid.style.overflow = ""; kid._animation = null; };
+          if (matchMedia("(prefers-reduced-motion: reduce)").matches) { finish(); return; }
+          kid.style.overflow = "hidden";
+          kid._animation = kid.animate([
+            { height: height + "px", opacity },
+            { height: (open ? kid.scrollHeight : 0) + "px", opacity: open ? 1 : 0 },
+          ], { duration: 240, easing: "cubic-bezier(.22,1,.36,1)" });
+          kid._animation.onfinish = finish;
         } else {
           renderTree();
           setPreview(n.path);
@@ -1673,11 +2023,14 @@ function renderTree() {
         await loadTree(true);
       });
       container.appendChild(row);
-      if (n.dir && S.expanded.has(n.path)) {
+      if (n.dir) {
         // 空文件夹也构建子容器，便于行内新建
-        const kid = document.createElement("div");
+        kid = document.createElement("div");
         kid.className = "tree-kids";
-        build(n.children || [], depth + 1, kid, n.path);
+        kid.hidden = !S.expanded.has(n.path);
+        kid.inert = kid.hidden;
+        row.setAttribute("aria-expanded", String(!kid.hidden));
+        if (!kid.hidden) { build(n.children || [], depth + 1, kid, n.path); kidsBuilt = true; }
         container.appendChild(kid);
       }
     }
@@ -1721,6 +2074,8 @@ const currentPreviewDevice = () => {
 async function setPreview(p, force) {
   if (!p) return;
   if (!force && S.previewFile === p) return;
+  const request = ++portPreviewRequest;
+  previewService = null; selectedPortKey = null; updatePortSelection();
   S.previewFile = p;
   const ext = p.split(".").pop().toLowerCase();
   $("#pvName").textContent = p.split(/[\\\\/]/).pop();
@@ -1733,6 +2088,7 @@ async function setPreview(p, force) {
   } else if (["md", "markdown"].includes(ext)) {
     body.innerHTML = `<div class="md-view">加载中…</div>`;
     const r = await window.halo.readFile(p);
+    if (request !== portPreviewRequest) return;
     body.innerHTML = r?.data
       ? `<div class="md-view">${rich(r.data.content)}</div>`
       : `<div class="pv-empty"><p>无法读取：${esc(r?.error || "")}</p></div>`;
@@ -1741,6 +2097,7 @@ async function setPreview(p, force) {
       // 源码模式：语法高亮 + 行号（HTML 源码可读）
       body.innerHTML = `<div class="file-view"><div class="fv-note">加载中…</div></div>`;
       const r = await window.halo.readFile(p);
+    if (request !== portPreviewRequest) return;
       if (!r?.data) {
         body.innerHTML = `<div class="file-view"><div class="fv-note">无法读取：${esc(r?.error || "")}</div></div>`;
         return;
@@ -1765,6 +2122,7 @@ async function setPreview(p, force) {
     // 文本文件：代码类 → 语法高亮行号视图；纯文本类 → 阅读视图
     body.innerHTML = `<div class="file-view"><div class="fv-note">加载中…</div></div>`;
     const r = await window.halo.readFile(p);
+    if (request !== portPreviewRequest) return;
     const fv = $(".file-view", body);
     if (!r?.data) {
       fv.innerHTML = `<div class="fv-note">无法读取：${esc(r?.error || "")}（二进制或超出大小限制），可用右上角「打开」在外部查看</div>`;
@@ -1876,6 +2234,43 @@ function downscaleImage(b64, srcMime, maxSide, quality) {
   });
 }
 
+function openImagePreview(src, name = "截图", gallery = [{ src, name }], initialIndex = 0) {
+  let index = initialIndex;
+  const dialog = document.createElement("dialog");
+  dialog.className = "image-viewer";
+  dialog.setAttribute("aria-label", "截图预览");
+  dialog.innerHTML = '<header><span></span><button type="button" autofocus aria-label="关闭预览">×</button></header><div class="image-viewer-stage"><img alt="" /></div><footer><button class="image-prev" type="button" aria-label="上一张"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button><span class="image-counter" aria-live="polite"></span><button class="image-next" type="button" aria-label="下一张"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button></footer>';
+  $("header span", dialog).textContent = name || "截图";
+  const image = $("img", dialog);
+  const show = (next) => {
+    index = (next + gallery.length) % gallery.length;
+    const item = gallery[index];
+    image.src = item.src;
+    image.alt = item.name || "截图";
+    $("header span", dialog).textContent = item.name || "截图";
+    $(".image-counter", dialog).textContent = (index + 1) + " / " + gallery.length;
+    dialog.classList.remove("actual-size");
+    $(".image-viewer-stage", dialog).scrollTo(0, 0);
+  };
+  $(".image-prev", dialog).addEventListener("click", () => show(index - 1));
+  $(".image-next", dialog).addEventListener("click", () => show(index + 1));
+  $(".image-prev", dialog).disabled = $(".image-next", dialog).disabled = gallery.length < 2;
+  show(index);
+  image.addEventListener("click", () => dialog.classList.toggle("actual-size"));
+  $("button", dialog).addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (e) => { if (e.target === dialog || e.target.classList.contains("image-viewer-stage")) dialog.close(); });
+  dialog.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dialog.close(); }
+    if (["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"].includes(e.key)) {
+      e.preventDefault(); e.stopPropagation();
+      show(index + (["ArrowUp", "ArrowLeft"].includes(e.key) ? -1 : 1));
+    }
+  });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.appendChild(dialog);
+  dialog.showModal();
+}
+
 function renderAttachments() {
   const row = $("#attachRow");
   row.hidden = S.images.length === 0;
@@ -1883,14 +2278,16 @@ function renderAttachments() {
   S.images.forEach((img, i) => {
     const chip = document.createElement("div");
     chip.className = "attach-chip";
-    chip.innerHTML = `<img src="data:${img.mediaType};base64,${img.data}" /><span>${esc(trunc(img.name, 18))}</span><button title="移除">×</button>`;
-    $("button", chip).addEventListener("click", () => { S.images.splice(i, 1); renderAttachments(); });
+    chip.innerHTML = `<button class="attach-preview" type="button" title="放大查看截图"><img src="data:${img.mediaType};base64,${img.data}" alt="" /><span>${esc(trunc(img.name, 18))}</span></button><button class="attach-remove" title="移除">×</button>`;
+    $(".attach-preview", chip).addEventListener("click", () => openImagePreview(`data:${img.mediaType};base64,${img.data}`, img.name, S.images.map((item) => ({ src: `data:${item.mediaType};base64,${item.data}`, name: item.name })), i));
+    $(".attach-remove", chip).addEventListener("click", () => { S.images.splice(i, 1); renderAttachments(); });
     row.appendChild(chip);
   });
 }
 
 /* ---- project (A9: no-op when unchanged) ---- */
 async function applyProjectReset() {
+  portPreviewRequest++; previewService = null; selectedPortKey = null; updatePortSelection();
   clearChat();
   S.previewFile = null;
   $("#pvBody").innerHTML = PV_EMPTY;
@@ -1927,37 +2324,55 @@ async function switchProjectViaAdd(dir) {
 }
 
 /* ---- 项目：一个项目 = 一个文件夹，各自记住上一个对话 ---- */
+const collapsedProjects = new Set();
+let projectListRequest = 0;
 async function loadProjects() {
+  const request = ++projectListRequest;
   const box = $("#projList");
   if (!box) return;
   const r = await window.halo.projectsList();
+  if (request !== projectListRequest) return;
   const list = r?.data || [];
-  box.innerHTML = "";
-  if (!list.length) {
-    box.innerHTML = `<div class="res-empty">还没有项目，点上方“＋ 添加”</div>`;
-    return;
-  }
+  box.replaceChildren();
+  if (!list.length) { box.innerHTML = '<div class="res-empty">还没有项目，点上方“＋ 添加”</div>'; return; }
   for (const p of list) {
-    const row = document.createElement("div");
-    row.className = "proj-row" + (p.active ? " active" : "");
-    row.title = p.cwd;
-    row.innerHTML = `
-      <span class="pj-ic">▸</span>
-      <span class="pj-name">${esc(p.name)}</span>
-      ${p.active ? `<span class="pj-cur">当前</span>` : ""}
-      ${p.active ? "" : `<button class="pj-del" title="从列表移除（不删除文件夹）">×</button>`}`;
-    row.addEventListener("click", () => {
-      if (p.active) return;
-      switchProject(p.cwd);
+    const group = document.createElement("div"); group.className = "project-group server-group" + (p.active ? " current" : "");
+    group.innerHTML = '<div class="project-group-head server-group-head"><button class="project-toggle server-group-toggle"><svg viewBox="0 0 24 24" class="ic"><path d="M3 7h6l2 2h10l-3 11H3Z M3 7V4h6l2 3h8v2"/></svg><span></span></button><details class="server-group-menu" name="server-actions"><summary title="项目操作">···</summary><div><button class="project-remove server-group-remove" title="移除项目（不删除文件）">移除项目</button></div></details><button class="project-new server-group-new" title="新建对话"><svg viewBox="0 0 24 24" class="ic"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6M14 5l5 5M10 14l1-5 7-7 5 5-7 7Z"/></svg></button></div><div class="project-conversations server-conversations"></div>';
+    $(".project-toggle span", group).textContent = p.name;
+    const toggle = $(".project-toggle", group), children = $(".project-conversations", group);
+    toggle.title = p.cwd;
+    children.hidden = collapsedProjects.has(p.cwd);
+    toggle.setAttribute("aria-expanded", String(!children.hidden));
+    toggle.addEventListener("click", async () => {
+      if (!p.active) { if (S.streaming) return toast("任务进行中，无法切换项目", "err"); collapsedProjects.delete(p.cwd); await switchProject(p.cwd); return; }
+      children.hidden = !children.hidden;
+      if (children.hidden) collapsedProjects.add(p.cwd); else collapsedProjects.delete(p.cwd);
+      toggle.setAttribute("aria-expanded", String(!children.hidden));
     });
-    const del = row.querySelector(".pj-del");
-    if (del) del.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      await window.halo.projectRemove(p.cwd);
-      loadProjects();
-      toast(`已从列表移除 ${p.name}`, "ok");
+    $(".project-remove", group).disabled = p.active;
+    if (p.active) $(".project-remove", group).title = "请先切换到其他项目再移除";
+    $(".project-remove", group).addEventListener("click", async () => { closeServerMenus(); const result = await window.halo.projectRemove(p.cwd); if (!result?.ok) toast(result?.error || "移除失败", "err"); await loadProjects(); });
+    $(".project-new", group).addEventListener("click", async () => {
+      if (!p.active) { if (S.streaming) return toast("任务进行中，无法切换项目", "err"); await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
+      collapsedProjects.delete(p.cwd); await newSession(); await loadProjects(); $("#input").focus();
     });
-    box.appendChild(row);
+    if (!p.sessions?.length) children.innerHTML = '<div class="server-conversation-empty">暂无对话，点击右上角新建</div>';
+    for (const session of p.sessions || []) {
+      const row = document.createElement("div"); row.className = "project-conversation server-conversation-row";
+      const button = document.createElement("button"); button.className = "project-conversation-name server-conversation";
+      button.textContent = session.name || "新会话"; button.title = session.name || "新会话";
+      if (normPath(session.file) === normPath(S.state?.sessionFile)) button.classList.add("active");
+      if (session.running) { const dot = document.createElement("i"); dot.className = "server-running-dot"; button.prepend(dot); }
+      button.addEventListener("click", async () => {
+        if (!p.active) { if (S.streaming) return toast("任务进行中，无法切换项目", "err"); await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
+        await openSession(session.file); loadProjects();
+      });
+      const remove = document.createElement("button"); remove.className = "project-conversation-remove server-conversation-delete"; remove.title = "删除会话"; remove.setAttribute("aria-label", "删除会话 " + (session.name || "新会话"));
+      remove.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>';
+      remove.addEventListener("click", () => requestDeleteSession(session, row, remove));
+      row.append(button, remove); children.appendChild(row);
+    }
+    box.appendChild(group);
   }
 }
 async function switchProject(cwd) {
@@ -2016,6 +2431,7 @@ function autoGrow() {
 
 function scrollDown(force = false) {
   const m = $("#messages");
+  if (m.classList.contains("restoring")) return;
   const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 120;
   // "instant" bypasses the CSS smooth behavior: per-delta smooth scrolls keep
   // interrupting each other and permanently fall behind fast streaming output
@@ -2365,7 +2781,28 @@ const relTime = (iso) => {
   if (d < 86400 * 365) return Math.floor(d / 86400 / 30) + " 个月前";
   return Math.floor(d / 86400 / 365) + " 年前";
 };
+function syncWallpaperTransparency() {
+  const cover = parseFloat(document.documentElement.style.getPropertyValue('--wallpaper-cover'));
+  const value = Math.round(100 * (1 - (Number.isFinite(cover) ? cover : .65)));
+  $('#wallpaperTransparency').value = value;
+  $('#wallpaperTransparencyValue').value = value + '%';
+}
+$('#wallpaperTransparency').addEventListener('input', (event) => {
+  const value = Number(event.target.value);
+  document.documentElement.style.setProperty('--wallpaper-cover', String(1 - value / 100));
+  try { localStorage.setItem('halo-wallpaper-transparency', String(value)); } catch {}
+  syncWallpaperTransparency();
+});
+function syncThemeChoices() {
+  syncWallpaperTransparency();
+  $$("[data-theme-choice]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeChoice === (document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme))));
+}
+document.addEventListener("themechange", syncThemeChoices);
+$("#settingsAuth").addEventListener("click", () => { closeModal($("#settingsModal")); openAuthModal(); });
+$$("[data-theme-choice]").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themeChoice)));
+
 function openSettings() {
+  syncThemeChoices();
   openModal("settingsModal");
   loadDefaultModels();
   S.pkgLoaded = true;
@@ -2434,6 +2871,35 @@ async function loadDefaultModels() {
 }
 
 /* ---- 用量统计 ---- */
+let usageDetailRequest = 0;
+async function openUsageDetails() {
+  openModal("usageDetailModal");
+  const seq = ++usageDetailRequest;
+  const body = $("#usageDetailBody");
+  body.innerHTML = '<div class="model-empty">正在统计本地会话…</div>';
+  const result = await window.halo.usageSummary(36500).catch(() => null);
+  if (seq !== usageDetailRequest) return;
+  if (!result?.ok) { body.innerHTML = '<div class="model-empty">统计失败，请点击刷新重试</div>'; return; }
+  const d = result.data, today = d.today || {}, rows = d.sessionDetails || [];
+  body.innerHTML = '<div class="usage-detail-date">今日 · '+esc(today.date || '')+' · 本地时间</div><div class="usage-cards">' +
+    '<div class="usage-card"><b>'+fmtTokens(today.totalTokens || 0)+'</b><small>今日 Token</small></div>' +
+    '<div class="usage-card"><b>'+fmtCost(today.cost || 0)+'</b><small>今日估算费用 · USD</small></div></div>' +
+    '<p class="settings-hint">输入 '+fmtTokens(today.input || 0)+' · 输出 '+fmtTokens(today.output || 0)+' · 缓存 '+fmtTokens((today.cacheRead || 0)+(today.cacheWrite || 0))+'</p>' +
+    '<p class="usage-cost-note">费用按 pi 本地记录的模型计价估算（美元），不是余额扣款账单。订阅或缺少价格的模型可能记录为 0；不包含其他客户端未保存到本地的使用量。</p>' +
+    '<div class="usage-detail-date">历史会话 · '+rows.length+' 个 · 累计 '+fmtCost(d.totals.cost || 0)+'</div><div id="usageSessionRows"></div>';
+  const list = $("#usageSessionRows");
+  if (!rows.length) list.textContent = "暂无用量记录";
+  for (const r of rows) {
+    const row = document.createElement("div"); row.className = "usage-session-row";
+    row.innerHTML = '<div><b></b><small></small></div><div class="usage-session-numbers"><strong>'+fmtCost(r.cost || 0)+'</strong><small>'+fmtTokens(r.totalTokens || 0)+' Token</small></div>';
+    $("b", row).textContent = r.name;
+    $("b", row).title = r.name;
+    $("small", row).textContent = (r.cwd.split(/[\\/]/).pop() || "未知项目") + " · " + new Date(r.modified).toLocaleDateString();
+    row.title = "输入 " + r.input + " · 输出 " + r.output + " · 缓存 " + (r.cacheRead+r.cacheWrite);
+    list.appendChild(row);
+  }
+}
+
 function fmtCost(n) {
   if (!n) return "$0";
   if (n >= 100) return "$" + n.toFixed(0);
@@ -2536,6 +3002,27 @@ async function loadInstalled() {
   renderInstalled();
 }
 /** 渲染已安装列表（按搜索词本地过滤，data-i 保留原始索引供操作定位） */
+function packageIntroUrl(p) {
+  const npmName = p.name || (p.kind === "npm" ? p.raw.replace(/^npm:/, "").replace(/@[^/]+$/, "") : "");
+  for (const raw of [p.homepage, p.repo, npmName ? "https://www.npmjs.com/package/" + npmName : ""]) {
+    try {
+      const url = new URL(String(raw || "").replace(/^git\+/, "").replace(/^git:\/\//, "https://").replace(/\.git$/, ""));
+      if (["https:", "http:"].includes(url.protocol)) return url.href;
+    } catch {}
+  }
+  return "";
+}
+function introButton(p) {
+  const url = packageIntroUrl(p);
+  return url ? '<button class="mini-btn pkg-intro" data-pkg-url="'+esc(url)+'" title="打开插件介绍">查看介绍 ↗</button>' : '<span class="pkg-kind">未提供介绍链接</span>';
+}
+function openPackageIntro(e) {
+  const button = e.target.closest("[data-pkg-url]");
+  if (!button) return false;
+  window.halo.openExternal(button.dataset.pkgUrl).catch(() => toast("无法打开介绍链接", "err"));
+  return true;
+}
+
 function renderInstalled() {
   const box = $("#pkgInstalled");
   if (!box) return;
@@ -2559,8 +3046,10 @@ function renderInstalled() {
         ${ver}
         <span class="pkg-kind">${p.kind === "npm" ? "npm" : p.kind === "git" ? "git" : "本地"}</span>
         ${p.disabled ? `<span class="pkg-off-badge">已停用</span>` : ""}
+        <div class="pkg-installed-desc">${esc(p.desc || "暂未提供简短说明，可打开介绍页面查看功能与用法。")}</div>
       </div>
       <div class="pkg-ops">
+        ${introButton(p)}
         <button class="ext-switch${p.disabled ? "" : " on"}" data-act="toggle" title="${p.disabled ? "启用" : "停用"}"></button>
         ${p.update ? `<button class="mini-btn accent" data-act="update">更新</button>` : ""}
         <button class="mini-btn danger" data-act="remove">卸载</button>
@@ -2613,7 +3102,7 @@ async function loadMarket(page) {
   } else {
     box.innerHTML = list.map((p) => {
       const badges = (p.types || []).map((t) => `<span class="pkg-type t-${t}">${PKG_TYPE_CN[t] || t}</span>`).join("");
-      const repo = p.repo ? `<a class="pkg-repo" href="${esc(p.repo)}" target="_blank" rel="noopener" title="源码仓库">仓库</a>` : "";
+      const repo = introButton(p);
       return `<div class="pkg-card">
       <div class="pkg-c-head">
         <span class="pkg-name">${esc(p.name.replace(/^npm:/, ""))}</span>
@@ -2653,6 +3142,7 @@ const normPkgSource = (s) => {
 };
 function showPending() { $("#pkgPendingBar").hidden = false; }
 async function onInstalledClick(e) {
+  if (openPackageIntro(e)) return;
   const btn = e.target.closest("[data-act]");
   if (!btn) return;
   const row = btn.closest(".pkg-row");
@@ -2721,6 +3211,7 @@ async function onInstalledClick(e) {
   }
 }
 async function onMarketClick(e) {
+  if (openPackageIntro(e)) return;
   const btn = e.target.closest('[data-act="install"]');
   if (!btn) return;
   const name = btn.dataset.name;

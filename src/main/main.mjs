@@ -6,15 +6,19 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, safeStorage } from "electron";
 import path from "node:path";
 import fs from "node:fs";
+import { X509Certificate } from "node:crypto";
 import { spawn } from "node:child_process";
-import iconv from "iconv-lite";
-import { fileURLToPath } from "node:url";
+import { ServerManager, parseListeningPorts } from "./servers.mjs";
+import { TerminalPool } from "./terminal-pool.mjs";
+import { isInsideWorkspace } from "./workspace-path.mjs";
+import { readPreviewFile } from "./read-preview-file.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { PiBridge, HaloStore, scanAgents } from "./pi-bridge.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(HERE, "..", "..");
 const PRELOAD = path.join(DIST, "src", "preload", "preload.cjs");
-const ICON = path.join(DIST, "assets", "icon.png");
+const ICON = path.join(DIST, "assets", "icon-rounded.png");
 
 /* 统一限额/常量（调参只改这里） */
 const LIMITS = {
@@ -98,6 +102,16 @@ function writeAgentExt(storeFile) {
 function bootstrap() {
   const store = new HaloStore(path.join(app.getPath("userData"), "halo-settings.json"));
   const bridge = new PiBridge(store, { seal, unseal });
+  const servers = new ServerManager(store, seal, unseal);
+  bridge.servers = servers;
+  app.on("certificate-error", (event, contents, url, _error, certificate, callback) => {
+    const normalize = value => String(value || "").replace(/:/g, "").toLowerCase();
+    const trusted = contents.getType() === "webview" && [...servers.previews.values()].some(preview => {
+      try { return preview.fingerprint && new URL(preview.url).origin === new URL(url).origin && normalize(preview.fingerprint) === normalize(new X509Certificate(certificate.data).fingerprint256); } catch { return false; }
+    });
+    if (trusted) { event.preventDefault(); callback(true); } else callback(false);
+  });
+  app.on("before-quit", () => servers.dispose());
 
   // 生成默认智能体注入扩展（每次启动重写，路径/配置指向最新）
   writeAgentExt(store.file);
@@ -123,8 +137,8 @@ function bootstrap() {
 
   function createSplash() {
     splashWin = new BrowserWindow({
-      width: 640,
-      height: 420,
+      width: 520,
+      height: 360,
       icon: ICON,
       frame: false,
       transparent: true,
@@ -159,11 +173,11 @@ function bootstrap() {
     setTimeout(() => finishSplash(), 7000);
   }
 
+  let splashFinishing = false;
   function finishSplash() {
-    if (!splashWin || splashWin.isDestroyed()) return;
+    if (splashFinishing || !splashWin || splashWin.isDestroyed()) return;
+    splashFinishing = true;
     createMainWindow();
-    splashWin.close();
-    splashWin = null;
   }
 
   /* ---------------- main window ---------------- */
@@ -185,15 +199,42 @@ function bootstrap() {
         nodeIntegration: false,
         sandbox: true,
         spellcheck: false,
+        webviewTag: true,
       },
     });
 
+    mainWin.webContents.on("will-attach-webview", (event, preferences, params) => {
+      // Only our established SSH preview endpoints may create a guest browser.
+      if (![...servers.previews.values()].some(p => p.url === params.src)) { event.preventDefault(); return; }
+      delete preferences.preload;
+      preferences.nodeIntegration = false; preferences.contextIsolation = true;
+      preferences.sandbox = true; preferences.webSecurity = true;
+    });
+    mainWin.webContents.on("did-attach-webview", (_event, guest) => {
+      previewGuests.add(guest);
+      guest.once("destroyed", () => previewGuests.delete(guest));
+      guest.setWindowOpenHandler(() => ({ action: "deny" }));
+      guest.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+      guest.on("will-navigate", (event, url) => { if (!/^https?:\/\//.test(url)) event.preventDefault(); });
+      guest.on("dom-ready", () => { guest.executeJavaScript(SCROLL_STYLE).catch(() => {}); guest.executeJavaScript(previewTouch ? TOUCH_ON : TOUCH_OFF).catch(() => {}); });
+    });
     mainWin.loadFile(path.join(DIST, "src", "renderer", "index.html"));
+    mainWin.webContents.on("render-process-gone", () => terminals.dispose());
     mainWin.once("ready-to-show", () => {
-      mainWin.show();
-      mainWin.focus();
-      emit("halo:window-shown", {});
-      flushPendingEvents(); // 重放 splash 预热期缓冲的 pi 事件
+      const reveal = () => {
+        if (!mainWin || mainWin.isDestroyed()) return;
+        mainWin.show();
+        mainWin.focus();
+        if (splashWin && !splashWin.isDestroyed()) splashWin.close();
+        splashWin = null;
+        emit("halo:window-shown", {});
+        flushPendingEvents();
+      };
+      if (splashWin && !splashWin.isDestroyed()) {
+        splashWin.setBounds(mainWin.getBounds());
+        splashWin.webContents.send("halo:splash-expand");
+        setTimeout(reveal, 950);
+      } else reveal();
     });
     mainWin.on("maximize", () => emit("halo:winstate", { maximized: true }));
     mainWin.on("unmaximize", () => emit("halo:winstate", { maximized: false }));
@@ -216,13 +257,14 @@ function bootstrap() {
 
   // 预览触摸模拟：平板/手机模式隐藏滚动条 + 按住拖动滚动 + 松手惯性 + 拖动后抑制误点击
   let previewTouch = false;
+  const previewGuests = new Set();
   /* 预览触摸模拟 / 滚动条美化脚本：独立文件注入（src/main/inject/），
    * 平板/手机模式隐藏滚动条 + 按住拖动滚动 + 松手惯性 + 拖动后抑制误点击 */
   const applyPreviewTouch = (attempt = 0) => {
     const frames = (() => {
       try { return mainWin?.webContents.mainFrame.frames || []; } catch { return []; }
     })();
-    const hits = frames.filter((f) => String(f.url).startsWith("halo-preview://"));
+    const hits = [...frames.filter((f) => String(f.url).startsWith("halo-preview://")), ...[...previewGuests].filter(g => !g.isDestroyed())];
     if (!hits.length) {
       // iframe 可能尚未挂载，重试几次；关闭开关时无需重试
       if (previewTouch && attempt < 6) setTimeout(() => applyPreviewTouch(attempt + 1), 250);
@@ -234,9 +276,17 @@ function bootstrap() {
     }
   };
 
+  const trustedSender = (event, splash = false) => {
+    const window = splash ? splashWin : mainWin;
+    if (!window || window.isDestroyed()) return false;
+    const contents = window.webContents;
+    const expected = pathToFileURL(path.join(DIST, 'src', 'renderer', splash ? 'splash.html' : 'index.html')).href;
+    return event.sender === contents && event.senderFrame === contents.mainFrame && event.senderFrame?.url === expected;
+  };
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, ...args) => {
       try {
+        if (!trustedSender(e, channel === 'halo:splash-done')) throw Error('不可信的界面请求');
         return { ok: true, data: await fn(...args) };
       } catch (err) {
         return { ok: false, error: String(err?.message || err) };
@@ -250,6 +300,39 @@ function bootstrap() {
     return true;
   });
 
+  handle("halo:server-latencies", (force) => servers.latencies(force === true));
+  handle("halo:server-latency", (id) => servers.latency(id, true));
+  handle("halo:server-list", async () => ({ items: servers.list(), conversations: await bridge.serverConversations(), selected: bridge.serverTargets?.get(bridge.session?.sessionId) || null }));
+  handle("halo:server-new-session", (id) => switchSession(async () => {
+    if (!servers.list().some(s => s.id === id)) throw Error("服务器不存在");
+    return bridge.newSession(id);
+  }));
+  handle("halo:server-preview", (id, item) => servers.preview(id, item));
+  handle("halo:server-ports", async (id) => {
+    const result = await servers.exec(id, "if command -v ss >/dev/null 2>&1; then ss -H -lntup; elif command -v netstat >/dev/null 2>&1; then netstat -lntup; else echo '服务器未安装 ss 或 netstat' >&2; exit 1; fi");
+    if (result.code !== 0) throw Error(result.output || "读取端口失败");
+    return { items: parseListeningPorts(result.output), updated: Date.now() };
+  });
+  handle("halo:server-save", (input) => { if (input.id && bridge.isServerBusy(input.id)) throw Error("服务器任务正在运行，请结束后再编辑"); return servers.save(input); });
+  handle("halo:server-select", (id) => switchSession(async () => {
+    const session = bridge.session;
+    if (!session) throw Error("请等待会话就绪");
+    if (session.isStreaming) throw Error("请等待当前任务结束后切换服务器");
+    if (id) await servers.connect(id);
+    if (session !== bridge.session || session.isStreaming) throw Error("会话状态已变化，请重新选择服务器");
+    const previous = id && store.data.serverLastSessions?.[id];
+    if (previous && fs.existsSync(previous) && previous !== session.sessionFile) await bridge.openSession(previous);
+    bridge.serverTargets.set(bridge.session.sessionId, id || null);
+    store.set("serverTargets", Object.fromEntries(bridge.serverTargets));
+    bridge._noteSession();
+    bridge.pushState();
+    return bridge.publicState();
+  }));
+  handle("halo:server-reorder", (ids) => servers.reorder(ids));
+  handle("halo:server-remove", (id) => {
+    if ([...bridge.serverTargets.values()].includes(id)) throw Error("请先在绑定会话中断开此服务器");
+    return servers.remove(id);
+  });
   handle("halo:get-state", () => bridge.publicState());
   handle("halo:init", (cwd) => bridge.start(cwd));
   handle("halo:prompt", (text, opts) => bridge.prompt(text, opts));
@@ -282,24 +365,27 @@ function bootstrap() {
   handle("halo:auth-account-rename", (providerId, accountId, label) => bridge.authAccountRename(providerId, accountId, label));
   handle("halo:auth-account-quotas", (providerId) => bridge.authAccountsQuota(providerId));
   handle("halo:ext-toggle", (extPath, enabled) => bridge.setExtensionEnabled(extPath, enabled));
-  handle("halo:open-session", (file) => bridge.openSession(file));
-  handle("halo:new-session", () => bridge.newSession());
-  handle("halo:delete-session", (file) => bridge.deleteSession(file));
+  let sessionSwitchQueue = Promise.resolve();
+  const switchSession = (action) => {
+    const result = sessionSwitchQueue.then(action);
+    sessionSwitchQueue = result.catch(() => {});
+    return result;
+  };
+  handle("halo:open-session", (file) => switchSession(() => bridge.openSession(file)));
+  handle("halo:new-session", () => switchSession(() => bridge.newSession()));
+  handle("halo:delete-session", (file) => switchSession(() => bridge.deleteSession(file)));
   handle("halo:preview-touch", async ({ on }) => {
     previewTouch = !!on;
     applyPreviewTouch();
     return { on: previewTouch };
   });
   handle("halo:snapshot-messages", () => bridge.snapshotMessages());
+  handle("halo:snapshot-view", () => bridge.snapshotView());
   handle("halo:list-resources", () => bridge.listResources());
 
   /* ---------------- workspace & preview ---------------- */
 
-  const isInsideProject = (p) => {
-    const root = path.resolve(bridge.cwd || "");
-    const abs = path.resolve(p);
-    return abs === root || abs.startsWith(root + path.sep);
-  };
+  const isInsideProject = (p) => isInsideWorkspace(bridge.cwd || process.cwd(), p);
 
   const IGNORE = new Set(["node_modules", ".git", "dist", "build", "out", ".next",
     ".nuxt", ".cache", "coverage", "__pycache__", ".venv", "venv", "target", ".idea"]);
@@ -377,7 +463,7 @@ function bootstrap() {
   handle("halo:delete-entry", async ({ target }) => {
     const root = path.resolve(bridge.cwd || ".");
     const abs = path.resolve(bridge.cwd || ".", String(target || ""));
-    if (abs === root) throw new Error("不能删除项目根目录");
+    if (normP(abs) === normP(root)) throw new Error("不能删除项目根目录");
     if (!isInsideProject(abs)) throw new Error("路径超出项目范围");
     if (!fs.existsSync(abs)) throw new Error("目标不存在");
     await fs.promises.rm(abs, { recursive: true });
@@ -387,19 +473,7 @@ function bootstrap() {
   handle("halo:read-file", async (p) => {
     const abs = path.resolve(bridge.cwd || ".", p);
     if (!isInsideProject(abs)) throw new Error("路径超出项目范围");
-    const st = fs.statSync(abs);
-    if (st.size > LIMITS.FILE_READ) {
-      const fd = fs.openSync(abs, "r");
-      const buf = Buffer.alloc(LIMITS.FILE_READ);
-      fs.readSync(fd, buf, 0, buf.length, 0);
-      fs.closeSync(fd);
-      const text = buf.toString("utf8");
-      if (text.includes("\0")) throw new Error("二进制文件");
-      return { content: text, truncated: true, size: st.size };
-    }
-    const text = fs.readFileSync(abs, "utf8");
-    if (text.includes("\0")) throw new Error("二进制文件");
-    return { content: text, truncated: false, size: st.size };
+    return readPreviewFile(abs, LIMITS.FILE_READ);
   });
 
   handle("halo:open-path", async (p) => {
@@ -414,71 +488,16 @@ function bootstrap() {
     return true;
   });
 
-  /* ------------- 预览区控制台：隐藏控制台 + 管道模式 cmd /Q -------------
-   * cmd /Q 不回显；渲染层自绘提示符、本地行编辑、方向键历史、cls 清屏。
-   * cmd 的真实提示符（X:\...>）在主进程被吞掉，同时从提示符解析 cwd 推给渲染层；
-   * 命令结束信号 = 下一个提示符到达（halo:pty-done）。编码统一 GBK（系统 OEM）。
-   */
-  let termChild = null, tBuf = "", tAwait = false;
-  const TERM_PROMPT_RE = /^([A-Za-z]:\\[^>\r\n]*>)$/;
-  handle("halo:pty-start", () => {
-    if (termChild) return true;
-    const cwd = bridge.cwd || process.cwd();
-    termChild = spawn("cmd.exe", ["/Q", "/D", "/C", "chcp 936 >nul & cmd.exe /Q /D /K"], {
-      cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
-    });
-    tBuf = ""; tAwait = false;
-    const send = (ch, payload) => mainWin?.webContents.send(ch, payload);
-    /* 行切分 + 提示符识别（feed 接收的是已解码的完整文本流） */
-    const feed = (text) => {
-      tBuf += text;
-      let idx;
-      while ((idx = tBuf.search(/\r\n|\n|\r/)) >= 0) {
-        const line = tBuf.slice(0, idx);
-        tBuf = tBuf.slice(idx + (tBuf[idx] === "\r" && tBuf[idx + 1] === "\n" ? 2 : 1));
-        const m = TERM_PROMPT_RE.exec(line);
-        if (m) {
-          send("halo:pty-cwd", m[1].slice(0, -1));
-          if (tAwait) { tAwait = false; send("halo:pty-done"); }
-          continue;
-        }
-        send("halo:pty-out", line + "\r\n");
-      }
-      if (tBuf) {
-        if (TERM_PROMPT_RE.test(tBuf)) { // 无换尾的等待提示符
-          const m = TERM_PROMPT_RE.exec(tBuf);
-          tBuf = "";
-          send("halo:pty-cwd", m[1].slice(0, -1));
-          if (tAwait) { tAwait = false; send("halo:pty-done"); }
-        } else if (!tAwait) { // 空闲时来的零散字节（进度条等）直接透传
-          send("halo:pty-out", tBuf);
-          tBuf = "";
-        } // 命令执行中：攒整行，防止提示符前缀泄漏
-      }
-    };
-    /* GBK 有状态流式解码：多字节汉字可能被 TCP 分片截断，
-     * 按 chunk 独立 decode 会把跨片汉字解成乱码（实测复现），必须用 decodeStream */
-    const outDec = iconv.decodeStream("gbk");
-    outDec.on("data", (s) => feed(String(s)));
-    termChild.stdout.pipe(outDec);
-    const errDec = iconv.decodeStream("gbk");
-    errDec.on("data", (s) => send("halo:pty-out", String(s).replace(/\r?\n/g, "\r\n")));
-    termChild.stderr.pipe(errDec);
-    termChild.on("close", () => { termChild = null; tBuf = ""; tAwait = false; send("halo:pty-exit"); });
-    return true;
+  /* 原生终端池：独立进程、批量输出和背压控制。 */
+  const terminals = new TerminalPool((ch, payload) => {
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(ch, payload);
   });
-  handle("halo:pty-write", (d) => {
-    try {
-      const s = String(d);
-      if (/\r|\n/.test(s)) tAwait = true; // 提交了一行
-      termChild?.stdin.write(iconv.encode(s, "gbk"));
-    } catch {}
-  });
-  handle("halo:pty-kill", () => {
-    const c = termChild;
-    termChild = null;
-    if (c?.pid) { try { spawn("taskkill", ["/PID", String(c.pid), "/T", "/F"], { windowsHide: true }); } catch { try { c.kill(); } catch {} } }
-  });
+  app.on("before-quit", () => terminals.dispose());
+  handle("halo:pty-start", (opts = {}) => terminals.start({ ...opts, cwd: bridge.cwd || process.cwd() }));
+  handle("halo:pty-write", (data) => terminals.write(data));
+  handle("halo:pty-resize", (data) => terminals.resize(data));
+  handle("halo:pty-ack", (data) => terminals.ack(data));
+  handle("halo:pty-kill", (id) => terminals.kill(id));
 
   handle("halo:pick-project", async (currentPath) => {
     const res = await dialog.showOpenDialog(mainWin, {
@@ -570,7 +589,8 @@ function bootstrap() {
         version: p.version || "",
         date: p.date || "",
         author: p.publisher?.username || (typeof p.author === "string" ? p.author : p.author?.name) || "",
-        repo: p.links?.repository || p.links?.homepage || "",
+        repo: p.links?.repository || "",
+        homepage: p.links?.homepage || "",
         types: pkgTypes(p),
       };
     });
@@ -594,16 +614,33 @@ function bootstrap() {
       try {
         const pj = JSON.parse(fs.readFileSync(path.join(piHome(), "npm", "node_modules", name, "package.json"), "utf8"));
         p.version = pj.version || "";
+        p.desc = pj.description || "";
+        p.homepage = pj.homepage || "";
+        p.repo = typeof pj.repository === "string" ? pj.repository : pj.repository?.url || "";
       } catch {}
       try {
         const res = await fetch("https://registry.npmjs.org/" + name.split("/").map(encodeURIComponent).join("/") + "/latest");
         if (res.ok) {
           const j = await res.json();
           p.latest = j.version || "";
+          p.desc ||= j.description || "";
+          p.homepage ||= j.homepage || "";
+          p.repo ||= typeof j.repository === "string" ? j.repository : j.repository?.url || "";
           p.update = !!p.version && !!p.latest && p.version !== p.latest;
         }
       } catch {}
     }));
+    for (const p of list.filter((item) => item.kind === "git")) {
+      const repo = p.source.replace(/^git:/, "").replace(/^https?:\/\//, "").replace(/(?:\.git)?(?:#.*|@[^/]+)?$/, "");
+      if (!/^[\w.-]+\/[\w.-]+\/[\w.-]+$/.test(repo)) continue;
+      p.repo = "https://" + repo;
+      try {
+        const pj = JSON.parse(fs.readFileSync(path.join(piHome(), "git", repo, "package.json"), "utf8"));
+        p.desc = pj.description || "";
+        p.homepage = pj.homepage || "";
+        p.version = pj.version || "";
+      } catch {}
+    }
     return list;
   };
   handle("halo:pkg-installed", async () => collectPkgs());
@@ -661,7 +698,7 @@ function bootstrap() {
     return true;
   });
   handle("halo:projects-list", async () => bridge.projectsList());
-  handle("halo:project-switch", async ({ cwd }) => bridge.switchProject(cwd));
+  handle("halo:project-switch", ({ cwd }) => switchSession(() => bridge.switchProject(cwd)));
   handle("halo:project-add", async ({ dir }) => bridge.addProject(dir));
   handle("halo:project-remove", async ({ cwd }) => bridge.removeProject(cwd));
   handle("halo:agent-list", async () => scanAgents(bridge.cwd));
@@ -697,9 +734,9 @@ function bootstrap() {
   });
 
   // window controls
-  ipcMain.on("win:minimize", () => mainWin?.minimize());
-  ipcMain.on("win:maximize", () => (mainWin?.isMaximized() ? mainWin.unmaximize() : mainWin?.maximize()));
-  ipcMain.on("win:close", () => mainWin?.close());
+  ipcMain.on("win:minimize", (e) => { if (trustedSender(e)) mainWin?.minimize(); });
+  ipcMain.on("win:maximize", (e) => { if (trustedSender(e)) { if (mainWin?.isMaximized()) mainWin.unmaximize(); else mainWin?.maximize(); } });
+  ipcMain.on("win:close", (e) => { if (trustedSender(e)) mainWin?.close(); });
 
   /* ---------------- app lifecycle ---------------- */
 

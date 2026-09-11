@@ -1,24 +1,28 @@
 (function(){
 var st=document.getElementById("__halo-touch");
 if(!st){st=document.createElement("style");st.id="__halo-touch";document.documentElement.appendChild(st);}
-st.textContent="::-webkit-scrollbar{width:0!important;height:0!important}html{scrollbar-width:none!important}html{cursor:grab}html.halo-drag,html.halo-drag *{cursor:grabbing!important}html{scroll-behavior:auto!important}body{overscroll-behavior:contain}";
+st.textContent="::-webkit-scrollbar{width:0!important;height:0!important}html{scrollbar-width:none!important}html,body{cursor:url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0Ij48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI3IiBmaWxsPSIjNTU1IiBmaWxsLW9wYWNpdHk9Ii41NSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuNSIvPjwvc3ZnPg==) 12 12, crosshair}html.halo-drag,html.halo-drag *{cursor:url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0Ij48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI3IiBmaWxsPSIjNTU1IiBmaWxsLW9wYWNpdHk9Ii41NSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuNSIvPjwvc3ZnPg==) 12 12, crosshair!important}html{scroll-behavior:auto!important}body{overscroll-behavior:contain}";
+var hs=document.getElementById("__halo-home");
+if(!hs){hs=document.createElement("style");hs.id="__halo-home";document.documentElement.appendChild(hs);}
+hs.textContent="@media(max-width:430px){body::after{content:'';position:fixed;bottom:7px;left:50%;transform:translateX(-50%);width:118px;height:5px;border-radius:3px;background:rgba(0,0,0,.16);z-index:2147483647;pointer-events:none}}";
 window.__haloTouchOn=true;
 if(window.__haloTouchInstalled)return;
 window.__haloTouchInstalled=true;
-if(window.innerWidth<=430){var hs=document.createElement("style");hs.textContent="body::after{content:'';position:fixed;bottom:7px;left:50%;transform:translateX(-50%);width:118px;height:5px;border-radius:3px;background:rgba(0,0,0,.16);z-index:2147483647;pointer-events:none}";document.documentElement.appendChild(hs);}
+
 var dragSc=null,sx=0,sy=0,cx=0,cy=0,bx=0,by=0,rafD=0,rafG=0,rafB=0,samples=[],moved=false,osT=0;
+window.__haloTouchCancel=function(){cancelAnimationFrame(rafD);cancelAnimationFrame(rafG);cancelAnimationFrame(rafB);dragSc=null;setOs(0);document.documentElement.classList.remove("halo-drag");document.documentElement.style.cursor="";document.body.style.cursor="";};
 var rootSc=function(){return document.scrollingElement||document.documentElement;};
 function isRoot(s){return s===rootSc()||s===document.documentElement;}
 function scrollerAt(t){
  var de=rootSc();
- if(de.scrollHeight>de.clientHeight+1)return de;
+
  var cur=t;
  while(cur&&cur!==de){
   var s=getComputedStyle(cur);
   if(/(auto|scroll|overlay)/.test(s.overflowY)&&cur.scrollHeight>cur.clientHeight+1)return cur;
   cur=cur.parentElement;
  }
- return null;
+ return de.scrollHeight>window.innerHeight+1?de:null;
 }
 function limits(sc){
  if(isRoot(sc)){var de=rootSc();return{maxT:Math.max(0,de.scrollHeight-window.innerHeight),maxL:Math.max(0,de.scrollWidth-window.innerWidth)};}
@@ -79,7 +83,7 @@ function bounceBack(){
 }
 function pushSample(x,y){var t=performance.now();samples.push({t:t,x:x,y:y});while(samples.length>2&&t-samples[0].t>120)samples.shift();}
 document.addEventListener("pointerdown",function(e){
- if(!window.__haloTouchOn||e.button!==0)return;
+ if(!window.__haloTouchOn||e.button!==0||e.target.closest("input,textarea,select,[contenteditable=true]"))return;
  var sc=scrollerAt(e.target);
  if(!sc)return;
  cancelAnimationFrame(rafG);cancelAnimationFrame(rafD);cancelAnimationFrame(rafB);
@@ -87,7 +91,7 @@ document.addEventListener("pointerdown",function(e){
  sx=e.clientX;sy=e.clientY;cx=sx;cy=sy;
  var st=getScroll(sc);bx=st.left;by=st.top;
  setOs(0);
- document.documentElement.style.cursor="grabbing";document.body.style.cursor="grabbing";
+
  if(e.target.setPointerCapture){try{e.target.setPointerCapture(e.pointerId)}catch(err){}}
  document.documentElement.classList.add("halo-drag");
  pushSample(cx,cy);
