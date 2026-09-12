@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { PiBridge, HaloStore } from '../src/main/pi-bridge.mjs';
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-project-focus-'));
+const a = path.join(dir, 'a'), b = path.join(dir, 'b');
+fs.mkdirSync(a); fs.mkdirSync(b);
+const store = new HaloStore(path.join(dir, 'settings.json'));
+const bridge = new PiBridge(store, {}, { sessionDir: path.join(dir, 'sessions') });
+try {
+  await bridge.start(a);
+  const local = bridge.session.sessionFile;
+  await bridge.newSession('server-fixture');
+  const remote = bridge.session.sessionFile;
+  assert.notEqual(remote, local);
+  await bridge.switchProject(a);
+  assert.equal(bridge.session.sessionFile, local, 'Same directory must leave server conversation');
+  await bridge.switchProject(b);
+  const empty = bridge.session.sessionFile;
+  assert.equal(bridge.session.messages.length, 0);
+  assert.notEqual(empty, local);
+  await bridge.switchProject(a);
+  assert.equal(bridge.session.sessionFile, local);
+  await bridge.switchProject(b);
+  assert.equal(bridge.session.sessionFile, empty, 'Reuse project draft');
+  assert.equal(bridge.cwd, b.replaceAll('\\', '/'));
+  // A more recent local draft wins over a stale lastSession pointer.
+  await bridge.openSession(local);
+  bridge.session.agent.state.messages = [{ role: 'user', content: [{ type: 'text', text: 'old' }] }];
+  await bridge.switchProject(a);
+  await bridge.newSession();
+  const latest = bridge.session.sessionFile;
+  store.data.projects.find(p => p.cwd === a.replaceAll('\\', '/')).lastSession = remote;
+  await bridge.switchProject(b);
+  await bridge.switchProject(a);
+  assert.equal(bridge.session.sessionFile, latest, 'Latest local conversation wins over server lastSession');
+  console.log('PASS project folder focus, server isolation, empty project, draft reuse and latest local session');
+} finally { await bridge.dispose(); }
+process.exit(0);

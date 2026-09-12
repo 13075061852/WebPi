@@ -83,4 +83,49 @@ await evalJS(`
 `);
 
 
-try {await sleep(1200);const rows=await evalJS("(async()=>{const results=[];for(const id of ['nebula','mist','dunes','blueprint','executive','scholar','studio','garden']){document.querySelector('[data-theme-choice='+id+']').click();await new Promise((resolve,reject)=>{const image=new Image();image.onload=resolve;image.onerror=()=>reject(Error('Missing image '+id));image.src='../../assets/themes/'+id+'.png';});results.push({id,selected:document.documentElement.dataset.wallpaper,saved:localStorage.getItem('halo-theme'),palette:document.documentElement.dataset.theme});}return results;})()");for(const r of rows){if(r.id!==r.selected||r.id!==r.saved)throw Error("Selection failed "+r.id);if(r.palette!==(["nebula","blueprint","executive"].includes(r.id)?"dark":"light"))throw Error("Palette failed "+r.id);}await evalJS("document.querySelector('#btnSettings').click();document.querySelector('[data-pane=\"appearance\"]').click();const sizes=Array.from(document.querySelectorAll('.theme-sample'),el=>{const r=el.getBoundingClientRect();return [r.width,r.height];});if(sizes.some(([w,h])=>Math.abs(w-sizes[0][0])>1||Math.abs(h-sizes[0][1])>1))throw Error('Theme images have unequal sizes');const colors=[];const slider=document.querySelector('#wallpaperTransparency');for(const v of [0,50,100]){slider.value=v;slider.dispatchEvent(new Event('input'));colors.push(getComputedStyle(document.querySelector('.pv-head')).backgroundColor);if(getComputedStyle(document.querySelector('#sideNav')).backgroundColor!=='rgba(0, 0, 0, 0)'||getComputedStyle(document.querySelector('#chatHead')).backgroundColor!=='rgba(0, 0, 0, 0)')throw Error('Opaque header');}if(new Set(colors).size!==3)throw Error('Transparency does not update');slider.value=70;slider.dispatchEvent(new Event('input'));");await screenshot("test/shot-theme-garden.png");await evalJS("location.reload()");await sleep(1500);if(await evalJS("document.documentElement.dataset.wallpaper")!=="garden")throw Error("Restore failed");if(Math.abs(Number(await evalJS("document.documentElement.style.getPropertyValue('--wallpaper-cover')"))-.3)>.001)throw Error('Transparency was not restored');console.log("PASS eight themes, equal thumbnails, live header transparency and persisted selection/opacity");}finally{ws.close();electron.kill();}
+try {
+ await sleep(1200);
+ await evalJS(`document.querySelector('#btnSettings').click();document.querySelector('[data-pane="appearance"]').click()`);
+ const result=await evalJS(`(async()=>{
+  const tabs=[...document.querySelectorAll('[data-theme-tab]')];
+  if(tabs.length!==5)throw Error('Expected five categories');
+  let count=0;
+  for(const tab of tabs){
+   tab.click();
+   const panels=[...document.querySelectorAll('[data-theme-panel]')].filter(x=>!x.hidden);
+   if(panels.length!==1||panels[0].dataset.themePanel!==tab.dataset.themeTab)throw Error('Wrong visible panel');
+   const cards=[...panels[0].querySelectorAll('[data-theme-choice]')];
+   if(cards.length!==6)throw Error('Expected six wallpapers per category');
+   for(const card of cards){
+    card.click();const id=card.dataset.themeChoice;
+    if(document.documentElement.dataset.wallpaper!==id||localStorage.getItem('halo-theme')!==id)throw Error('Selection failed '+id);
+    if(document.documentElement.dataset.theme!==window.HALO_THEME_PALETTES[id])throw Error('Palette failed '+id);
+    const styles=getComputedStyle(document.documentElement);
+    if(!styles.getPropertyValue('--wallpaper').includes(id+'.webp'))throw Error('Wrong wallpaper URL '+id);
+    const sample=card.querySelector('.theme-sample');
+    if(!getComputedStyle(sample).backgroundImage.includes(id+'-thumb.webp'))throw Error('Missing thumbnail style');
+    for(const suffix of ['.webp','-thumb.webp']){
+     const image=new Image();image.src='../../assets/themes/collection/'+id+suffix;await image.decode();
+     if(image.naturalWidth<(suffix==='.webp'?1600:480))throw Error('Invalid image dimensions '+id);
+    }
+    if(sample.getBoundingClientRect().width<100)throw Error('Hidden card');
+    count++;
+   }
+  }
+  tabs[0].click();tabs[0].dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+  if(document.activeElement!==tabs[1]||tabs[1].getAttribute('aria-selected')!=='true')throw Error('Keyboard tab failed');
+  for(const mode of ['light','dark']){document.querySelector('[data-theme-choice='+mode+']').click();if(document.documentElement.dataset.theme!==mode||document.documentElement.dataset.wallpaper)throw Error('Base mode failed');}
+  document.querySelector('[data-theme-tab=oriental]').click();document.querySelector('[data-theme-choice=scene-moon]').click();
+  const slider=document.querySelector('#wallpaperTransparency');slider.value=35;slider.dispatchEvent(new Event('input'));
+  return {categories:tabs.length,wallpapers:count,decoded:count*2};
+ })()`);
+ for(const category of ['nature','water','city','cosmos','oriental']){
+  await evalJS(`document.querySelector('[data-theme-tab=${category}]').click()`);
+  await sleep(150);
+  await screenshot(`tmp/theme-${category}.png`);
+ }
+ await evalJS('location.reload()');await sleep(1500);
+ if(await evalJS('document.documentElement.dataset.wallpaper')!=='scene-moon')throw Error('Theme persistence failed');
+ if(await evalJS('document.documentElement.dataset.theme')!=='dark')throw Error('Palette persistence failed');
+ console.log('PASS',JSON.stringify(result),'keyboard, base modes and persisted theme');
+} finally {ws.close();electron.kill();}

@@ -1,6 +1,6 @@
 // Syntax check every JS/MJS/CJS source file via `node --check` (CI smoke gate).
 import { execFileSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,7 +24,11 @@ walk(ROOT);
 let failed = 0;
 for (const f of files) {
   try {
-    execFileSync(process.execPath, ["--check", f], { stdio: "pipe" });
+    // app.js is loaded with type="module" in index.html despite the CommonJS package.
+    const browserModule = f === path.join(ROOT, 'src', 'renderer', 'js', 'app.js');
+    execFileSync(process.execPath, browserModule ? ['--check', '--input-type=module'] : ['--check', f], {
+      stdio:'pipe', ...(browserModule ? {input:readFileSync(f,'utf8')} : {})
+    });
   } catch (e) {
     failed++;
     console.log(`FAIL ${path.relative(ROOT, f)}`);

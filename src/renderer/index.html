@@ -2,14 +2,16 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: halo-preview:; frame-src halo-preview: http://127.0.0.1:* https://127.0.0.1:*; connect-src 'self'; object-src 'none'; base-uri 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: halo-preview:; frame-src 'self' halo-preview: http://127.0.0.1:* https://127.0.0.1:*; connect-src 'self'; object-src 'none'; base-uri 'none'" />
 <title>Pi Halo · 星环</title>
+<script src="js/theme-catalog.js"></script>
 <script src="js/theme.js"></script>
 <link rel="stylesheet" href="css/app.css" />
 <link rel="stylesheet" href="vendor/xterm.css" />
 <script src="vendor/xterm.js"></script>
 <script src="vendor/addon-fit.js"></script>
 <script src="js/markdown.js"></script>
+<link rel="stylesheet" href="css/theme-collection.css">
 </head>
 <body>
 <div id="app">
@@ -100,7 +102,7 @@
 
       <!-- bottom: settings + auth -->
       <footer id="modelCard" class="fx t-b">
-        <button id="btnSettings" class="model-btn" title="设置 · 插件与技能管理">
+        <button id="btnSettings" class="model-btn" title="设置 · 插件技能管理">
           <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
           <span>设置</span>
         </button>
@@ -114,7 +116,7 @@
       <section id="cpane-preview" class="cpane active">
         <div class="pv-head">
           <button id="btnSidebar" title="收起/展开侧栏">
-            <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+            <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16"/></svg>
           </button>
           <span id="pvName" class="pv-name">未选择文件</span>
           <span class="ct-spacer"></span>
@@ -124,6 +126,7 @@
             <button data-m="render" class="active" title="渲染页面">渲染</button>
             <button data-m="source" title="查看源代码">源码</button>
           </div>
+          <button id="btnOpenFile" hidden title="使用系统默认应用打开文件" aria-label="使用默认应用打开文件"><svg viewBox="0 0 24 24" class="ic"><path d="M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg></button>
           <button id="btnTerm" class="pv-term-btn" title="控制台 · 命令提示符">
             <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9.5l2.8 2.5L7 14.5M13 15h4"/></svg>
           </button>
@@ -169,6 +172,7 @@
     <!-- ------------- chat panel ------------- -->
     <section id="chat" class="fx t-r">
       <header id="chatHead">
+        <button id="btnPreviewToggle" title="收起预览区" aria-label="收起预览区" aria-expanded="true" aria-controls="center"><svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16"/></svg></button>
         <div class="chat-stats" id="chatStats">
           <span title="输入 tokens">↑ 0</span><span title="输出 tokens">↓ 0</span>
           <span title="缓存读取">R 0</span><span title="缓存写入">W 0</span>
@@ -183,6 +187,17 @@
       </header>
 
       <div id="messages"></div>
+      <section id="chatWelcome" aria-label="新会话任务建议">
+        <div class="welcome-inner">
+          <h2>今天想完成什么？</h2>
+          <div class="welcome-prompts">
+            <button type="button" data-starter="先查看当前项目的文件，帮我梳理它的用途、主要结构和使用方式，并推荐几个适合开始的任务。"><span class="starter-icon" aria-hidden="true">◇</span><span><strong>了解这个项目</strong><small>梳理文件结构，找到下一步</small></span><span class="starter-arrow" aria-hidden="true">↗</span></button>
+            <button type="button" data-starter="帮我制作一份排版精美的报告或演示文稿。请先问我主题、读者和希望使用的文件格式，再开始制作。"><span class="starter-icon" aria-hidden="true">▤</span><span><strong>制作报告与演示</strong><small>把想法整理成 Word、PDF 或 PPT</small></span><span class="starter-arrow" aria-hidden="true">↗</span></button>
+            <button type="button" data-starter="帮我设计一份实用、美观的 Excel 表格，包含清晰的分类、必要的公式和汇总。请先确认用途和需要记录的数据。"><span class="starter-icon" aria-hidden="true">▦</span><span><strong>整理数据与表格</strong><small>做预算、计划，或分析已有数据</small></span><span class="starter-arrow" aria-hidden="true">↗</span></button>
+            <button type="button" data-starter="帮我排查当前项目的问题。请先了解我遇到的现象、预期效果和相关报错，再检查原因并提出修复方案。"><span class="starter-icon" aria-hidden="true">⌘</span><span><strong>排查与改进项目</strong><small>解决报错，优化功能与界面</small></span><span class="starter-arrow" aria-hidden="true">↗</span></button>
+          </div>
+        </div>
+      </section>
       <div id="queueRow" hidden></div>
 
       <footer id="composer">
@@ -261,15 +276,15 @@
       </div>
       <button class="set-nav active" data-pane="pkgs">
         <svg viewBox="0 0 24 24" class="ic"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="M12 12l8-4.5M12 12v9M12 12 4 7.5"/></svg>
-        插件与技能
+        插件技能
       </button>
       <button class="set-nav" data-pane="appearance">
         <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18Z"/></svg>
-        外观
+        主题搭配
       </button>
       <button class="set-nav" data-pane="login">
         <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
-        模型与登录
+        模型登录
       </button>
       <button class="set-nav" data-pane="usage">
         <svg viewBox="0 0 24 24" class="ic"><path d="M4 20h16M7 20v-6M12 20V8M17 20v-9"/></svg>
@@ -277,7 +292,7 @@
       </button>
     </div>
     <div class="set-main">
-      <div id="setPane-pkgs" class="set-pane active"><div class="settings-title"><h3>插件与技能</h3><p>为星环添加适合你的工具与能力</p></div>
+      <div id="setPane-pkgs" class="set-pane active"><div class="settings-title"><h3>插件技能</h3></div>
         <div class="set-head">
           <div class="set-search" id="pkgSearch">
             <input id="pkgSearchInput" type="text" placeholder="搜索 pi 生态的插件 / 技能 / 主题…" />
@@ -313,8 +328,8 @@
         <span>更改将在新会话生效</span>
         <button id="pkgApply" class="mini-btn accent">立即重载</button>
       </div>
-      <div class="set-pane" id="setPane-appearance"><div class="settings-title"><h3>外观</h3><p>用风景与材质，打造你的工作空间</p></div><div class="set-body"><div class="set-sec"><div class="wallpaper-transparency"><label for="wallpaperTransparency">背景透出程度<output id="wallpaperTransparencyValue" for="wallpaperTransparency">35%</output></label><input id="wallpaperTransparency" type="range" min="0" max="100" step="1" value="35" aria-describedby="wallpaperTransparencyHint"><p id="wallpaperTransparencyHint">数值越大，面板越透明、背景越清晰。仅对图片主题生效，自动保存。</p></div><h4>界面主题</h4><div class="theme-choices"><button class="theme-choice" data-theme-choice="light"><span class="theme-sample light"><i></i><i></i><i></i></span><span>浅色</span></button><button class="theme-choice" data-theme-choice="dark"><span class="theme-sample dark"><i></i><i></i><i></i></span><span>深色</span></button></div><h4 class="wallpaper-heading">风景主题</h4><div class="theme-choices wallpaper-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="nebula"><span class="theme-sample wallpaper-sample nebula"><i></i><i></i><i></i></span><span>星云夜航</span><small>深空星云 · 冷紫玻璃</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="mist"><span class="theme-sample wallpaper-sample mist"><i></i><i></i><i></i></span><span>雾山青岚</span><small>层叠山色 · 青玉磨砂</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="dunes"><span class="theme-sample wallpaper-sample dunes"><i></i><i></i><i></i></span><span>落日沙丘</span><small>暖沙落日 · 琥珀柔光</small></button></div><h4 class="wallpaper-heading">职业灵感</h4><div class="theme-choices wallpaper-choices career-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="blueprint"><span class="theme-sample wallpaper-sample blueprint"><i></i><i></i><i></i></span><span>精工蓝调</span><small>工程 · 科技｜钛金属与冷光</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="executive"><span class="theme-sample wallpaper-sample executive"><i></i><i></i><i></i></span><span>都会夜幕</span><small>金融 · 商务｜城市与香槟金</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="scholar"><span class="theme-sample wallpaper-sample scholar"><i></i><i></i><i></i></span><span>竹影书笺</span><small>文化 · 教育｜纸纹与竹影</small></button><button class="theme-choice wallpaper-choice" data-theme-choice="studio"><span class="theme-sample wallpaper-sample studio"><i></i><i></i><i></i></span><span>灵感光谱</span><small>设计 · 创意｜磨砂玻璃与柔彩</small></button></div><h4 class="wallpaper-heading">插画世界</h4><div class="theme-choices wallpaper-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="garden"><span class="theme-sample wallpaper-sample garden"><i></i><i></i><i></i></span><span>花园奇遇</span><small>繁花与机器人 · 奶油柔粉</small></button></div><p class="settings-hint">职业标签仅供风格参考，可自由选择。图片与面板材质一起切换，自动保存。</p></div></div></div>
-      <div class="set-pane" id="setPane-usage"><div class="settings-title"><h3>用量统计</h3><p>了解各模型与项目的使用情况</p></div>
+      <div class="set-pane" id="setPane-appearance"><div class="settings-title"><h3>主题搭配</h3></div><div class="set-body"><div class="set-sec"><div class="wallpaper-transparency"><label for="wallpaperTransparency">背景透出程度<output id="wallpaperTransparencyValue" for="wallpaperTransparency">35%</output></label><input id="wallpaperTransparency" type="range" min="0" max="100" step="1" value="35" aria-describedby="wallpaperTransparencyHint"><p id="wallpaperTransparencyHint">数值越大，面板越透明、背景越清晰。仅对图片主题生效，自动保存。</p></div><div class="theme-base-modes"><button class="mini-btn" data-theme-choice="light">浅色</button><button class="mini-btn" data-theme-choice="dark">深色</button></div><div class="theme-tabs" role="tablist" aria-label="主题分类"><button type="button" role="tab" id="theme-tab-nature" aria-controls="theme-panel-nature" aria-selected="false" tabindex="-1" data-theme-tab="nature">山野自然</button><button type="button" role="tab" id="theme-tab-water" aria-controls="theme-panel-water" aria-selected="false" tabindex="-1" data-theme-tab="water">海岸水域</button><button type="button" role="tab" id="theme-tab-city" aria-controls="theme-panel-city" aria-selected="false" tabindex="-1" data-theme-tab="city">城市夜色</button><button type="button" role="tab" id="theme-tab-cosmos" aria-controls="theme-panel-cosmos" aria-selected="false" tabindex="-1" data-theme-tab="cosmos">宇宙幻想</button><button type="button" role="tab" id="theme-tab-oriental" aria-controls="theme-panel-oriental" aria-selected="false" tabindex="-1" data-theme-tab="oriental">东方意境</button></div><div role="tabpanel" id="theme-panel-nature" aria-labelledby="theme-tab-nature" data-theme-panel="nature" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-pine"><span class="theme-sample wallpaper-sample scene-pine"><i></i><i></i><i></i></span><span>松间晨光</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-alpine"><span class="theme-sample wallpaper-sample scene-alpine"><i></i><i></i><i></i></span><span>雪岭晴空</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-canyon"><span class="theme-sample wallpaper-sample scene-canyon"><i></i><i></i><i></i></span><span>赤岩峡谷</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-meadow"><span class="theme-sample wallpaper-sample scene-meadow"><i></i><i></i><i></i></span><span>旷野春风</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-autumn"><span class="theme-sample wallpaper-sample scene-autumn"><i></i><i></i><i></i></span><span>秋山远行</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-forest"><span class="theme-sample wallpaper-sample scene-forest"><i></i><i></i><i></i></span><span>幽林夜雨</span></button></div><div role="tabpanel" id="theme-panel-water" aria-labelledby="theme-tab-water" data-theme-panel="water" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-lagoon"><span class="theme-sample wallpaper-sample scene-lagoon"><i></i><i></i><i></i></span><span>碧湾浅滩</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-tide"><span class="theme-sample wallpaper-sample scene-tide"><i></i><i></i><i></i></span><span>暮色潮汐</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-island"><span class="theme-sample wallpaper-sample scene-island"><i></i><i></i><i></i></span><span>白沙群岛</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-lake"><span class="theme-sample wallpaper-sample scene-lake"><i></i><i></i><i></i></span><span>湖光镜影</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-polar"><span class="theme-sample wallpaper-sample scene-polar"><i></i><i></i><i></i></span><span>冰海极光</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-coast"><span class="theme-sample wallpaper-sample scene-coast"><i></i><i></i><i></i></span><span>灯塔长夜</span></button></div><div role="tabpanel" id="theme-panel-city" aria-labelledby="theme-tab-city" data-theme-panel="city" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-metro"><span class="theme-sample wallpaper-sample scene-metro"><i></i><i></i><i></i></span><span>霓虹街角</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-harbor"><span class="theme-sample wallpaper-sample scene-harbor"><i></i><i></i><i></i></span><span>港湾蓝调</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-rooftop"><span class="theme-sample wallpaper-sample scene-rooftop"><i></i><i></i><i></i></span><span>天台落日</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-raincity"><span class="theme-sample wallpaper-sample scene-raincity"><i></i><i></i><i></i></span><span>雨夜微光</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-skyline"><span class="theme-sample wallpaper-sample scene-skyline"><i></i><i></i><i></i></span><span>云端都会</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-midnight"><span class="theme-sample wallpaper-sample scene-midnight"><i></i><i></i><i></i></span><span>午夜车站</span></button></div><div role="tabpanel" id="theme-panel-cosmos" aria-labelledby="theme-tab-cosmos" data-theme-panel="cosmos" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-orbit"><span class="theme-sample wallpaper-sample scene-orbit"><i></i><i></i><i></i></span><span>环星漫游</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-nebularose"><span class="theme-sample wallpaper-sample scene-nebularose"><i></i><i></i><i></i></span><span>玫瑰星云</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-lunar"><span class="theme-sample wallpaper-sample scene-lunar"><i></i><i></i><i></i></span><span>月面静海</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-stardust"><span class="theme-sample wallpaper-sample scene-stardust"><i></i><i></i><i></i></span><span>金色星尘</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-eclipse"><span class="theme-sample wallpaper-sample scene-eclipse"><i></i><i></i><i></i></span><span>日蚀之环</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-comet"><span class="theme-sample wallpaper-sample scene-comet"><i></i><i></i><i></i></span><span>彗尾流光</span></button></div><div role="tabpanel" id="theme-panel-oriental" aria-labelledby="theme-tab-oriental" data-theme-panel="oriental" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-ink"><span class="theme-sample wallpaper-sample scene-ink"><i></i><i></i><i></i></span><span>水墨远山</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-bamboo"><span class="theme-sample wallpaper-sample scene-bamboo"><i></i><i></i><i></i></span><span>竹窗听雨</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-lotus"><span class="theme-sample wallpaper-sample scene-lotus"><i></i><i></i><i></i></span><span>荷塘清夏</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-plum"><span class="theme-sample wallpaper-sample scene-plum"><i></i><i></i><i></i></span><span>雪映红梅</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-moon"><span class="theme-sample wallpaper-sample scene-moon"><i></i><i></i><i></i></span><span>青山望月</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-sands"><span class="theme-sample wallpaper-sample scene-sands"><i></i><i></i><i></i></span><span>敦煌流沙</span></button></div></div></div></div>
+      <div class="set-pane" id="setPane-usage"><div class="settings-title"><h3>用量统计</h3></div>
         <div class="set-head">
           <div class="set-tabs" id="usageRange">
             <button class="ptab active" data-d="7">近 7 天</button>
@@ -326,10 +341,9 @@
           <div id="usageContent"><div class="set-soon">正在统计…</div></div>
         </div>
       </div>
-      <div class="set-pane" id="setPane-login"><div class="settings-title"><h3>模型与登录</h3><p>管理登录方式，选择新会话默认使用的模型</p><button id="settingsAuth" class="mini-btn">管理登录账号 ↗</button></div>
+      <div class="set-pane" id="setPane-login"><div class="settings-title"><h3>模型登录</h3><button id="settingsAuth" class="mini-btn">管理登录账号 ↗</button></div>
         <div class="set-body">
           <div class="set-sec">
-            <h4>默认模型 <span id="defModelName" class="set-count"></span></h4>
             <div id="defModelList" class="pkg-list"></div>
           </div>
         </div>

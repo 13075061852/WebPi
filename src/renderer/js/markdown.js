@@ -50,6 +50,7 @@ function hlFile(code, lang) {
 const mdUrl = (u, mdPath) => {
   u = String(u || "").trim();
   if (/^(https?:|mailto:|halo-preview:|data:image\/)/i.test(u)) return u.replace(/"/g, "%22");
+  if (/^[a-z]:[\\/]/i.test(u) || u.startsWith("/")) return previewURL(u);
   if (mdPath && !/^[a-z]+:/i.test(u)) {
     const dir = mdPath.replace(/[\\/][^\\/]*$/, "");
     const parts = dir.split(/[\\/]/);
@@ -167,7 +168,8 @@ function mdRender(src, mdPath) {
 }
 
 function rich(src) {
-  return mdRender(src, null);
+  const cwd = document.documentElement.dataset.projectCwd;
+  return mdRender(src, cwd ? cwd.replace(/[\\/]$/, "") + "/__chat__.md" : null);
 }
 
 /* ---- 流式渲染切分：长回复只重渲染尾部，避免每 delta 全量 O(n²) ----

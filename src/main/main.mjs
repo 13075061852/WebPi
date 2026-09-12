@@ -1,9 +1,11 @@
+import { isTrustedUIURL } from "./trusted-ui-url.mjs";
+import { previewDocument } from "./document-preview.mjs";
 /**
  * Pi Halo — Electron main process
  * splash (launch animation) -> main window (three-panel celestial console)
  */
 
-import { app, BrowserWindow, ipcMain, dialog, shell, protocol, safeStorage } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol, safeStorage, clipboard, nativeImage, ClipboardItem } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { X509Certificate } from "node:crypto";
@@ -281,7 +283,7 @@ function bootstrap() {
     if (!window || window.isDestroyed()) return false;
     const contents = window.webContents;
     const expected = pathToFileURL(path.join(DIST, 'src', 'renderer', splash ? 'splash.html' : 'index.html')).href;
-    return event.sender === contents && event.senderFrame === contents.mainFrame && event.senderFrame?.url === expected;
+    return event.sender === contents && event.senderFrame === contents.mainFrame && isTrustedUIURL(event.senderFrame?.url, expected);
   };
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, ...args) => {
@@ -470,6 +472,38 @@ function bootstrap() {
     return { deleted: abs };
   });
 
+  handle("halo:document-preview", async ({ file, page }) => {
+    const abs = path.resolve(bridge.cwd || ".", file);
+    if (!isInsideProject(abs)) throw new Error("路径超出项目范围");
+    return previewDocument(abs, page);
+  });
+
+  handle("halo:copy-image", async (file) => {
+    if(typeof file !== 'string') throw Error('图片路径无效');
+    const abs=path.resolve(bridge.cwd || '.',file);
+    if(!isInsideProject(abs)) throw Error('路径超出项目范围');
+    if(!/\.(png|jpe?g|webp|gif|bmp)$/i.test(abs)) throw Error('该格式暂不支持复制图片');
+    const stat=await fs.promises.stat(abs).catch(()=>null);
+    if(!stat?.isFile()) throw Error('图片已移动或删除');
+    if(stat.size>32*1024*1024) throw Error('图片超过32 MB，无法复制');
+    const image=nativeImage.createFromBuffer(await fs.promises.readFile(abs));
+    if(image.isEmpty()) throw Error('图片无法解码');
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([image.toPNG()], {type:'image/png'}) })]);
+    return true;
+  });
+
+  handle("halo:artifact-files", async (files) => {
+    if (!Array.isArray(files) || files.length > 100) throw Error('产物列表无效');
+    const found=await Promise.all(files.map(async file=>{
+      if(typeof file !== 'string') return null;
+      const abs=path.resolve(bridge.cwd || '.',file);
+      if(!isInsideProject(abs)) return null;
+      const stat=await fs.promises.stat(abs).catch(()=>null);
+      return stat?.isFile() ? file : null;
+    }));
+    return found.filter(Boolean);
+  });
+
   handle("halo:read-file", async (p) => {
     const abs = path.resolve(bridge.cwd || ".", p);
     if (!isInsideProject(abs)) throw new Error("路径超出项目范围");
@@ -479,7 +513,9 @@ function bootstrap() {
   handle("halo:open-path", async (p) => {
     const abs = path.resolve(bridge.cwd || ".", p);
     if (!isInsideProject(abs)) throw new Error("路径超出项目范围");
-    return shell.openPath(abs);
+    const error = await shell.openPath(abs);
+    if (error) throw new Error(error);
+    return true;
   });
 
   handle("halo:open-external", (url) => {

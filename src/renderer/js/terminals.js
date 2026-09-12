@@ -9,7 +9,7 @@ window.initTerminals = (getCwd, toast) => {
   const active = () => records.get(activeByProject.get(key()));
   const theme = () => {
     const cs = getComputedStyle(document.documentElement);
-    return { background: cs.getPropertyValue("--bg0").trim(), foreground: cs.getPropertyValue("--txt").trim(),
+    return { background: "#00000000", foreground: cs.getPropertyValue("--txt").trim(),
       cursor: cs.getPropertyValue("--txt-dim").trim(), selectionBackground: "#71809655" };
   };
   const send = (name, data) => window.halo[name](data).catch(e => toast(e.message, "err"));
@@ -69,7 +69,7 @@ window.initTerminals = (getCwd, toast) => {
     const term = new window.Terminal({
       fontFamily: 'Cascadia Mono, Consolas, "Microsoft YaHei", monospace',
       fontSize: 13, lineHeight: 1.3, cursorStyle: "bar", cursorBlink: true,
-      scrollback: 5000, theme: theme(), allowProposedApi: false,
+      scrollback: 5000, theme: theme(), allowTransparency: true, allowProposedApi: false,
     });
     const fitAddon = new window.FitAddon.FitAddon(); term.loadAddon(fitAddon);
     const r = { id, project, cwd, name, term, panel, fit: fitAddon, exited: false };

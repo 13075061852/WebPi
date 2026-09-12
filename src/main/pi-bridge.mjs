@@ -10,6 +10,8 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
+import { imageTool, resolveImageCredential } from "./image-generation.mjs";
+import { officeSkillsRoot, officeTool } from "./office/tools.mjs";
 import { createInterface } from "node:readline";
 
 /* ------------------------------------------------------------------ */
@@ -421,21 +423,21 @@ async _doStart() {
     } catch {}
   }
 
-  /* 默认模型恢复：defaultModel 显式设置时总是应用；无默认则用上次使用（modelKey，仅当会话无模型） */
-  async restoreModel() {
+  /* 已有会话保留自己的模型；默认模型仅用于新建会话或没有模型的会话。 */
+  async restoreModel(session = this.session, fresh = false) {
     try {
       const saved = this.store.data;
       const key = saved.defaultModel || saved.modelKey;
-      if (!key || !this.session || !this.modelRuntime) return;
-      if (!saved.defaultModel && this.session.model) return; // 无显式默认：尊重会话自带模型
+      if (!key || !session || !this.modelRuntime) return;
+      if (!fresh && session.model) return;
       const [provider, ...rest] = key.split("/");
       const id = rest.join("/");
       const m = this.modelRuntime.getModel(provider, id);
       if (!m) return;
-      const cur = this.session.model;
+      const cur = session.model;
       if (cur && cur.provider === m.provider && cur.id === m.id) return;
-      await this.session.setModel(m);
-      this.pushState();
+      await session.setModel(m);
+      if (session === this.session) this.pushState();
     } catch {}
   }
 
@@ -501,7 +503,8 @@ async _doStart() {
   }
 
   async addProject(dir) {
-    if (!dir || !fs.existsSync(dir)) throw new Error("目录不存在：" + dir);
+    if (typeof dir !== "string" || !path.isAbsolute(dir) || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error("请拖入有效的项目文件夹");
+    dir = path.resolve(dir);
     if (!this._findProject(dir)) {
       (this.store.data.projects = this.store.data.projects || []).push({ cwd: dir, lastSession: null });
       this.store.save();
@@ -528,29 +531,15 @@ async _doStart() {
       this.store.save();
       prev = this._findProject(target);
     }
-    const last = prev?.lastSession && fs.existsSync(prev.lastSession) ? prev.lastSession : null;
-    if (last) {
-      try {
-        await this.openSession(last, { cwdOverride: target });
-        this.cwd = target;
-        this.store.set("cwd", target);
-        this.pushState();
-        return this.publicState();
-      } catch (e) {
-        console.error("[halo] fast project switch failed, fallback to full start:", e);
-      }
-    }
-    if (PiBridge.normPath(target) !== PiBridge.normPath(this.cwd || "")) {
-      await this.start(target);
-    }
-    if (last) {
-      try {
-        await this.openSession(last);
-        await this.restoreModel();
-      } catch (e) {
-        console.error("[halo] restore project lastSession failed:", last, e);
-      }
-    }
+    // Folder selection follows the newest local conversation, never a server session.
+    const sessions = await this.listSessions(target);
+    const latest = sessions.find(s => !this.serverTargets.get(s.id || this.#pool.get(PiBridge.normPath(s.file))?.runtime.session.sessionId) && !this.store.data.serverSessions?.[s.file]);
+    const ctx = latest
+      ? await this.#ensureSession(latest.file, { cwdOverride: target })
+      : await this.#ensureFresh({ cwd: target });
+    this.cwd = target;
+    this.store.set("cwd", target);
+    this.#focus(ctx);
     this._noteSession();
     this._recomputeUsageFromSession();
     this.pushState();
@@ -586,6 +575,7 @@ async _doStart() {
   /* 创建全新会话 ctx（新 runtime + 空会话） */
   async #ensureFresh(opts = {}) {
     const ctx = await this.#createCtx({ cwd: opts.cwd || this.cwd });
+    await this.restoreModel(ctx.runtime.session, true);
     this.#pool.set(ctx.key, ctx);
     return ctx;
   }
@@ -655,7 +645,15 @@ async _doStart() {
       if (event.type === "message_end") ctx.partial = null;
       if (event.type === "tool_execution_start") (ctx.activeTools ||= {})[event.toolCallId] = event.toolName;
       if (event.type === "tool_execution_end") delete (ctx.activeTools ||= {})[event.toolCallId];
-      if (event.type === "agent_settled") { ctx.partial = null; ctx.activeTools = {}; }
+      if (event.type === "agent_settled") {
+        ctx.partial = null; ctx.activeTools = {};
+        const user = [...(session.messages || [])].reverse().find(m => m.role === 'user');
+        if (ctx.startedAt && user?.timestamp) {
+          const timings = this.store.data.turnTimings || {};
+          (timings[session.sessionId] ||= {})[String(user.timestamp)] = { start: ctx.startedAt, end: Date.now() };
+          this.store.set('turnTimings', timings);
+        }
+      }
       this._accountUsage(event, ctx);
       this.emit("pi:event", { sessionId: session.sessionId, seq: ctx.eventSeq, event });
       if (event?.type === "message_end" || event?.type === "agent_end" || event?.type === "agent_settled") {
@@ -712,6 +710,7 @@ async _doStart() {
       const services = await createAgentSessionServices({
         cwd,
         resourceLoaderOptions: {
+          additionalSkillPaths: [officeSkillsRoot],
           extensionsOverride: (base) => {
             // 缓存全部已发现的扩展（含即将被禁用的），供能力页展示与开关
             this._allExtensions = (base.extensions || []).map((x) => ({
@@ -734,6 +733,7 @@ async _doStart() {
                   handlers: new Map([
                     ["before_agent_start", [async (event) => {
                       let systemPrompt = event.systemPrompt || "";
+                      systemPrompt += "\n\n" + fs.readFileSync(new URL('../../assets/delivery-policy.md', import.meta.url), 'utf8');
                       const target = self.serverTargets.get(sessionManager.getSessionId());
                       const server = self.servers?.list().find(s => s.id === target);
                       if (server) systemPrompt += "\n\n# 当前会话托管服务器\n" + server.name + " (" + server.username + "@" + server.host + ":" + server.port + ")。涉及该服务器的命令和文件操作必须使用 ssh_exec，不要在本地 bash/read/write 执行远程操作。";
@@ -764,7 +764,7 @@ async _doStart() {
       this.services = services;
       return {
         ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
-          customTools: [{ name: "ssh_exec", label: "服务器命令", description: "在此会话绑定的远程服务器执行 shell 命令。使用此工具读取远程文件、检查服务和管理服务器；每次调用是独立 shell，请在命令中指定 cd。",
+          customTools: [imageTool(cwd, () => resolveImageCredential(this.modelRuntime)), officeTool(cwd), { name: "ssh_exec", label: "服务器命令", description: "在此会话绑定的远程服务器执行 shell 命令。使用此工具读取远程文件、检查服务和管理服务器；每次调用是独立 shell，请在命令中指定 cd。",
             parameters: { type: "object", properties: { command: { type: "string", description: "远程 shell 命令" } }, required: ["command"] },
             execute: async (_id, args, signal) => {
               const target = this.serverTargets.get(sessionManager.getSessionId());
@@ -1190,6 +1190,7 @@ async _doStart() {
       // {path,id,cwd,name,created,modified,messageCount,firstMessage,...}
       const all = await SessionManager.list(cwd, this.sessionDir || undefined);
       for (const s of Array.isArray(all) ? all : []) {
+        if (s.cwd && PiBridge.normPath(s.cwd) !== PiBridge.normPath(cwd)) continue;
         const f = s.path || s.file || s.sessionFile || "";
         const mc = s.messageCount ?? null;
         // 空会话（0 条消息）不进列表：新会话在发出第一条消息前不显示，
@@ -1660,6 +1661,7 @@ async _doStart() {
     const ctx = this.#pool.get(this.#focusedKey);
     return {
       state: this.publicState(), messages: this.snapshotMessages(), seq: ctx?.eventSeq || 0,
+      turnTimings: this.store.data.turnTimings?.[this.session?.sessionId] || {},
       partial: ctx?.partial ? structuredClone(ctx.partial) : null,
       startedAt: ctx?.startedAt || null, activeTools: { ...ctx?.activeTools },
     };
@@ -1681,7 +1683,7 @@ async _doStart() {
           ? m.content.map((c) => {
               if (!c) return null;
               if (c.type === "text") return { type: "text", text: c.text };
-              if (c.type === "image") return { type: "image" };
+              if (c.type === "image") return m.role === "user" && c.data && c.mimeType ? { type: "image", data: c.data, mimeType: c.mimeType } : null;
               if (c.type === "thinking") return { type: "thinking", thinking: c.thinking || "" };
               if (c.type === "toolCall") return { type: "toolCall", id: c.id, name: c.name, arguments: c.arguments };
               return null;
@@ -1693,7 +1695,8 @@ async _doStart() {
 
   /* pi-parity resource discovery: skills / prompts / extensions */
   listResources() {
-    const out = { skills: [], prompts: [], extensions: [] };
+    const out = { skills: [], prompts: [], extensions: [], commands: [] };
+    out.commands = (this.session?.extensionRunner?.getRegisteredCommands?.() || []).map(c => ({ name: c.invocationName || c.name, description: c.description || "插件指令" }));
     try {
       const loader =
         this.runtime?.services?.resourceLoader || this.services?.resourceLoader;

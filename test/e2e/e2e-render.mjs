@@ -154,13 +154,16 @@ await evalJS(`
     result: { content: [{ type: 'text', text: 'Traceback (most recent call last):\\n' + '    diagnostic output\\n'.repeat(24) + "ModuleNotFoundError: No module named 'matplotlib'" }] } });
 `);
 await sleep(700);
+const errorCollapsed = await evalJS("document.querySelector('.tool.error .tool-out').hidden");
+if (!errorCollapsed) { electron.kill(); throw new Error('Failed tools should start collapsed'); }
+await evalJS("document.querySelector('.tool.error .tool-line').click()");
 for (const theme of ['light', 'dark']) {
   await evalJS(`document.documentElement.dataset.theme = '${theme}'`);
   const layout = await evalJS(`(() => {
     const messages = document.querySelector('#messages');
     const tool = messages.querySelector('.tool');
     const status = messages.querySelector('.turn-status');
-    return { separated: status.getBoundingClientRect().top >= tool.getBoundingClientRect().bottom + 8,
+    return { separated: status.getBoundingClientRect().bottom <= tool.getBoundingClientRect().top,
       scrolls: messages.scrollHeight > messages.clientHeight,
       fits: messages.scrollWidth <= messages.clientWidth,
       logScrolls: tool.querySelector('.tool-out').scrollHeight > tool.querySelector('.tool-out').clientHeight };

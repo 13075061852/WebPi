@@ -125,3 +125,23 @@ $env:HALO_TEST_EXECUTABLE = "dist/win-unpacked/Pi Halo.exe"
 node test/e2e/e2e-terminals.mjs
 Remove-Item Env:HALO_TEST_EXECUTABLE
 ```
+
+## 内置办公文档技能
+
+应用启动后自动向每个 AI 会话加载 `halo-word`、`halo-excel`、`halo-powerpoint`、`halo-pdf`。使用自然语言提出文档任务即可；通过 `office_document` 工具执行本地脚本、检查产物或渲染 PDF，无需安装系统 Node/Python 或 Microsoft Office。
+
+- 文档技能：`assets/skills/`；共享流程包含环境、单位、数据核验和视觉检查要求。
+- 可运行示例：`assets/office-examples/`；正式任务应复制并改成真实内容。
+- 工具支持 `status` / `run` / `inspect` / `render_pdf`。run 在单独进程中执行，有超时和取消，权限等同本地 bash，不是沙箱。
+- Word 使用 docx，Excel 使用 ExcelJS，PPT 使用 PptxGenJS，PDF 使用 PDFKit/pdf-lib，PDF 页面渲染使用 Mozilla PDF.js 与 @napi-rs/canvas；依赖随应用打包。
+- 中文 PDF 优先使用 Windows 黑体，可用 `HALO_DOCUMENT_FONT` 指定自己的中文 TTF。字体不随项目重分发。
+- XLSX 公式并非由 ExcelJS 重算；检查会报告缺失缓存和错误，技能要求独立校验关键数字。有 Office/LibreOffice 时可进一步重算与渲染。Word/PPT 原生版式视觉检查需要已有 Office/LibreOffice；本项目不把结构检查假称为视觉检查。
+- 保留第三方包自带许可证。当前 PptxGenJS 的传递 image-size 依赖有未发布修复的解析器公告，文档 worker 已限制到 PNG/JPEG/GIF/SVG/WebP/BMP，禁用 ICNS/JXL/HEIF 等复杂类型；仍应跟踪上游更新。ExcelJS 的 uuid 依赖已覆盖到修复版本 11.1.1。
+
+验证：`node test/verify-office.mjs`、`node test/verify-office-runtime.mjs`；构建后 `node test/e2e/verify-office-packaged.mjs` 验证打包内四种生成与 PDF 渲染。
+
+### 内置文件预览
+
+点击文件树中的 PDF、DOCX、XLSX、PPTX 可直接在中间区域只读预览，不上传文件。PDF 支持翻页；Excel 支持工作表切换，展示缓存公式结果（不计算公式），上限 2000 行 / 100 列；Word 使用 HTML 版式；PPT 使用本地渲染库，无法解析时退回基础 OOXML 文字、图片与布局预览。复杂 Office 图表、动画、母版及特殊排版不保证与 Office 完全一致。旧 DOC、XLS、PPT 需先转换成现代格式，文件大小上限 64 MB。
+
+预览依赖存放在 `src/renderer/vendor/office`，使用 `node scripts/build-office-viewer.mjs` 重建；附带依赖许可证。运行 `node test/e2e/e2e-office-preview.mjs` 会生成四种样例并在 Electron 中验证。

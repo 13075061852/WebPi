@@ -1,3 +1,5 @@
+import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
+import { userMessageText } from "./user-message.mjs";
 /* ============================================================
    Pi Halo — app orchestration (v2, hardened)
    Maps pi SDK session events onto the celestial UI.
@@ -59,9 +61,9 @@ const S = {
 
 /* ---------- theme: 黑 / 白 ---------- */
 function applyTheme(t, { persist = true } = {}) {
-  const selected = ['light', 'dark', 'nebula', 'mist', 'dunes', 'scholar', 'studio', 'garden', 'blueprint', 'executive'].includes(t) ? t : 'dark';
-  document.documentElement.dataset.theme = ['light', 'mist', 'dunes', 'scholar', 'studio', 'garden'].includes(selected) ? 'light' : 'dark';
-  document.documentElement.dataset.wallpaper = ['nebula', 'mist', 'dunes', 'scholar', 'studio', 'garden', 'blueprint', 'executive'].includes(selected) ? selected : '';
+  const selected = [...Object.keys(window.HALO_THEME_PALETTES || {}), 'light', 'dark', 'nebula', 'mist', 'dunes', 'scholar', 'studio', 'garden', 'spacepig', 'blueprint', 'executive'].includes(t) ? t : 'dark';
+  document.documentElement.dataset.theme = window.HALO_THEME_PALETTES?.[selected] || (['light', 'mist', 'dunes', 'scholar', 'studio', 'garden'].includes(selected) ? 'light' : 'dark');
+  document.documentElement.dataset.wallpaper = [...Object.keys(window.HALO_THEME_PALETTES || {}), 'nebula', 'mist', 'dunes', 'scholar', 'studio', 'garden', 'spacepig', 'blueprint', 'executive'].includes(selected) ? selected : '';
   if (persist) { try { localStorage.setItem("halo-theme", selected); } catch {} }
   document.dispatchEvent(new CustomEvent("themechange"));
 }
@@ -158,7 +160,7 @@ async function loadServerPorts(force = false) {
       const request = ++portPreviewRequest;
       selectedPortKey = portKey(id, item); updatePortSelection();
       previewService = {kind:"service", serverId:id, port:item.port, protocol:item.protocol, address:item.address, process:item.process, status:"loading"};
-      S.previewFile = null; $("#pvMode").hidden = true;
+      S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true;
       const serverLabel = document.querySelector('.server-group[data-server-id="' + CSS.escape(id) + '"] .server-group-toggle span')?.textContent || "服务器";
       $("#pvName").textContent = serverLabel + " · " + item.port;
       const body = $("#pvBody"); body.innerHTML = '<div class="pv-empty"><p>正在连接网页服务…</p></div>';
@@ -194,14 +196,15 @@ async function loadServerPorts(force = false) {
 async function refreshServers() {
   const request = ++serverListRequest;
   const r = await window.halo.serverList();
-  if (request !== serverListRequest || !r?.ok || draggedServer) return;
+  if (request !== serverListRequest || draggedServer) return;
+  if (!r?.ok) { toast(r?.error || "服务器列表读取失败", "err"); return; }
   const { items, selected, conversations = [] } = r.data;
   syncServerPorts(selected, items);
   const list = $("#serverList"); list.replaceChildren();
   if (!items.length) list.innerHTML = '<div class="res-empty">添加服务器，通过 SSH 远程管理</div>';
   for (const server of items) {
     const group = document.createElement("div"); group.className = "server-group" + (server.connected ? " connected" : "");
-    group.innerHTML = '<div class="server-group-head"><button class="server-group-toggle"><svg viewBox="0 0 24 24" class="ic"><path d="M3 7h6l2 2h10l-3 11H3Z M3 7V4h6l2 3h8v2"/></svg><span></span></button><details class="server-group-menu" name="server-actions"><summary title="服务器操作">···</summary><div><button class="server-group-connect">连接</button><button class="server-group-edit">编辑</button><button class="server-group-remove">删除服务器</button></div></details><button class="server-group-new" title="新建服务器对话"><svg viewBox="0 0 24 24" class="ic"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6M14 5l5 5M10 14l1-5 7-7 5 5-7 7Z"/></svg></button></div><div class="server-conversations"></div>';
+    group.innerHTML = '<div class="server-group-head"><button class="server-group-toggle"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M12 17v4M8 21h8"/></svg><span></span></button><details class="server-group-menu" name="server-actions"><summary title="服务器操作">···</summary><div><button class="server-group-connect">连接</button><button class="server-group-edit">编辑</button><button class="server-group-remove">删除服务器</button></div></details><button class="server-group-new" title="新建服务器对话"><svg viewBox="0 0 24 24" class="ic"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6M14 5l5 5M10 14l1-5 7-7 5 5-7 7Z"/></svg></button></div><div class="server-conversations"></div>';
     group.dataset.serverId = server.id;
     const heading = $(".server-group-toggle", group); heading.draggable = true;
     heading.addEventListener("dragstart", e => { draggedServer = server.id; closeServerMenus(); e.dataTransfer.setData("text/plain", server.id); e.dataTransfer.effectAllowed = "move"; group.classList.add("dragging"); });
@@ -242,8 +245,8 @@ async function refreshServers() {
     const toggle = $(".server-group-toggle", group), children = $(".server-conversations", group);
     toggle.title = server.username + "@" + server.host + " · " + (server.connected ? "已连接" : "未连接");
     children.hidden = collapsedServers.has(server.id);
-    toggle.setAttribute("aria-expanded", String(!children.hidden));
-    toggle.addEventListener("click", () => { browsingServerId = server.id; syncServerPorts(selected, items); children.hidden = !children.hidden; if (children.hidden) collapsedServers.add(server.id); else collapsedServers.delete(server.id); toggle.setAttribute("aria-expanded", String(!children.hidden)); });
+    addConversationFold(toggle, children, collapsedServers, server.id, server.name);
+    toggle.addEventListener("click", () => { browsingServerId = server.id; syncServerPorts(selected, items); });
     $(".server-group-connect", group).addEventListener("click", async (e) => {
       e.currentTarget.disabled = true;
       browsingServerId = server.id;
@@ -356,6 +359,7 @@ function initServerUI() {
 }
 
 function applyState(st) {
+  document.documentElement.dataset.projectCwd = st?.cwd || "";
   if (!st) return;
   S.state = st;
   document.dispatchEvent(new Event("projectstatechange"));
@@ -698,12 +702,102 @@ function ensureTurn() {
         <b class="turn-status-text">正在思考…</b>
         <span class="turn-status-meta">刚刚开始</span>
       </span>
-      <kbd class="turn-status-hint">Esc 中止</kbd>
+
     </div>`;
   $("#messages").appendChild(wrap);
   S.turn = wrap;
   scrollDown();
   return wrap;
+}
+
+// Keep only the latest three tool steps in the live timeline.
+function compactToolTimeline(turn) {
+  const tools = Array.from(turn.children).filter(node => node.classList.contains('tool'));
+  if (tools.length <= 3) return;
+  let archive = turn.querySelector(':scope > .tool-history');
+  if (!archive) {
+    archive = document.createElement('details');
+    archive.className = 'process-group tool-history';
+    archive.innerHTML = '<summary title="展开或收起较早的执行过程"><svg class="process-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg></summary><div class="process-body"></div>';
+    turn.insertBefore(archive, turn.firstChild);
+  }
+  const body = archive.querySelector('.process-body');
+  const cutoff = tools[tools.length - 3];
+  for (const node of Array.from(turn.children)) {
+    if (node === cutoff) break;
+    if (node.matches('.tool, .think, .md, .stall-hint')) body.appendChild(node);
+  }
+  const status = turn.querySelector('.turn-status');
+  if (status) archive.querySelector('summary').prepend(status);
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total % 3600 / 60);
+  const secs = total % 60;
+  return [hours ? hours + '小时' : '', minutes ? minutes + '分钟' : '', secs || !total ? secs + '秒' : ''].filter(Boolean).join(' ');
+}
+
+async function showTurnArtifacts(turn) {
+  turn.querySelector(':scope > .turn-artifacts')?.remove();
+  const cwd = S.state?.cwd || '';
+  let paths = replyArtifacts(turn.__texts?.at(-1) || '', cwd);
+  for (const file of turn.__artifactFiles || []) {
+    const p = artifactPath(file, cwd);
+    if (p && !paths.some(x => normPath(x) === normPath(p))) paths.push(p);
+  }
+  if (!paths.length) return;
+  // Resolve delivery paths after renames; never advertise vanished intermediate files.
+  const checked=await window.halo.artifactFiles(paths.slice(0,100)).catch(()=>null);
+  if (!turn.isConnected || cwd !== (S.state?.cwd || '') || !checked?.ok) return;
+  paths=checked.data;
+  if (!paths.length) return;
+  const box = document.createElement('div');
+  box.className = 'turn-artifacts';
+  box.setAttribute('aria-label','生成文件');
+  for (const file of paths) {
+    const button=document.createElement('button');
+    decorateArtifactCard(button, file, previewURL(file));
+    button.onclick=async()=>{
+      document.body.classList.remove('preview-collapsed','focus-mode');
+      $('#center').inert=false;
+      document.querySelector('.term-open')?.classList.remove('term-open');
+      $('#btnTerm')?.classList.remove('active');
+      const toggle=$('#btnPreviewToggle');toggle.setAttribute('aria-expanded','true');toggle.title='收起预览区';toggle.setAttribute('aria-label',toggle.title);
+      try { await setPreview(file,true); saveWorkspace(); } catch(error){toast(error.message,'err');}
+    };
+    if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(file)) {
+      const row=document.createElement('div');row.className='artifact-image-row';
+      const copy=document.createElement('button');copy.className='artifact-copy-button';copy.type='button';
+      copy.title='复制图片';copy.setAttribute('aria-label','复制图片');
+      copy.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg>';
+      copy.onclick=async()=>{
+        copy.disabled=true;
+        try {const r=await window.halo.copyImage(file);if(!r?.ok)throw Error(r?.error || '复制失败');toast('图片已复制','ok');}
+        catch(error){toast(error.message,'err');}
+        finally{copy.disabled=false;}
+      };
+      row.append(button,copy);box.appendChild(row);
+    } else box.appendChild(button);
+  }
+  turn.appendChild(box);
+  // The file card is the preview entry; avoid repeating the same image at full size.
+  for (const img of turn.querySelectorAll('.md img')) {
+    const file = artifactPath(img.getAttribute('src'), cwd);
+    if (!file || !paths.some(p => normPath(p) === normPath(file))) continue;
+    const paragraph = img.closest('p');
+    img.remove();
+    if (paragraph && !paragraph.textContent.trim() && !paragraph.querySelector('img, a, code')) paragraph.remove();
+  }
+}
+function collectArtifactResult(turn, toolName, text) {
+  if (!turn || !['image_generate','office_document'].includes(toolName)) return;
+  try {
+    const result=JSON.parse(text);
+    const files=toolName==='image_generate'?[result.file]:(result.files || []);
+    if(Array.isArray(files)) (turn.__artifactFiles ||= []).push(...files.filter(f=>typeof f==='string'));
+  } catch {}
 }
 
 function finalizeTurn() {
@@ -713,17 +807,27 @@ function finalizeTurn() {
   collapseThink();
   $$(".think[open]", turn).forEach((d) => { d.open = false; });
   $(".turn-status", turn)?.remove();
+  // Flatten the live archive before collecting the final collapsed process.
+  const archive = turn.querySelector(':scope > .tool-history');
+  if (archive) {
+    for (const node of Array.from(archive.querySelector('.process-body').children)) turn.insertBefore(node, archive);
+    archive.remove();
+  }
   // 只把最后一段正文视为最终回答；此前的阶段性说明与思考、工具一起收进过程。
   const finalAnswer = $$(".md", turn).at(-1) || null;
   const processNodes = $$(".think, .tool, .stall-hint, .md", turn).filter((node) => node !== finalAnswer);
   if (processNodes.length) {
-    const elapsed = Math.max(1, Math.round((Date.now() - (turn.__startedAt || Date.now())) / 1000));
+    const elapsed = turn.__history
+      ? (turn.__startedAt > 0 && turn.__endedAt > turn.__startedAt ? Math.max(1, Math.round((turn.__endedAt - turn.__startedAt) / 1000)) : null)
+      : Math.max(1, Math.round((Date.now() - (turn.__startedAt || Date.now())) / 1000));
+    const durationLabel = elapsed == null ? '执行过程' : (turn.__estimated ? '约用时 ' : '用时 ') +
+      formatDuration(elapsed);
     const errors = $$(".tool.error", turn).length;
     const group = document.createElement("details");
     group.className = "process-group";
     group.innerHTML = `
       <summary title="展开执行过程 · ${processNodes.length} 个步骤${errors ? ` · ${errors} 个失败` : ""}">
-        <span class="process-label">用时 ${elapsed}秒</span>
+        <span class="process-label">${durationLabel}</span>
         <svg class="process-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>
       </summary>
       <div class="process-body"></div>`;
@@ -733,6 +837,7 @@ function finalizeTurn() {
   }
   // 最终答案保持展开，点击用时可查看完整执行过程。
   turn.classList.add("complete");
+  showTurnArtifacts(turn);
   if (!$(".md, .think, .tool, .error-card, .stall-hint", turn)) turn.remove();
 }
 
@@ -756,9 +861,10 @@ function updateTurnStatus() {
   const elapsed = Math.max(0, Math.round((Date.now() - (turn.__startedAt || Date.now())) / 1000));
   const toolCount = turn.__toolCount || 0;
   $(".turn-status-meta", row).textContent =
-    `${elapsed < 2 ? "刚刚开始" : `已运行 ${elapsed}s`}${toolCount ? ` · ${toolCount} 个工具` : ""}`;
-  // 状态条始终跟随最新步骤，避免长思考/多工具后停留在回合顶部而离开视口。
-  if (turn.lastElementChild !== row) turn.appendChild(row);
+    `${elapsed < 2 ? "刚刚开始" : `已运行 ${formatDuration(elapsed)}`}${toolCount ? ` · ${toolCount} 个工具` : ""}`;
+  const summary = turn.querySelector(":scope > .tool-history > summary");
+  const parent = summary || turn;
+  if (row.parentElement !== parent || parent.firstElementChild !== row) parent.prepend(row);
   scrollDown();
 }
 function startStatusTicker() {
@@ -992,7 +1098,7 @@ function onToolStart(ev) {
       <span class="tool-name">${esc(toolLabel(toolName))}</span>
       <span class="tool-arg">${esc(trunc(toolDesc(toolName, args), TRUNC_TOOL_ARG))}</span>
       <span class="tool-elapsed"></span>
-      <span class="tool-chevron">⌄</span>
+      <svg class="tool-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>
     </div>
     <div class="tool-out" hidden></div>`;
   $(".tool-line", card).addEventListener("click", () => {
@@ -1000,6 +1106,7 @@ function onToolStart(ev) {
     if (out.dataset.has) out.hidden = !out.hidden;
   });
   turn.appendChild(card);
+  compactToolTimeline(turn);
   updateTurnStatus();
   S.toolCards.set(toolCallId, {
     card,
@@ -1030,13 +1137,14 @@ function onToolEnd(ev) {
   if (!rec) return;
   // elapsed + 状态点
   const secs = (Date.now() - rec.startedAt) / 1000;
-  rec.elapsedEl.textContent = secs >= 0.5 ? `${secs.toFixed(1)}s` : "";
+  rec.elapsedEl.textContent = secs >= 0.5 ? (secs < 60 ? `${secs.toFixed(1)}秒` : formatDuration(secs)) : "";
   rec.card.classList.remove("running");
   rec.card.classList.add(isError ? "error" : "done");
 
   let text = "";
   const contents = result?.content || [];
   for (const c of contents) if (c.type === "text") text += (text ? "\n" : "") + c.text;
+  if (!isError) collectArtifactResult(S.turn, rec.toolName, text);
   const diff = result?.details?.diff || result?.details?.patch;
   if (diff && !text) text = diff;
 
@@ -1062,7 +1170,7 @@ function onToolEnd(ev) {
   } else {
     out.textContent = text ? trunc(text, 4000) : (isError ? "（无输出）" : "（完成）");
   }
-  if (isError || (AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim())) out.hidden = false;
+  if (!isError && AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim()) out.hidden = false;
   scrollDown();
 }
 
@@ -1107,6 +1215,7 @@ function closeMentions() {
 }
 function updateMentions() {
   const input = $("#input"), before = input.value.slice(0, input.selectionStart);
+  if (/^\/[^\s]*$/.test(before) && input.selectionStart === input.selectionEnd) return updateCommandSuggestions(before.slice(1));
   const match = before.match(/(?:^|\s)@([^@\n]*)$/);
   if (!match || input.selectionStart !== input.selectionEnd) return closeMentions();
   mentionStart = before.length - match[1].length - 1;
@@ -1136,6 +1245,32 @@ function updateMentions() {
   input.setAttribute("aria-controls", "mentionOptions"); input.setAttribute("aria-expanded", "true");
   highlightMention();
 }
+function updateCommandSuggestions(query) {
+  const builtins = [['new','新建会话'],['model','选择模型'],['thinking','设置思考强度'],['compact','压缩当前上下文'],['help','查看帮助']].map(([name,description]) => ({name,description}));
+  const commands = [...builtins, ...(S.resources.commands || []), ...(S.resources.prompts || []), ...(S.resources.skills || []).map(s => ({...s,name:'skill:' + s.name}))];
+  const unique = new Map();
+  for (const c of commands) if (c.name && !unique.has(c.name)) unique.set(c.name,c);
+  mentionItems = [...unique.values()].filter(c => c.name.toLowerCase().includes(query.toLowerCase())).map(c => ({...c,command:true}));
+  mentionIndex = 0;
+  $('.mention-heading').textContent = '系统与插件指令';
+  const options = $('#mentionOptions'); options.replaceChildren();
+  for (const [i,c] of mentionItems.entries()) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'mention-option'; button.id = 'mention-option-' + i;
+    button.setAttribute('role','option');
+    button.innerHTML = '<span><b></b><small></small></span>';
+    $('b',button).textContent = '/' + c.name;
+    $('small',button).textContent = c.description || '指令';
+    button.addEventListener('pointerdown',e => e.preventDefault());
+    button.addEventListener('click',() => insertMention(i));
+    options.append(button);
+  }
+  if (!mentionItems.length) { closeMentions(); return; }
+  $('#mentionMenu').hidden = false;
+  $('#input').setAttribute('aria-controls','mentionOptions');
+  $('#input').setAttribute('aria-expanded','true');
+  highlightMention();
+}
 function highlightMention() {
   $$(".mention-option").forEach((b, i) => { b.classList.toggle("active", i === mentionIndex); b.setAttribute("aria-selected", String(i === mentionIndex)); });
   const option = $("#mention-option-" + mentionIndex);
@@ -1144,6 +1279,10 @@ function highlightMention() {
 function insertMention(index) {
   const item = mentionItems[index]; if (!item) return;
   const input = $("#input");
+  if (item.command) {
+    input.setRangeText('/' + item.name + ' ', 0, input.selectionStart, 'end');
+    closeMentions(); autoGrow(); input.focus(); return;
+  }
   const path = item.path.replace(/\\/g, "/");
   input.setRangeText('@"' + path + '" ', mentionStart, input.selectionStart, "end");
   closeMentions(); autoGrow(); input.focus();
@@ -1211,8 +1350,7 @@ async function send() {
 }
 
 function renderUserMsg(text, images) {
-  // Older server chats persisted the internal routing instruction inside user text.
-  text = String(text || "").replace(/^\[当前会话托管服务器:[^\n]*涉及该服务器的命令和文件操作必须使用 ssh_exec，不要在本地 bash\/read\/write 执行远程操作。\]\s*/, "");
+  text = userMessageText(text);
   // 对话开始后清掉遗留的系统提示，保持对话流只包含当前对话内容
   $$("#messages > .notice").forEach((n) => n.remove());
   const wrap = document.createElement("div");
@@ -1254,10 +1392,19 @@ async function restoreHistory(viewOverride) {
   $("#messages").classList.add("restoring");
   const toolCards = new Map(); // toolCallId -> 卡片引用，用于回填 toolResult
   /* 逐条恢复（分块渲染：每帧最多 CHUNK 条，大会话不阻塞 UI） */
+  let turnStart = null, savedTiming = null;
   const restoreOne = (m) => {
+    const timestamp = m.timestamp ? new Date(m.timestamp).getTime() : null;
+    if (m.role !== 'user' && S.turn && timestamp) S.turn.__endedAt = savedTiming?.end || timestamp;
     if (m.role === "user") {
-      const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
-      if (text.trim()) { finalizeTurn(); renderUserMsg(text, []); }
+      const blocks = Array.isArray(m.content) ? m.content : [{type:'text',text:m.content || ''}];
+      const text = blocks.filter(c => c.type === 'text').map(c => c.text).join('\n');
+      const images = blocks.filter(c => c.type === 'image' && c.data && c.mimeType).map(c => ({mediaType:c.mimeType,data:c.data,name:'附件'}));
+      if (text.trim() || images.length) {
+        finalizeTurn(); renderUserMsg(text, images);
+        savedTiming = view.turnTimings?.[String(m.timestamp)] || null;
+        turnStart = savedTiming?.start || timestamp;
+      }
       return;
     }
     if (m.role === "toolResult") {
@@ -1265,20 +1412,25 @@ async function restoreHistory(viewOverride) {
       const rec = toolCards.get(m.toolCallId);
       if (rec) {
         const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+        if (!m.isError) collectArtifactResult(S.turn, rec.toolName, text);
         rec.out.dataset.has = "1";
         rec.out.textContent = text ? trunc(text, 4000) : (m.isError ? "（无输出）" : "（完成）");
-        if (m.isError || (AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim())) rec.out.hidden = false;
+        if (!m.isError && AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim()) rec.out.hidden = false;
         rec.card.classList.remove("running");
         rec.card.classList.add(m.isError ? "error" : "done");
         if (m.timestamp && rec.startedAt) {
           const secs = (new Date(m.timestamp) - rec.startedAt) / 1000;
-          if (secs >= 0.5) rec.elapsedEl.textContent = `${secs.toFixed(1)}s`;
+          if (secs >= 0.5) rec.elapsedEl.textContent = (secs < 60 ? `${secs.toFixed(1)}秒` : formatDuration(secs));
         }
       }
       return;
     }
     if (m.role !== "assistant") return;
     const turn = ensureTurn();
+    turn.__history = true;
+    turn.__startedAt = turnStart;
+    turn.__endedAt = savedTiming?.end || timestamp;
+    turn.__estimated = !savedTiming;
     for (const c of m.content || []) {
       if (c.type === "thinking") {
         if (!c.thinking || !c.thinking.trim()) continue;
@@ -1303,7 +1455,7 @@ async function restoreHistory(viewOverride) {
             <span class="tool-name">${esc(toolLabel(c.name))}</span>
             <span class="tool-arg">${esc(trunc(toolDesc(c.name, c.arguments), TRUNC_TOOL_ARG))}</span>
             <span class="tool-elapsed"></span>
-            <span class="tool-chevron">⌄</span>
+            <svg class="tool-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>
           </div>
           <div class="tool-out" hidden></div>`;
         const out = $(".tool-out", card);
@@ -1350,8 +1502,11 @@ async function restoreHistory(viewOverride) {
   }
   if (live) {
     const turn = ensureTurn();
-    turn.__startedAt = view.startedAt || Date.now();
+    turn.__history = false;
+    turn.__estimated = false;
+    turn.__startedAt = view.startedAt || turnStart || Date.now();
     turn.__toolCount = $$(".tool", turn).length;
+    compactToolTimeline(turn);
     S.streamingTool = Object.values(view.activeTools || {}).join("、") || null;
     setStreamingUI(true);
     updateTurnStatus();
@@ -1640,16 +1795,44 @@ function renderModelList(q) {
 /* ============================================================
    UI wiring
    ============================================================ */
+async function openFileExternally(file) {
+  if (!file) return toast("请先选择文件", "err");
+  try {
+    const result = await window.halo.openPath(file);
+    if (!result?.ok) throw new Error(result?.error || "无法打开文件");
+  } catch (error) { toast("外部打开失败：" + (error?.message || error), "err"); }
+}
+
 function wireUI() {
+  document.querySelectorAll('[data-starter]').forEach(button => {
+    button.addEventListener('click', () => {
+      const input = $("#input");
+      input.value = input.value.trim() ? input.value + '\n' + button.dataset.starter : button.dataset.starter;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  });
+  $("#btnOpenFile").addEventListener("click", () => openFileExternally(S.previewFile));
   // window controls
   $("#winMin").addEventListener("click", () => window.halo.minimize());
   $("#winMax").addEventListener("click", () => window.halo.maximize());
   $("#winClose").addEventListener("click", () => window.halo.close());
-  $("#themeToggle").addEventListener("click", () => {
+  let themeTransition = null;
+  let targetTheme = document.documentElement.dataset.theme;
+  $('#themeToggle').addEventListener('click', () => {
     const root = document.documentElement;
-    root.classList.add("theme-x");
-    applyTheme(root.dataset.theme === "light" ? "dark" : "light");
-    setTimeout(() => root.classList.remove("theme-x"), 320);
+    targetTheme = (themeTransition ? targetTheme : root.dataset.theme) === 'light' ? 'dark' : 'light';
+    const next = targetTheme;
+    themeTransition?.skipTransition();
+    const update = () => applyTheme(next);
+    if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) { update(); return; }
+    root.classList.add('theme-x');
+    const transition = document.startViewTransition(update);
+    themeTransition = transition;
+    transition.finished.catch(() => {}).finally(() => {
+      if (themeTransition === transition) { themeTransition = null; root.classList.remove('theme-x'); }
+    });
   });
 
   // sidebar tabs
@@ -1729,6 +1912,16 @@ function wireUI() {
   $("#projAdd").addEventListener("click", pickProject);
 
   // chat header
+  $("#btnPreviewToggle").addEventListener("click", () => {
+    document.body.classList.remove("focus-mode");
+    const collapsed = document.body.classList.toggle("preview-collapsed");
+    const button = $("#btnPreviewToggle");
+    button.title = collapsed ? "展开预览区" : "收起预览区";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-expanded", String(!collapsed));
+    $("#center").inert = collapsed;
+    $("#btnFocus").title = "专注模式 · 对话全屏（隐藏侧栏与工作区）";
+  });
   $("#btnFocus").addEventListener("click", () => {
     const on = document.body.classList.toggle("focus-mode");
     $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
@@ -1800,6 +1993,52 @@ function wireUI() {
     e.preventDefault();
     for (const f of files) addImageFile(f);
   });
+
+  // Project folders from the OS: resolve native File paths in the isolated preload.
+  const projectDropZone = $('[data-pane="chat"]');
+  let projectDropBusy = false;
+  let projectDragDepth = 0;
+  const clearProjectDrag = () => {
+    projectDragDepth = 0;
+    projectDropZone.classList.remove('project-drop-active');
+  };
+  const hasFiles = e => Array.from(e.dataTransfer?.types || []).includes('Files');
+  projectDropZone.addEventListener('dragenter', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    projectDragDepth++;
+    projectDropZone.classList.add('project-drop-active');
+  });
+  projectDropZone.addEventListener('dragover', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = projectDropBusy ? 'none' : 'link';
+  });
+  projectDropZone.addEventListener('dragleave', () => {
+    if (--projectDragDepth <= 0) clearProjectDrag();
+  });
+  projectDropZone.addEventListener('drop', async e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    clearProjectDrag();
+    if (projectDropBusy) return toast('正在添加项目，请稍候', 'err');
+    // Read DataTransfer before the first await; browsers clear it after dispatch.
+    const dirs = [...new Set(Array.from(e.dataTransfer.files, file => window.halo.droppedFilePath(file)).filter(Boolean))];
+    if (!dirs.length) return toast('请从文件管理器拖入项目文件夹', 'err');
+    projectDropBusy = true;
+    try {
+      for (const dir of dirs) await switchProjectViaAdd(dir);
+    } catch (error) {
+      toast('添加失败：' + error.message, 'err');
+    } finally {
+      projectDropBusy = false;
+      $('#projList').style.opacity = '';
+    }
+  });
+  document.addEventListener('dragend', clearProjectDrag);
+  document.addEventListener('drop', clearProjectDrag);
+  window.addEventListener('blur', clearProjectDrag);
 
   // drop images
   document.addEventListener("dragover", (e) => e.preventDefault());
@@ -1973,6 +2212,15 @@ function renderTree() {
         ? `<span class="arrow">▶</span><span class="fic">${FOLDER_IC}</span><span class="fname">${esc(n.name)}</span><button class="trow-del" title="删除">${TRASH_IC}</button>`
         : `<span class="arrow"></span><span class="fic">${fileIconFor(n.name)}</span><span class="fname">${esc(n.name)}</span><span class="fsize">${fmtSize(n.size || 0)}</span><button class="trow-del" title="删除">${TRASH_IC}</button>`;
       row.title = n.path;
+      if (!n.dir) {
+        const open = document.createElement("button");
+        open.className = "trow-external";
+        open.title = "使用默认应用打开";
+        open.setAttribute("aria-label", "使用默认应用打开 " + n.name);
+        open.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>';
+        open.addEventListener("click", e => { e.stopPropagation(); openFileExternally(n.path); });
+        row.insertBefore(open, row.querySelector('.trow-del'));
+      }
       row.addEventListener("click", () => {
         S.selectedFile = n.path;
         if (n.dir) {
@@ -2017,7 +2265,7 @@ function renderTree() {
         if (r?.error) { del.disabled = false; toast(r.error, "err"); return; }
         toast("已删除 ✓", "ok");
         const d = normSlashes(n.path);
-        if (S.previewFile && normSlashes(S.previewFile).startsWith(d)) { S.previewFile = null; $("#pvName").textContent = "未选择文件"; $("#pvBody").innerHTML = PV_EMPTY; }
+        if (S.previewFile && normSlashes(S.previewFile).startsWith(d)) { S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvName").textContent = "未选择文件"; $("#pvBody").innerHTML = PV_EMPTY; }
         if (S.selectedFile && normSlashes(S.selectedFile).startsWith(d)) S.selectedFile = null;
         if (S.creating?.parent && normSlashes(S.creating.parent).startsWith(d)) S.creating = null;
         await loadTree(true);
@@ -2076,15 +2324,46 @@ async function setPreview(p, force) {
   if (!force && S.previewFile === p) return;
   const request = ++portPreviewRequest;
   previewService = null; selectedPortKey = null; updatePortSelection();
-  S.previewFile = p;
+  S.previewFile = p; $("#btnOpenFile").hidden = !p;
   const ext = p.split(".").pop().toLowerCase();
   $("#pvName").textContent = p.split(/[\\\\/]/).pop();
   const body = $("#pvBody");
   const isHtml = ext === "html" || ext === "htm";
   const modeCtl = $("#pvMode");
   if (modeCtl) modeCtl.hidden = !isHtml;
-  if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) {
-    body.innerHTML = `<img class="pv-img" src="${previewURL(p)}" />`;
+  if (["pdf", "docx", "xlsx", "pptx", "doc", "xls", "ppt"].includes(ext)) {
+    body.innerHTML = '<div class="fv-note">正在加载文档…</div>';
+    let page = 1, pages = 1;
+    const load = async () => {
+      const r = await window.halo.documentPreview(p, page);
+      if (request !== portPreviewRequest) return;
+      if (!r?.ok) { body.innerHTML = '<div class="fv-note">' + esc(r?.error || '预览失败') + '</div>'; return; }
+      if (ext === 'pdf') {
+        pages = r.data.pages;
+        body.innerHTML = '<div class="document-preview"><div class="document-canvas"><img alt="PDF 页面" /></div><nav aria-label="文档翻页"><span class="document-kind">PDF</span><div class="document-pages"><button id="docPrev" title="上一页" aria-label="上一页">‹</button><span>' + page + ' / ' + pages + '</span><button id="docNext" title="下一页" aria-label="下一页">›</button></div><span class="document-fit">适合宽度</span></nav></div>';
+        body.querySelector('img').src = r.data.image;
+        body.querySelector('#docPrev').disabled = page <= 1;
+        body.querySelector('#docNext').disabled = page >= pages;
+        for (const [id, delta] of [['docPrev', -1], ['docNext', 1]]) body.querySelector('#' + id).onclick = () => { page += delta; body.querySelectorAll('button').forEach(b => b.disabled = true); load(); };
+      } else {
+        const frame = document.createElement('iframe');
+        frame.className = 'office-frame'; frame.sandbox = 'allow-scripts allow-same-origin';
+        frame.src = 'document-viewer.html';
+        const ready = event => {
+          if (event.source !== frame.contentWindow || event.data?.type !== 'office-ready') return;
+          window.removeEventListener('message', ready);
+          if (request === portPreviewRequest) frame.contentWindow.postMessage({ type: 'office-document', ...r.data }, '*');
+        };
+        window.addEventListener('message', ready);
+        frame.addEventListener('load', () => setTimeout(() => window.removeEventListener('message', ready), 10000), { once: true });
+        body.replaceChildren(frame);
+      }
+    };
+    await load();
+  } else if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) {
+    const img=document.createElement('img');img.className='pv-img';img.alt='图片预览';
+    img.onerror=()=>{if(request===portPreviewRequest)body.innerHTML='<div class="fv-note">图片已移动、删除或无法读取，请从文件列表重新选择。</div>';};
+    img.src=previewURL(p);body.replaceChildren(img);
   } else if (["md", "markdown"].includes(ext)) {
     body.innerHTML = `<div class="md-view">加载中…</div>`;
     const r = await window.halo.readFile(p);
@@ -2289,7 +2568,7 @@ function renderAttachments() {
 async function applyProjectReset() {
   portPreviewRequest++; previewService = null; selectedPortKey = null; updatePortSelection();
   clearChat();
-  S.previewFile = null;
+  S.previewFile = null; $("#btnOpenFile").hidden = true;
   $("#pvBody").innerHTML = PV_EMPTY;
   $("#pvName").textContent = "未选择文件";
   S.expanded.clear();
@@ -2297,7 +2576,7 @@ async function applyProjectReset() {
 }
 
 async function pickProject() {
-  if (S.streaming) return toast("任务进行中，无法切换项目", "err");
+  
   const prev = S.state?.cwd || ""; // 必须在对话框之前保存：主进程选完目录会立即切换并推送状态
   const r = await window.halo.pickProject(prev);
   const dir = r?.data;
@@ -2324,6 +2603,52 @@ async function switchProjectViaAdd(dir) {
 }
 
 /* ---- 项目：一个项目 = 一个文件夹，各自记住上一个对话 ---- */
+function addConversationFold(toggle, children, collapsed, key, name) {
+  const fold = document.createElement('button');
+  fold.className = 'conversation-fold';
+  fold.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>';
+  let animation = null;
+  const sync = () => {
+    const expanded = !collapsed.has(key);
+    fold.setAttribute('aria-expanded', String(expanded));
+    toggle.setAttribute('aria-expanded', String(expanded));
+    fold.setAttribute('aria-label', (expanded ? '收起' : '展开') + name + '的会话');
+    fold.title = expanded ? '收起会话' : '展开会话';
+  };
+  sync();
+  const toggleExpanded = e => {
+    e.stopPropagation();
+    const expand = collapsed.has(key);
+    const fromHeight = children.getBoundingClientRect().height;
+    const style = getComputedStyle(children);
+    const fromOpacity = children.hidden ? 0 : Number(style.opacity);
+    const fromMargin = children.hidden ? '0px' : style.marginTop;
+    animation?.cancel();
+    if (expand) collapsed.delete(key); else collapsed.add(key);
+    sync();
+    children.hidden = false;
+    children.inert = !expand;
+    const finish = () => {
+      children.hidden = !expand;
+      children.style.overflow = '';
+      animation = null;
+    };
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { finish(); return; }
+    const targetHeight = expand ? children.scrollHeight : 0;
+    const targetMargin = expand ? getComputedStyle(children).marginTop : '0px';
+    children.style.overflow = 'hidden';
+    animation = children.animate([
+      { height: fromHeight + 'px', opacity: fromOpacity, marginTop: fromMargin },
+      { height: targetHeight + 'px', opacity: expand ? 1 : 0, marginTop: targetMargin },
+    ], { duration: 200, easing: 'cubic-bezier(.2,.7,.2,1)' });
+    animation.onfinish = finish;
+  };
+  fold.addEventListener('click', toggleExpanded);
+  toggle.addEventListener('click', toggleExpanded);
+  toggle.before(fold);
+  return sync;
+}
+
 const collapsedProjects = new Set();
 let projectListRequest = 0;
 async function loadProjects() {
@@ -2332,6 +2657,7 @@ async function loadProjects() {
   if (!box) return;
   const r = await window.halo.projectsList();
   if (request !== projectListRequest) return;
+  if (!r?.ok) { toast(r?.error || "项目列表读取失败", "err"); return; }
   const list = r?.data || [];
   box.replaceChildren();
   if (!list.length) { box.innerHTML = '<div class="res-empty">还没有项目，点上方“＋ 添加”</div>'; return; }
@@ -2342,18 +2668,12 @@ async function loadProjects() {
     const toggle = $(".project-toggle", group), children = $(".project-conversations", group);
     toggle.title = p.cwd;
     children.hidden = collapsedProjects.has(p.cwd);
-    toggle.setAttribute("aria-expanded", String(!children.hidden));
-    toggle.addEventListener("click", async () => {
-      if (!p.active) { if (S.streaming) return toast("任务进行中，无法切换项目", "err"); collapsedProjects.delete(p.cwd); await switchProject(p.cwd); return; }
-      children.hidden = !children.hidden;
-      if (children.hidden) collapsedProjects.add(p.cwd); else collapsedProjects.delete(p.cwd);
-      toggle.setAttribute("aria-expanded", String(!children.hidden));
-    });
+    addConversationFold(toggle, children, collapsedProjects, p.cwd, p.name);
     $(".project-remove", group).disabled = p.active;
     if (p.active) $(".project-remove", group).title = "请先切换到其他项目再移除";
     $(".project-remove", group).addEventListener("click", async () => { closeServerMenus(); const result = await window.halo.projectRemove(p.cwd); if (!result?.ok) toast(result?.error || "移除失败", "err"); await loadProjects(); });
     $(".project-new", group).addEventListener("click", async () => {
-      if (!p.active) { if (S.streaming) return toast("任务进行中，无法切换项目", "err"); await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
+      if (!p.active) { await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
       collapsedProjects.delete(p.cwd); await newSession(); await loadProjects(); $("#input").focus();
     });
     if (!p.sessions?.length) children.innerHTML = '<div class="server-conversation-empty">暂无对话，点击右上角新建</div>';
@@ -2364,7 +2684,7 @@ async function loadProjects() {
       if (normPath(session.file) === normPath(S.state?.sessionFile)) button.classList.add("active");
       if (session.running) { const dot = document.createElement("i"); dot.className = "server-running-dot"; button.prepend(dot); }
       button.addEventListener("click", async () => {
-        if (!p.active) { if (S.streaming) return toast("任务进行中，无法切换项目", "err"); await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
+        if (!p.active) { await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
         await openSession(session.file); loadProjects();
       });
       const remove = document.createElement("button"); remove.className = "project-conversation-remove server-conversation-delete"; remove.title = "删除会话"; remove.setAttribute("aria-label", "删除会话 " + (session.name || "新会话"));
@@ -2376,19 +2696,24 @@ async function loadProjects() {
   }
 }
 async function switchProject(cwd) {
-  if (S.streaming) return toast("任务进行中，无法切换项目", "err");
-  toast(`正在切换项目 · ${String(cwd).split(/[\\/]/).pop()}…`, "");
-  const box = $("#projList");
-  if (box) box.style.opacity = "0.5";
-  const r = await window.halo.projectSwitch(cwd);
-  if (box) box.style.opacity = "";
-  if (!r?.ok) return toast(`切换失败：${r?.error || ""}`, "err");
-  applyProjectReset();
-  await Promise.all([loadTree(true), loadSessions(), loadResources()]);
-  loadProjects();
-  await restoreHistory();
-  saveWorkspace();
-  toast(`已切换项目 · ${String(cwd).split(/[\\/]/).pop()}`, "ok");
+  const seq = ++S.sessionSwitchSeq;
+  S.switchingSession = true;
+  clearChat();
+  try {
+    const r = await window.halo.projectSwitch(cwd);
+    if (seq !== S.sessionSwitchSeq) return;
+    if (!r?.ok) throw new Error(r?.error || "切换失败");
+    applyProjectReset();
+    if (r.data) applyState(r.data);
+    await restoreHistory();
+    if (seq !== S.sessionSwitchSeq) return;
+    await Promise.all([loadTree(true), loadSessions(), loadResources(), loadProjects()]);
+    saveWorkspace();
+  } catch (e) {
+    if (seq === S.sessionSwitchSeq) toast(e?.message || "切换失败", "err");
+  } finally {
+    if (seq === S.sessionSwitchSeq) finishSessionSwitch();
+  }
 }
 
 /* ============================================================
@@ -2821,15 +3146,14 @@ function syncPkgTab() {
   if (!inst) loadMarket(1);
   else renderInstalled(); // 用当前搜索词过滤已装列表
 }
+let selectedModelProvider = "";
 async function loadDefaultModels() {
   const list = $("#defModelList");
   if (!list) return;
   list.innerHTML = `<div class="pkg-empty">读取模型列表…</div>`;
   const [mr, dr] = await Promise.all([window.halo.listModels(), window.halo.defaultModelGet()]);
   const models = (mr?.data || []).filter((m) => !m.error);
-  const cur = dr?.data || "";
-  const nameEl = $("#defModelName");
-  if (nameEl) nameEl.textContent = cur ? cur.split("/").pop() : "跟随上次使用";
+  let cur = dr?.data || "";
   if (!models.length) {
     list.innerHTML = `<div class="pkg-empty">尚未发现可用模型，请先通过 pi 登录</div>`;
     return;
@@ -2839,16 +3163,21 @@ async function loadDefaultModels() {
     if (!groups.has(m.provider)) groups.set(m.provider, []);
     groups.get(m.provider).push(m);
   }
-  list.innerHTML = "";
-  for (const [prov, ms] of groups) {
-    const g = document.createElement("div");
-    g.className = "model-group-label";
-    g.textContent = prov;
-    list.appendChild(g);
+
+  list.innerHTML='<nav class="model-providers" aria-label="模型供应商"></nav><div class="provider-models"></div>';
+  const nav=list.querySelector('.model-providers'),panel=list.querySelector('.provider-models');
+  if(!groups.has(selectedModelProvider)) selectedModelProvider=groups.has(cur.split('/')[0])?cur.split('/')[0]:groups.keys().next().value;
+  const buttons=new Map();
+  const renderProvider=prov=>{
+    selectedModelProvider=prov;
+    for(const [id,b] of buttons){b.classList.toggle('on',id===prov);b.setAttribute('aria-pressed',String(id===prov));}
+    panel.replaceChildren();panel.scrollTop=0;
+    const ms=groups.get(prov);
     for (const m of ms) {
       const key = m.provider + "/" + m.id;
       const isCur = cur === key;
-      const row = document.createElement("div");
+      const row = document.createElement("button");
+      row.type="button";
       row.className = "agent-row" + (isCur ? " on" : "");
       row.dataset.key = key;
       row.innerHTML = `
@@ -2860,14 +3189,21 @@ async function loadDefaultModels() {
       row.addEventListener("click", async () => {
         const r = await window.halo.defaultModelSet(key);
         if (r?.ok) {
+          cur=key;
           list.querySelectorAll(".agent-row").forEach((x) => x.classList.toggle("on", x === row));
-          if (nameEl) nameEl.textContent = m.id;
           toast(`默认模型已设置：${m.name}`, "ok");
         } else toast(`设置失败：${r?.error || ""}`, "err");
       });
-      list.appendChild(row);
+      panel.appendChild(row);
     }
+  };
+  for(const [prov,ms] of groups){
+    const b=document.createElement('button');b.type='button';b.className='model-provider';b.title=prov;
+    const name=document.createElement('span');name.textContent=prov;
+    const count=document.createElement('small');count.textContent=ms.length;
+    b.append(name,count);b.onclick=()=>renderProvider(prov);buttons.set(prov,b);nav.appendChild(b);
   }
+  renderProvider(selectedModelProvider);
 }
 
 /* ---- 用量统计 ---- */
@@ -3257,3 +3593,25 @@ function esc(s) {
 }
 
 /* markdown 渲染（rich/mdRender/hlFile/langOf 等）已移至 js/markdown.js（经典脚本，全局函数） */
+
+function selectThemeCategory(id, focus = false) {
+  $$('[data-theme-tab]').forEach(button => {
+    const active = button.dataset.themeTab === id;
+    button.setAttribute('aria-selected', String(active));
+    button.tabIndex = active ? 0 : -1;
+    if (active && focus) button.focus();
+  });
+  $$('[data-theme-panel]').forEach(panel => { panel.hidden = panel.dataset.themePanel !== id; });
+}
+$$('[data-theme-tab]').forEach((button, index, tabs) => {
+  button.addEventListener('click', () => selectThemeCategory(button.dataset.themeTab));
+  button.addEventListener('keydown', event => {
+    const offsets = {ArrowRight: 1, ArrowLeft: -1};
+    if (!(event.key in offsets) && event.key !== 'Home' && event.key !== 'End') return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + offsets[event.key] + tabs.length) % tabs.length;
+    selectThemeCategory(tabs[next].dataset.themeTab, true);
+  });
+});
+const selectedThemeCard = $('[data-theme-choice="' + (document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme) + '"]');
+selectThemeCategory(selectedThemeCard?.closest('[data-theme-panel]')?.dataset.themePanel || 'nature');

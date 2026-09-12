@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {readGeneratedImage,imageTool} from '../src/main/image-generation.mjs';
+const png=Buffer.from([137,80,78,71,13,10,26,10,0]);
+const stream=(events)=>new Response(events.map(e=>'data: '+JSON.stringify(e)+'\n\n').join(''));
+const done={type:'response.completed'};
+const output={type:'response.output_item.done',item:{type:'image_generation_call',result:png.toString('base64')}};
+assert.deepEqual((await readGeneratedImage(stream([output,done]))).buffer,png);
+await assert.rejects(readGeneratedImage(stream([output])),/完整图片/);
+await assert.rejects(readGeneratedImage(stream([{type:'response.failed'}])),/未完成/);
+await assert.rejects(readGeneratedImage(new Response('',{status:401})),/重新登录/);
+await assert.rejects(readGeneratedImage(stream([{...output,item:{...output.item,result:'YmFk'}},done])),/不是/);
+const controller=new AbortController();controller.abort();
+await assert.rejects(imageTool('.',async()=>({})).execute('',{prompt:'x'},controller.signal));
+await assert.rejects(imageTool('.',async()=>({})).execute('',{prompt:'x'}),/登录/);
+await assert.rejects(imageTool('.',async()=>({})).execute('',{prompt:''}),/提示词/);
+console.log('PASS image result, incomplete, error, login, invalid bytes, cancellation and validation');

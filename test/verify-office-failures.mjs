@@ -1,0 +1,10 @@
+import fs from 'node:fs';import path from 'node:path';import os from 'node:os';import assert from 'node:assert/strict';import {runOffice} from '../src/main/office/tools.mjs';
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'halo-office-failure-'));
+const script=path.join(dir,'wait.cjs');fs.writeFileSync(script,'module.exports=()=>new Promise(r=>setTimeout(r,30000));');
+const a=new AbortController(),b=new AbortController(),c=new AbortController();
+const x=runOffice({action:'run',script},dir,a.signal),y=runOffice({action:'run',script},dir,b.signal);
+const queued=runOffice({action:'status'},dir,c.signal);c.abort();await assert.rejects(queued,/取消/);a.abort();b.abort();await Promise.all([assert.rejects(x,/取消/),assert.rejects(y,/取消/)]);
+assert.ok((await runOffice({action:'status'},dir)).formats.length===4);
+fs.writeFileSync(path.join(dir,'bad.docx'),'not a document');await assert.rejects(runOffice({action:'inspect',file:path.join(dir,'bad.docx')},dir));
+const controller=new AbortController();controller.abort();await assert.rejects(runOffice({action:'convert_pdf',file:'bad.docx'},dir,controller.signal),/取消/);
+console.log('PASS queued/active cancellation, slot recovery, corrupt document, cancelled conversion');

@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 const listen = (channel) => (cb) => {
   const wrapped = (_e, payload) => cb(payload);
@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld("halo", {
   agentList: () => ipcRenderer.invoke("halo:agent-list"),
   projectsList: () => ipcRenderer.invoke("halo:projects-list"),
   projectSwitch: (cwd) => ipcRenderer.invoke("halo:project-switch", { cwd }),
+  droppedFilePath: (file) => webUtils.getPathForFile(file),
   projectAdd: (dir) => ipcRenderer.invoke("halo:project-add", { dir }),
   projectRemove: (cwd) => ipcRenderer.invoke("halo:project-remove", { cwd }),
   agentDefaultGet: () => ipcRenderer.invoke("halo:agent-default-get"),
@@ -79,6 +80,9 @@ contextBridge.exposeInMainWorld("halo", {
 
   // workspace / preview
   readTree: () => ipcRenderer.invoke("halo:read-tree"),
+  documentPreview: (file, page) => ipcRenderer.invoke("halo:document-preview", { file, page }),
+  copyImage: (file) => ipcRenderer.invoke("halo:copy-image", file),
+  artifactFiles: (files) => ipcRenderer.invoke("halo:artifact-files", files),
   readFile: (p) => ipcRenderer.invoke("halo:read-file", p),
   openPath: (p) => ipcRenderer.invoke("halo:open-path", p),
   openExternal: (url) => ipcRenderer.invoke("halo:open-external", url),
