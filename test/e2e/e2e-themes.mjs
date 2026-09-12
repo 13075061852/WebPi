@@ -122,7 +122,7 @@ try {
  for(const category of ['nature','water','city','cosmos','oriental']){
   await evalJS(`document.querySelector('[data-theme-tab=${category}]').click()`);
   await sleep(150);
-  await screenshot(`tmp/theme-${category}.png`);
+  await screenshot(`test/shot-theme-${category}.png`);
  }
  await evalJS('location.reload()');await sleep(1500);
  if(await evalJS('document.documentElement.dataset.wallpaper')!=='scene-moon')throw Error('Theme persistence failed');

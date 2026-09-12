@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SKIP_DIRS = new Set(["node_modules", ".git", "vendor"]);
+const SKIP_DIRS = new Set(["node_modules", ".git", "vendor", "dist", "out", "tmp", "results"]);
 const EXTS = new Set([".js", ".mjs", ".cjs"]);
 
 const files = [];

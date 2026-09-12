@@ -4,6 +4,11 @@ node_modules/
 # build output
 dist/
 out/
+tmp/
+
+# generated test screenshots and reports (not fixtures)
+/test/*.png
+/test/results/
 
 # logs
 *.log

@@ -68,7 +68,18 @@ npm run test:workspace # 真实链路：agent 创建页面 → 自动预览 + �
 
 - `test/e2e/`：维护中的端到端/单元验证套件（npm scripts 入口）
 - `test/tools/`：历史探针与一次性调试脚本（`verify-*` / `shot-*` / `dbg-*` 等）
-- 截图输出到 `test/shot-*.png`；CI（GitHub Actions）自动跑 check + lint + 注入脚本验证
+- 截图输出到 `test/shot-*.png`，测试日志输出到 `test/results/`；这些可再生成的文件不纳入版本管理。CI（GitHub Actions）自动跑 check + lint + 注入脚本验证。
+
+## 项目目录
+
+- `src/`：主进程、预加载桥接与界面代码。
+- `assets/`：运行所需的图标、主题、技能与文档示例。
+- `scripts/`：启动、构建、检查工具。
+- `test/`：回归测试与调试工具，保留测试代码，不提交运行截图和日志。
+- `docs/reports/`：历史审查与验证记录，见 [文档索引](docs/README.md)。
+- `node_modules/`：本地安装的依赖；`dist/` 为打包输出，`tmp/` 为临时工作目录，均不纳入版本管理。
+
+旧打包输出可以在下次构建前清理。打包验证依赖 `dist/win-unpacked/`，请先运行 `npm run dist:dir` 再执行对应验证脚本。
 
 ## 打包
 
