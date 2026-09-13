@@ -10,6 +10,11 @@ try {
  await bridge.start(dir);
  await bridge.newSession('a');
  const sessionA=bridge.session;
+ assert.equal(PiBridge.normPath(sessionA.sessionManager.getCwd()),PiBridge.normPath(bridge.serverWorkspace('a')));
+ assert.ok(sessionA.getActiveToolNames().includes('preview_inspect'));
+ const scope=await sessionA.extensionRunner.emitBeforeAgentStart('scope',undefined,'Current working directory: C:/unrelated/Link',{});
+ assert.doesNotMatch(scope.systemPrompt,/C:\/unrelated\/Link/);
+ assert.match(scope.systemPrompt,/远程工作目录尚未确认/);
  const hook=await sessionA.extensionRunner.emitBeforeAgentStart('find project',undefined,'base',{});
  assert.match(hook.systemPrompt,/Server A/);
  assert.match(hook.systemPrompt,/ssh_exec/);

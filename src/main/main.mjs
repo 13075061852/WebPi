@@ -1,4 +1,5 @@
 import { isTrustedUIURL } from "./trusted-ui-url.mjs";
+import { inspectPreview } from "./preview-inspection.mjs";
 import { previewDocument } from "./document-preview.mjs";
 /**
  * Pi Halo — Electron main process
@@ -260,6 +261,7 @@ function bootstrap() {
   // 预览触摸模拟：平板/手机模式隐藏滚动条 + 按住拖动滚动 + 松手惯性 + 拖动后抑制误点击
   let previewTouch = false;
   const previewGuests = new Set();
+  bridge.inspectPreview = options => inspectPreview({...options, guests:previewGuests, previews:servers.previews.values()});
   /* 预览触摸模拟 / 滚动条美化脚本：独立文件注入（src/main/inject/），
    * 平板/手机模式隐藏滚动条 + 按住拖动滚动 + 松手惯性 + 拖动后抑制误点击 */
   const applyPreviewTouch = (attempt = 0) => {

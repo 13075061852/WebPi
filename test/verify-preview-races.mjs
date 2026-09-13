@@ -10,7 +10,7 @@ const context = vm.createContext({
   portPreviewRequest: 0, previewService: null, selectedPortKey: null,
   S: { previewFile: null, previewMode: 'source' },
   updatePortSelection() {},
-  $: selector => ({ '#pvBody': body, '#pvName': name, '#pvMode': mode })[selector],
+  $: selector => ({ '#pvBody': body, '#pvName': name, '#pvMode': mode, '#btnOpenFile': {} })[selector],
   window: { halo: { readFile: p => new Promise(resolve => pending.set(p, resolve)) } },
   rich: text => text, esc: text => text, previewURL: text => text,
 });

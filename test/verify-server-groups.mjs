@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 const dir=mkdtempSync(path.join(tmpdir(),'halo-server-groups-'));
 const bridge=new PiBridge(new HaloStore(path.join(dir,'settings.json')), {}, {sessionDir:path.join(dir,'sessions')});
+bridge.servers={list:()=>[{id:'server-a'},{id:'server-b'}]};
 try {
  await bridge.start(dir);
  const first=await bridge.newSession('server-a');

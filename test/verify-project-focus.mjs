@@ -8,6 +8,7 @@ const a = path.join(dir, 'a'), b = path.join(dir, 'b');
 fs.mkdirSync(a); fs.mkdirSync(b);
 const store = new HaloStore(path.join(dir, 'settings.json'));
 const bridge = new PiBridge(store, {}, { sessionDir: path.join(dir, 'sessions') });
+bridge.servers={list:()=>[{id:'server-fixture'}]};
 try {
   await bridge.start(a);
   const local = bridge.session.sessionFile;

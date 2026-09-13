@@ -117,9 +117,26 @@ function currentPreviewContext() {
   const context = {...previewService, device:currentPreviewDevice()};
   try {
     const guest = document.querySelector('#pvBody webview');
-    if (guest) {context.url=guest.getURL(); context.title=guest.getTitle();}
+    if (guest) {context.url=guest.getURL(); context.title=guest.getTitle(); context.guestId=guest.getWebContentsId();}
   } catch { /* Navigation may still be loading. */ }
   return context;
+}
+// Run once after the retry loop settles, including background sessions on this server.
+function refreshCompletedPreview({event, sessionId, serverId}) {
+  if (event?.type !== "agent_settled") return;
+  if (previewService) {
+    if (!serverId || serverId !== previewService.serverId) return;
+    const guest = document.querySelector('#pvBody webview');
+    if (!guest) return;
+    try {
+      guest.reloadIgnoringCache();
+      previewService.status = 'loading';
+    } catch { /* The preview may have been detached during navigation. */ }
+    return;
+  }
+  if (!serverId && sessionId === S.state?.sessionId && !S.switchingSession && S.previewFile) {
+    void setPreview(S.previewFile, true);
+  }
 }
 const portKey = (id, item) => JSON.stringify([id, item.protocol, item.address, item.port]);
 function updatePortSelection() {
@@ -133,6 +150,8 @@ function syncServerPorts(selected, items) {
   const remote = document.querySelector('.nav-item.active')?.dataset.tab === "skills";
   const id = remote ? (browsingServerId || selected) : null;
   const server = items.find(s => s.id === id);
+  $("#wsPath").textContent = remote ? (server ? server.name + ' · 远程服务' : '选择服务器') : (S.treeData?.root || '');
+  $("#wsPath").title = $("#wsPath").textContent;
   const next = server?.id || null;
   $("#wsTree").hidden = remote;
   $("#serverPorts").hidden = !remote;
@@ -554,12 +573,13 @@ function setStreamingUI(v) {
 function wirePi() {
   // lightweight diagnostics: real-link event tracing (visible via CDP)
   window.__piDebug = { count: 0, types: [], ignored: 0 };
-  window.halo.onPiEvent(({ sessionId, event, seq }) => {
+  window.halo.onPiEvent(({ sessionId, serverId, event, seq }) => {
     try {
       window.__piDebug.count++;
       window.__piDebug.types.push(event?.type);
       if (window.__piDebug.types.length > 200) window.__piDebug.types.shift();
     } catch {}
+    refreshCompletedPreview({event, sessionId, serverId});
     handlePiEvent(event, sessionId, seq);
   });
   // debug/test hook: inject synthetic events without the main process
@@ -1154,7 +1174,7 @@ function onToolEnd(ev) {
     scheduleTreeRefresh();
     const ext = rec.path.split(".").pop().toLowerCase();
     if (ext === "html" || ext === "htm") {
-      setPreview(rec.path);
+      setPreview(rec.path, true);
       toast("已生成页面，已切换到预览", "ok");
     }
   }
@@ -2116,8 +2136,10 @@ async function loadTree(force) {
   const data = r?.data;
   if (!data) return;
   S.treeData = data;
-  $("#wsPath").textContent = data.root;
-  $("#wsPath").title = data.root;
+  if (document.querySelector('.nav-item.active')?.dataset.tab !== 'skills') {
+    $("#wsPath").textContent = data.root;
+    $("#wsPath").title = data.root;
+  }
   // auto-expand first level on first load
   if (!S.expanded.size && !force) {
     for (const n of data.tree) if (n.dir) S.expanded.add(n.path);

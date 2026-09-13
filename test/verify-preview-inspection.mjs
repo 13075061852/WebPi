@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {inspectPreview} from '../src/main/preview-inspection.mjs';
+let reads=0,captures=0,url='https://127.0.0.1:8444/nodes';
+const guest={id:7,isDestroyed:()=>false,getURL:()=>url,executeJavaScript:async()=>{reads++;return {text:'authenticated table',overflow:[{height:400,scrollHeight:500}]};},capturePage:async()=>{captures++;return {getSize:()=>({width:1000}),toPNG:()=>Buffer.from('test')};}};
+const base={target:'hk',context:{kind:'service',serverId:'hk',guestId:7},guests:[guest],previews:[{id:'hk',url:'https://127.0.0.1:8444/'}]};
+assert.match((await inspectPreview(base)).content[0].text,/authenticated table/);
+assert.equal(captures,0);
+assert.equal((await inspectPreview({...base,screenshot:true})).content[1].type,'image');
+const before=reads;
+await assert.rejects(inspectPreview({...base,target:'us'}));
+await assert.rejects(inspectPreview({...base,context:{...base.context,guestId:8}}));
+url='https://example.com/';await assert.rejects(inspectPreview(base));
+assert.equal(reads,before);
+console.log('PASS authenticated guest inspection, optional image, wrong server/closed guest/navigation rejected');
