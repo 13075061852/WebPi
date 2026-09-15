@@ -97,8 +97,39 @@ try {
    await evalJS(`document.querySelector('.image-viewer button').click()`);
   }
  }
+ // Actual live events must render accepted normal/queued user messages exactly once,
+ // including identical consecutive text, and separate their answer turns.
+ await evalJS('window.__haloRestoreView('+JSON.stringify({state:{ready:true,isStreaming:false,sessionId:'live-user-regression'},seq:0,messages:[]})+')');
+ await evalJS(`(() => {
+   const dispatch = event => window.__haloDispatch(event, 'live-user-regression');
+   dispatch({type:'agent_start'});
+   for (let index = 0; index < 3; index++) {
+     const content = [{type:'text',text:'相同的追问'}];
+     if (index === 2) content.push({type:'image',mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='});
+     const user = {role:'user',content,timestamp:Date.now()+index};
+     dispatch({type:'message_start',message:user});
+     dispatch({type:'message_end',message:user});
+     dispatch({type:'message_start',message:{role:'assistant',content:[]}});
+     dispatch({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'回答 '+index}});
+     const assistant = {role:'assistant',content:[{type:'text',text:'回答 '+index}]};
+     dispatch({type:'message_end',message:assistant});
+     dispatch({type:'turn_end',message:assistant});
+   }
+   dispatch({type:'agent_end',messages:[],willRetry:false});
+   dispatch({type:'agent_settled'});
+ })()`);
+ const live = await evalJS(`({
+   users:document.querySelectorAll('#messages > .msg.user').length,
+   turns:document.querySelectorAll('#messages > .turn.complete').length,
+   images:document.querySelectorAll('#messages > .msg.user .imgs img').length,
+   text:[...document.querySelectorAll('#messages > .msg.user .bubble')].map(node=>node.textContent.trim()),
+   order:[...document.querySelectorAll('#messages > .msg.user, #messages > .turn')].map(node=>node.classList.contains('user')?'user':'answer')
+ })`);
+ if(live.users !== 3 || live.turns !== 3 || live.images !== 1 || live.text.some(text=>text !== '相同的追问') || live.order.join(',') !== 'user,answer,user,answer,user,answer') {
+   throw Error('Live user/queued turn rendering failed: '+JSON.stringify(live));
+ }
  await evalJS(`document.querySelector('#input').value='/help';document.querySelector('#btnSend').click()`);
  await sleep(150);
  if(!await evalJS(`document.querySelector('#helpModal').classList.contains('show')`))throw new Error('Send button failed');
- console.log('PASS text/image message rendering, image preview and send button');
+ console.log('PASS text/image history, accepted live/queued messages, repeated text, answer separation, image preview and send button');
 } finally { ws.close(); electron.kill(); }

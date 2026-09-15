@@ -12,8 +12,10 @@ const context = vm.createContext({
   updatePortSelection() {},
   $: selector => ({ '#pvBody': body, '#pvName': name, '#pvMode': mode, '#btnOpenFile': {} })[selector],
   window: { halo: { readFile: p => new Promise(resolve => pending.set(p, resolve)) } },
-  rich: text => text, esc: text => text, previewURL: text => text,
+  document: { documentElement: { dataset: { projectCwd: 'C:/project' } } },
+  esc: text => text,
 });
+vm.runInContext(fs.readFileSync('src/renderer/js/markdown.js', 'utf8'), context);
 vm.runInContext(source.slice(start, end), context);
 for (const old of ['old.md', 'old.html', 'old.txt']) {
   context.S.previewFile = null;
@@ -33,4 +35,10 @@ await context.setPreview('same.md');
 pending.get('same.md')({ data: { content: 'same file completes' } });
 await first;
 assert.match(body.innerHTML, /same file completes/);
-console.log('PASS stale markdown, HTML source and text reads cannot replace the current preview; repeat selection completes');
+const nested = context.setPreview('docs/README.md');
+pending.get('docs/README.md')({ data: { path: 'C:/project/docs/README.md', content: '![figure](./images/figure.png)\n[guide](../guide.md)' } });
+await nested;
+assert.match(body.innerHTML, /src="halo-preview:\/\/local\/C%3A\/project\/docs\/images\/figure.png"/);
+assert.match(body.innerHTML, /href="halo-preview:\/\/local\/C%3A\/project\/guide.md"/);
+assert.doesNotMatch(body.innerHTML, /__chat__/);
+console.log('PASS preview race protection and Markdown paths relative to the previewed document');

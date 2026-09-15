@@ -6,17 +6,29 @@ import { previewDocument } from "./document-preview.mjs";
  * splash (launch animation) -> main window (three-panel celestial console)
  */
 
-import { app, BrowserWindow, ipcMain, dialog, shell, protocol, safeStorage, clipboard, nativeImage, ClipboardItem } from "electron";
+import { app, BrowserWindow, session, ipcMain, dialog, shell, protocol, safeStorage, clipboard, nativeImage, ClipboardItem } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { X509Certificate } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawnPi as runPiCommand } from "./pi-command.mjs";
 import { ServerManager, parseListeningPorts } from "./servers.mjs";
 import { TerminalPool } from "./terminal-pool.mjs";
 import { isInsideWorkspace } from "./workspace-path.mjs";
 import { readPreviewFile } from "./read-preview-file.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PiBridge, HaloStore, scanAgents } from "./pi-bridge.mjs";
+import { configureEnvironmentProxy } from "./env-proxy.mjs";
+import { EnvironmentManager } from "./environment-manager.mjs";
+import { GitHubAuth } from './github-auth.mjs';
+import { CloudflareService } from './cloudflare.mjs';
+import os from "node:os";
+import { VideoSettings } from "./video-settings.mjs";
+import { VideoPricing } from "./video-pricing.mjs";
+import { VideoGeneration } from "./video-generation.mjs";
+import { videoResponse } from "./video-preview.mjs";
+
+// Applies to both npm start and the installed EXE, before Pi/OAuth can fetch.
+configureEnvironmentProxy();
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(HERE, "..", "..");
@@ -105,6 +117,22 @@ function writeAgentExt(storeFile) {
 function bootstrap() {
   const store = new HaloStore(path.join(app.getPath("userData"), "halo-settings.json"));
   const bridge = new PiBridge(store, { seal, unseal });
+  const videoSettings = new VideoSettings(path.join(os.homedir(), '.pi', 'agent', 'halo-video.json'), { seal, unseal });
+  const videoPricing = new VideoPricing();
+  const video = new VideoGeneration(videoSettings, path.join(os.homedir(), '.pi', 'agent', 'halo-video-jobs.json'), { pricing: videoPricing });
+  video.confirmGeneration = async (request, signal) => {
+    if (signal?.aborted || !mainWin || mainWin.isDestroyed()) return false;
+    const estimate = request.estimate;
+    const cost = estimate?.available && Number.isFinite(estimate.total)
+      ? `${Number(estimate.total.toFixed(4))} ${estimate.currency === 'Credits' ? '积分' : estimate.currency}` : '暂不可用，以平台实际计费为准';
+    const { response } = await dialog.showMessageBox(mainWin, {
+      type: 'question', title: '确认视频生成', message: '是否调用视频模型生成？',
+      detail: `${request.providerName} · ${request.model}\n${request.resolution} · ${request.duration} 秒 · ${request.ratio}\n预估消耗：${cost}\n项目：${request.cwd}\n\n${request.prompt.slice(0, 600)}`,
+      buttons: ['使用其他方式', '确认生成视频'], defaultId: 0, cancelId: 0, noLink: true,
+    });
+    return response === 1 && !signal?.aborted;
+  };
+  bridge.video = video;
   const servers = new ServerManager(store, seal, unseal);
   bridge.servers = servers;
   app.on("certificate-error", (event, contents, url, _error, certificate, callback) => {
@@ -135,6 +163,12 @@ function bootstrap() {
     }
   };
   bridge.onEvent(emit);
+  const environment = new EnvironmentManager({ onChange: state => emit('halo:environment-progress', state) });
+  const githubAuth = new GitHubAuth();
+  const cloudflareDir = path.join(app.getPath('userData'), 'cloudflare');
+  fs.mkdirSync(cloudflareDir, { recursive: true });
+  const cloudflare = new CloudflareService({ cwd: cloudflareDir });
+  bridge.cloudflare = cloudflare;
 
   /* ---------------- splash ---------------- */
 
@@ -207,16 +241,32 @@ function bootstrap() {
     });
 
     mainWin.webContents.on("will-attach-webview", (event, preferences, params) => {
-      // Only our established SSH preview endpoints may create a guest browser.
-      if (![...servers.previews.values()].some(p => p.url === params.src)) { event.preventDefault(); return; }
+      // Isolate public websites from the app and from SSH preview sessions.
+      let website = false;
+      try { const url = new URL(params.src); website = params.partition === 'website-preview' && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password; } catch {}
+      if (!website && ![...servers.previews.values()].some(p => p.url === params.src)) { event.preventDefault(); return; }
       delete preferences.preload;
+      delete preferences.preloadURL;
+      if (website) preferences.preload = path.join(DIST, 'src', 'preload', 'website-preview.cjs');
+      preferences.nodeIntegrationInSubFrames = false; preferences.nodeIntegrationInWorker = false;
+      preferences.webviewTag = false;
       preferences.nodeIntegration = false; preferences.contextIsolation = true;
       preferences.sandbox = true; preferences.webSecurity = true;
     });
     mainWin.webContents.on("did-attach-webview", (_event, guest) => {
       previewGuests.add(guest);
+      // Manual mode reports a zoom factor without applying it to the page.
+      if (guest.session === session.fromPartition('website-preview')) guest.setZoomMode('isolated');
+      guest.on('zoom-changed', (_event, direction) => {
+        if (guest.session === session.fromPartition('website-preview') && mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send('halo:website-zoom', {guestId:guest.id, direction});
+        }
+      });
       guest.once("destroyed", () => previewGuests.delete(guest));
-      guest.setWindowOpenHandler(() => ({ action: "deny" }));
+      guest.setWindowOpenHandler(({url}) => {
+        if (/^https?:\/\//.test(url)) void guest.loadURL(url).catch(() => {});
+        return { action: "deny" };
+      });
       guest.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
       guest.on("will-navigate", (event, url) => { if (!/^https?:\/\//.test(url)) event.preventDefault(); });
       guest.on("dom-ready", () => { guest.executeJavaScript(SCROLL_STYLE).catch(() => {}); guest.executeJavaScript(previewTouch ? TOUCH_ON : TOUCH_OFF).catch(() => {}); });
@@ -333,10 +383,66 @@ function bootstrap() {
     return bridge.publicState();
   }));
   handle("halo:server-reorder", (ids) => servers.reorder(ids));
-  handle("halo:server-remove", (id) => {
-    if ([...bridge.serverTargets.values()].includes(id)) throw Error("请先在绑定会话中断开此服务器");
-    return servers.remove(id);
+  handle("halo:server-remove", (id) => switchSession(() => bridge.removeServer(id)));
+  handle("halo:environment-status", () => environment.status());
+  handle('halo:github-status', () => githubAuth.status());
+  handle('halo:cloudflare-status', () => cloudflare.status());
+  handle('halo:cloudflare-login', () => cloudflare.auth('login'));
+  handle('halo:cloudflare-logout', () => cloudflare.auth('logout'));
+  handle('halo:github-login', () => githubAuth.login());
+  handle('halo:github-logout', account => githubAuth.logout(account));
+  handle("halo:environment-install", () => {
+    if (environmentRepairBusy) throw Error('请等待 AI 修复结束');
+    return environment.start();
   });
+  let environmentRepairBridge = null;
+  let environmentRepairBusy = false;
+  let environmentRepairCancelled = false;
+  handle('halo:environment-repair-stop', () => {
+    environmentRepairCancelled = true;
+    return environmentRepairBridge?.abort();
+  });
+  handle("halo:environment-repair", async () => {
+    if (environmentRepairBusy) throw Error('AI 修复正在进行中');
+    environmentRepairBusy = true;
+    environmentRepairCancelled = false;
+    try {
+    const prompt = await environment.repairPrompt();
+    if (environmentRepairCancelled) throw Error('已停止 AI 修复');
+    if (!prompt) return { ...environment.snapshot(), repairSkipped: true };
+    const key = store.data.defaultModel || store.data.modelKey;
+    if (!key) throw Error('请先配置默认大模型');
+    const dir = path.join(app.getPath('userData'), 'environment-repair');
+    fs.mkdirSync(dir, { recursive: true });
+    const repairStore = new HaloStore(path.join(dir, 'settings.json'));
+    repairStore.set('projects', []);
+    repairStore.set('defaultModel', key);
+    const repair = new PiBridge(repairStore, { seal, unseal }, { sessionDir: path.join(dir, 'sessions') });
+    environmentRepairBridge = repair;
+    repair.onEvent((channel, payload) => {
+      if (channel === 'pi:event') emit('halo:environment-repair-progress', payload.event);
+    });
+    try {
+      await repair.start(dir);
+      const [provider, ...model] = key.split('/');
+      await repair.setModel(provider, model.join('/'));
+      repair.setThinkingLevel('minimal');
+      if (environmentRepairCancelled) throw Error('已停止 AI 修复');
+      await repair.prompt(prompt);
+      return await environment.status();
+    } finally {
+      await repair.dispose();
+      environmentRepairBridge = null;
+    }
+    } finally { environmentRepairBusy = false; }
+  });
+  handle("halo:video-settings", () => videoSettings.publicState());
+  handle("halo:video-balance", input => video.balance(input));
+  handle("halo:video-history", () => video.consumptionHistory());
+  handle("halo:video-save", input => videoSettings.save(input));
+  handle("halo:video-test", input => video.test(input));
+  handle("halo:video-estimate", input => videoPricing.estimate(input));
+  handle("halo:video-model-prices", input => videoPricing.models(input));
   handle("halo:get-state", () => bridge.publicState());
   handle("halo:init", (cwd) => bridge.start(cwd));
   handle("halo:prompt", (text, opts) => bridge.prompt(text, opts));
@@ -371,7 +477,11 @@ function bootstrap() {
   handle("halo:ext-toggle", (extPath, enabled) => bridge.setExtensionEnabled(extPath, enabled));
   let sessionSwitchQueue = Promise.resolve();
   const switchSession = (action) => {
-    const result = sessionSwitchQueue.then(action);
+    const result = sessionSwitchQueue.then(async () => {
+      // Startup may still be warming the first runtime when the UI restores a project.
+      if (bridge.startingPromise) await bridge.startingPromise;
+      return action();
+    });
     sessionSwitchQueue = result.catch(() => {});
     return result;
   };
@@ -509,7 +619,7 @@ function bootstrap() {
   handle("halo:read-file", async (p) => {
     const abs = path.resolve(bridge.cwd || ".", p);
     if (!isInsideProject(abs)) throw new Error("路径超出项目范围");
-    return readPreviewFile(abs, LIMITS.FILE_READ);
+    return { ...await readPreviewFile(abs, LIMITS.FILE_READ), path: abs };
   });
 
   handle("halo:open-path", async (p) => {
@@ -544,27 +654,19 @@ function bootstrap() {
       properties: ["openDirectory"],
     });
     if (res.canceled || !res.filePaths[0]) return null;
-    const dir = res.filePaths[0];
-    // 注意：对话框返回的是原生路径（Windows 带反斜杠），bridge.cwd 已归一化为正斜杠，
-    // 必须用 normP 比较，否则“选当前目录”也会误判为切换而重启整个 agent 核心
-    if (normP(dir) !== normP(bridge.cwd)) {
-      store.set("cwd", dir);
-      bridge.cwd = dir;
-      await bridge.start(dir);
-    }
-    return dir;
+    // Selection itself must not restart the bridge. The renderer adds/switches
+    // the selected project through the shared session queue below.
+    return res.filePaths[0];
   });
 
   /* 静默切换项目（启动恢复工作区用，无对话框） */
-  handle("halo:use-project", async (dir) => {
+  handle("halo:use-project", (dir) => switchSession(async () => {
     if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error("目录不存在");
     if (normP(dir) !== normP(bridge.cwd)) {
-      store.set("cwd", dir);
-      bridge.cwd = dir;
-      await bridge.start(dir);
+      await bridge.switchProject(dir);
     }
     return true;
-  });
+  }));
 
   /* ---------------- 插件与技能（pi 包生态） ---------------- */
   const piHome = () => path.join(app.getPath("home"), ".pi", "agent");
@@ -575,28 +677,10 @@ function bootstrap() {
     fs.mkdirSync(piHome(), { recursive: true });
     fs.writeFileSync(path.join(piHome(), "settings.json"), JSON.stringify(obj, null, 2) + "\n");
   };
-  /* pi CLI 子进程：Windows 用 cmd /d /s /c ""pi.cmd" args"（windowsVerbatimArguments 原样传参，不经 shell:true），
-   * 非 Windows 直接 spawn "pi"。所有包源参数均经过 ensureSource 白名单校验（无空格/无 shell 元字符），
-   * 即使拼入命令行也不可能逃逸。 */
-  const piCommand = () => {
-    if (process.platform !== "win32") return "pi";
-    const p = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "pi.cmd") : "";
-    return p && fs.existsSync(p) ? p : "pi.cmd";
-  };
-  const spawnPi = (args) => new Promise((resolve) => {
-    const win = process.platform === "win32";
-    const child = win
-      ? spawn("cmd.exe", ["/d", "/s", "/c", `""${piCommand()}" ${args.join(" ")}"`], { windowsHide: true, windowsVerbatimArguments: true })
-      : spawn("pi", args, { windowsHide: true });
-    let out = "", err = "";
-    const timer = setTimeout(() => { try { child.kill(); } catch {} resolve({ ok: false, error: "超时（3 分钟）", output: out.slice(-1200) }); }, LIMITS.PKG_TIMEOUT);
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, error: String(e?.message || e) }); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ ok: code === 0, code, output: (out + "\n" + err).trim().slice(-1600) });
-    });
+  // Use the bundled Pi CLI and Electron's Node runtime on every platform.
+  const spawnPi = (args) => runPiCommand(args, {
+    cwd: bridge.cwd || app.getPath("home"),
+    timeout: LIMITS.PKG_TIMEOUT,
   });
   const pkgTypes = (p) => {
     const kws = (p.keywords || []).map((k) => String(k).toLowerCase());
@@ -682,8 +766,8 @@ function bootstrap() {
     return list;
   };
   handle("halo:pkg-installed", async () => collectPkgs());
-  /* 包源白名单：只允许 npm:/git:/https:/本地路径，且不含空格与任何 shell 元字符
-   * （npm 包名/版本、git URL 均满足此约束）—— 即使参数拼入 cmd 命令行也不可能注入 */
+  /* 包源白名单：只允许 npm:/git:/https:/本地路径。
+   * CLI 参数以数组直接传给内置运行时，不经 shell 解释。 */
   const PKG_SOURCE_RE = /^(npm:[A-Za-z0-9@._~/-]+(@[A-Za-z0-9._-]+)?|git:[^\s"'&|;<>()$`\\]+|https?:\/\/[^\s"'&|;<>()$`]+|\.\.?\/[^\s"'&|;<>()$`]+|[a-zA-Z]:\\[^\s"'&|;<>()$`]*)$/;
   const ensureSource = (source) => {
     if (!PKG_SOURCE_RE.test(String(source || ""))) throw new Error("不支持的包源：" + source);
@@ -737,8 +821,8 @@ function bootstrap() {
   });
   handle("halo:projects-list", async () => bridge.projectsList());
   handle("halo:project-switch", ({ cwd }) => switchSession(() => bridge.switchProject(cwd)));
-  handle("halo:project-add", async ({ dir }) => bridge.addProject(dir));
-  handle("halo:project-remove", async ({ cwd }) => bridge.removeProject(cwd));
+  handle("halo:project-add", ({ dir }) => switchSession(() => bridge.addProject(dir)));
+  handle("halo:project-remove", ({ cwd }) => switchSession(() => bridge.removeProject(cwd)));
   handle("halo:agent-list", async () => scanAgents(bridge.cwd));
   handle("halo:agent-default-get", async () => store.data.defaultAgent || "");
   handle("halo:agent-default-set", async ({ name }) => {
@@ -804,6 +888,8 @@ function bootstrap() {
         if (!isInsideProject(p)) return new Response("forbidden", { status: 403 });
         const st = await fs.promises.stat(p).catch(() => null);
         if (!st) return new Response("not found", { status: 404 });
+        if (!st.isFile()) return new Response("not found", { status: 404 });
+        if (/\.(mp4|webm)$/i.test(p)) return videoResponse(request, p, st.size, MIME[path.extname(p).toLowerCase()]);
         if (st.size > LIMITS.PREVIEW) return new Response("too large", { status: 413 });
         const ext = path.extname(p).toLowerCase();
         const buf = await fs.promises.readFile(p);

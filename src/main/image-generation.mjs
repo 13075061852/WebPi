@@ -74,7 +74,6 @@ export function imageTool(cwd, getCredential) {
       if (typeof args.prompt !== 'string' || !args.prompt.trim() || args.prompt.length > 12000) throw Error('生图提示词需为 1–12000 字符');
       if (args.references && (!Array.isArray(args.references) || args.references.length > 3)) throw Error('参考图最多3张');
       busy = true;
-      let agent;
       try {
         const credential = await getCredential();
         if (!credential?.access || !credential?.accountId) throw Error('请先在模型登录中登录 OpenAI Codex 订阅账户');
@@ -86,11 +85,9 @@ export function imageTool(cwd, getCredential) {
           if (!mime || !stat.isFile() || stat.size > 8*1024*1024) throw Error('参考图须为 PNG/JPEG/WebP，单张不超过8 MB');
           content.push({type:'input_image',image_url:`data:${mime};base64,${(await fs.readFile(full)).toString('base64')}`});
         }
-        const proxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy;
-        if (proxy) { const {ProxyAgent} = await import('undici'); agent = new ProxyAgent(proxy); }
         const requestSignal = AbortSignal.any([AbortSignal.timeout(180000), ...(signal ? [signal] : [])]);
         const response = await fetch('https://chatgpt.com/backend-api/codex/responses', {
-          method:'POST', dispatcher:agent, signal:requestSignal,
+          method:'POST', signal:requestSignal,
           headers:{Authorization:`Bearer ${credential.access}`,'chatgpt-account-id':credential.accountId,originator:'pi','OpenAI-Beta':'responses=experimental','content-type':'application/json',accept:'text/event-stream'},
           body:JSON.stringify({model:'gpt-6-astra',store:false,stream:true,instructions:'Generate exactly one image using image_generation. Follow the user prompt. Preserve requested details in reference images.',input:[{role:'user',content}],tools:[{type:'image_generation'}],tool_choice:{type:'image_generation'}})
         });
@@ -102,7 +99,7 @@ export function imageTool(cwd, getCredential) {
         await fs.writeFile(file,buffer,{flag:'wx'});
         const result = {file,bytes:buffer.length,provider:'openai-codex',visualChecked:false};
         return {content:[{type:'text',text:JSON.stringify(result)}],details:result};
-      } finally { busy = false; await agent?.destroy(); }
+      } finally { busy = false; }
     }
   };
 }

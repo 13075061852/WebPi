@@ -11,39 +11,20 @@ import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
 import { imageTool, resolveImageCredential } from "./image-generation.mjs";
+import { videoTool } from "./video-generation.mjs";
+import { cloudflareTool } from './cloudflare.mjs';
 import { officeSkillsRoot, officeTool } from "./office/tools.mjs";
 import { createInterface } from "node:readline";
+import { resolvePiEntry } from "./pi-runtime.mjs";
 
 /* ------------------------------------------------------------------ */
-/* resolve the globally installed pi package                           */
+/* load the Pi version bundled and tested with this app                */
 /* ------------------------------------------------------------------ */
-
-function resolvePiImport() {
-  const candidates = [];
-  if (process.env.PI_HALO_PI_PATH) candidates.push(process.env.PI_HALO_PI_PATH);
-  const npmRoots = [
-    process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "node_modules") : null,
-    "/usr/local/lib/node_modules",
-    "/usr/lib/node_modules",
-    path.join(os.homedir(), ".npm-global", "lib", "node_modules"),
-  ].filter(Boolean);
-  for (const root of npmRoots) {
-    candidates.push(path.join(root, "@earendil-works", "pi-coding-agent", "dist", "index.js"));
-  }
-  candidates.push("@earendil-works/pi-coding-agent");
-  for (const c of candidates) {
-    try {
-      if (c.endsWith(".js") && fs.existsSync(c)) return pathToFileURL(c).href;
-      if (c.endsWith(".js")) continue;
-    } catch {}
-  }
-  return "@earendil-works/pi-coding-agent"; // bare specifier fallback
-}
 
 let pi = null;
 export async function loadPi() {
   if (!pi) {
-    pi = await import(resolvePiImport());
+    pi = await import(pathToFileURL(resolvePiEntry()).href);
     pi.initTheme?.("dark", false);
   }
   return pi;
@@ -412,6 +393,7 @@ async _doStart() {
     }
     if (!ctx) ctx = await this.#ensureFresh();
     this.#focus(ctx);
+    this._recomputeUsageFromSession();
 
     await this.restoreModel();
     this._noteSession();
@@ -514,9 +496,47 @@ async _doStart() {
 
   async removeProject(cwd) {
     const key = PiBridge.normPath(cwd);
+    const switched = key === PiBridge.normPath(this.cwd || "");
+    if (switched) {
+      const next = (this.store.data.projects || []).find(p => PiBridge.normPath(p.cwd) !== key && fs.existsSync(p.cwd) && fs.statSync(p.cwd).isDirectory());
+      if (next) await this.switchProject(next.cwd);
+      else {
+        const dir = path.join(path.dirname(this.store.file), 'workspace');
+        fs.mkdirSync(dir, { recursive: true });
+        this.#focus(await this.#ensureFresh({ cwd: dir }));
+        this._recomputeUsageFromSession();
+      }
+    }
     this.store.data.projects = (this.store.data.projects || []).filter((x) => PiBridge.normPath(x.cwd) !== key);
     this.store.save();
-    return this.projectsList();
+    this.pushState();
+    return { switched, state: this.publicState() };
+  }
+
+  async removeServer(id) {
+    if (this.isServerBusy(id)) throw Error('此服务器仍有任务进行中，请先停止任务再删除');
+    const contexts = [...this.#pool.values()].filter(c => this.serverTargets.get(c.runtime.session.sessionId) === id);
+    const switched = contexts.some(c => c.key === this.#focusedKey);
+    // Prepare a local replacement before disposing any remote runtime.
+    if (switched) await this.newSession();
+    for (const ctx of contexts) {
+      await this.#disposeCtx(ctx);
+      this.#pool.delete(ctx.key);
+      this.previewContexts.delete(ctx.runtime.session.sessionId);
+    }
+    const files = new Set(Object.entries(this.store.data.serverSessions || {}).filter(([, r]) => r.serverId === id).map(([file]) => file));
+    if (this.store.data.serverLastSessions?.[id]) files.add(this.store.data.serverLastSessions[id]);
+    for (const [sessionId, target] of this.serverTargets) if (target === id) {
+      this.serverTargets.delete(sessionId);
+      this.previewContexts.delete(sessionId);
+    }
+    for (const file of files) delete this.store.data.serverSessions?.[file];
+    delete this.store.data.serverLastSessions?.[id];
+    for (const project of this.store.data.projects || []) if (files.has(project.lastSession)) project.lastSession = null;
+    this.store.set('serverTargets', Object.fromEntries(this.serverTargets));
+    this.servers.remove(id);
+    this.pushState();
+    return { switched, state: this.publicState() };
   }
 
   /* 切换项目：优先快路径（打开该项目的上一个会话，cwdOverride 让 services 重建到目标目录，
@@ -677,6 +697,12 @@ async _doStart() {
     this.runtime = ctx.runtime;
     this.unsubscribe = ctx.unsubscribe;
     this.usage = ctx.usage;
+    // Local tools, the file tree and new conversations must use the same project.
+    // Server sessions keep the selected local project, not their scratch directory.
+    if (!this.serverTargets.get(this.session.sessionId) && ctx.cwd && PiBridge.normPath(this.cwd) !== PiBridge.normPath(ctx.cwd)) {
+      this.cwd = String(ctx.cwd).replace(/\\/g, "/");
+      this.store.set("cwd", this.cwd);
+    }
     if (this.#pool.size > PiBridge.POOL_LIMIT) {
       let oldest = null;
       for (const c of this.#pool.values()) {
@@ -770,6 +796,11 @@ async _doStart() {
           },
         },
       });
+      // A fresh Windows computer already has PowerShell; do not require Git
+      // Bash just to execute local commands. Preserve explicit user tool choices.
+      if (process.platform === 'win32' && services.settingsManager.getDefaultTools() === undefined) {
+        services.settingsManager.applyOverrides({ defaultTools: ['read', 'powershell', 'edit', 'write'] });
+      }
       this.services = services;
       return {
         ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
@@ -778,7 +809,7 @@ async _doStart() {
             if(!this.inspectPreview)throw Error('当前环境没有页面预览，请在应用内打开服务');
             const sessionId=sessionManager.getSessionId();
             return this.inspectPreview({target:this.serverTargets.get(sessionId),context:this.previewContexts.get(sessionId),screenshot:args.screenshot===true});
-          }}, imageTool(cwd, () => resolveImageCredential(this.modelRuntime)), officeTool(cwd), { name: "ssh_exec", label: "服务器命令", description: "在此会话绑定的远程服务器执行 shell 命令。使用此工具读取远程文件、检查服务和管理服务器；每次调用是独立 shell，请在命令中指定 cd。",
+          }}, imageTool(cwd, () => resolveImageCredential(this.modelRuntime)), videoTool(cwd, () => this.video), cloudflareTool(cwd, () => this.cloudflare), officeTool(cwd), { name: "ssh_exec", label: "服务器命令", description: "在此会话绑定的远程服务器执行 shell 命令。使用此工具读取远程文件、检查服务和管理服务器；每次调用是独立 shell，请在命令中指定 cd。",
             parameters: { type: "object", properties: { command: { type: "string", description: "远程 shell 命令" } }, required: ["command"] },
             execute: async (_id, args, signal) => {
               const target = this.serverTargets.get(sessionManager.getSessionId());
@@ -797,7 +828,7 @@ async _doStart() {
   _accountUsage(event, ctx) {
     let u = null;
     if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage) u = event.message.usage;
-    else if (event?.type === "turn_end" && event.message?.usage) u = event.message.usage;
+    // turn_end carries the same assistant message; message_end is the billing event.
     if (u) {
       const usage = ctx?.usage || this.usage;
       usage.input += u.input || 0;
@@ -946,7 +977,14 @@ async _doStart() {
 
   /** 启动登录流程：OAuth/ApiKey 的提示与事件通过 pi:event（type:"auth_event"）推给渲染层 */
   authLogin(providerId, type) {
-    return this._authRun(providerId, type === "oauth" ? "oauth" : "api_key");
+    const request = { canceled: false };
+    this._authLoginRequest = request;
+    return this.#queueAccountOperation(providerId, () => {
+      if (request.canceled) throw new Error("已取消");
+      return this._authRun(providerId, type === "oauth" ? "oauth" : "api_key");
+    }).finally(() => {
+      if (this._authLoginRequest === request) this._authLoginRequest = null;
+    });
   }
 
   async _authRun(providerId, type) {
@@ -997,6 +1035,7 @@ async _doStart() {
   }
 
   authCancel() {
+    if (this._authLoginRequest) this._authLoginRequest.canceled = true;
     const p = this._authPromptResolve;
     if (p) { this._authPromptResolve = null; p.reject(new Error("已取消")); }
     this._authAbort?.abort();
@@ -1005,37 +1044,71 @@ async _doStart() {
   }
 
   async authLogout(providerId) {
-    await loadPi();
-    await this.modelRuntime.logout(providerId);
-    this.pushState();
-    return true;
+    return this.#queueAccountOperation(providerId, async () => {
+      await loadPi();
+      await this.modelRuntime.logout(providerId);
+      this.#quotaCache.delete(providerId);
+      this.pushState();
+      return true;
+    });
   }
 
   /* ---------------- 多账户：保存 / 切换 / 删除 / 重命名 ---------------- */
 
   /** 把当前生效的登录凭据保存为一个账户（同身份去重） */
   async authAccountCapture(providerId, label) {
-    const cred = this.#piCredential(providerId);
-    if (!cred?.type) throw new Error("该供应商当前没有可保存的登录凭据");
-    const entry = this.vault.upsert(providerId, cred, label);
-    if (!entry) throw new Error("凭据保存失败");
-    return { id: entry.id, label: entry.label, providerId };
+    return this.#queueAccountOperation(providerId, () => {
+      const cred = this.#piCredential(providerId);
+      if (!cred?.type) throw new Error("该供应商当前没有可保存的登录凭据");
+      const entry = this.vault.upsert(providerId, cred, label);
+      if (!entry) throw new Error("凭据保存失败");
+      return { id: entry.id, label: entry.label, providerId };
+    });
   }
 
-  /** 一键切换账户：把保存的凭据写回 auth.json，并同步模型快照与可用性 */
-  async authAccountSwitch(providerId, accountId) {
+  #accountOperations = new Map();
+
+  #queueAccountOperation(providerId, action) {
+    const previous = this.#accountOperations.get(providerId) || Promise.resolve();
+    const result = previous.then(action);
+    const tail = result.catch(() => {});
+    this.#accountOperations.set(providerId, tail);
+    void tail.then(() => {
+      if (this.#accountOperations.get(providerId) === tail) this.#accountOperations.delete(providerId);
+    });
+    return result;
+  }
+
+  /** 同一供应商的账户切换与非活跃令牌刷新串行，避免使用已轮换的副本。 */
+  authAccountSwitch(providerId, accountId) {
+    return this.#queueAccountOperation(providerId, () => this.#switchAccount(providerId, accountId));
+  }
+
+  /** 一键切换账户：在凭据文件锁内归档当前身份，再读取目标账户的最新副本。 */
+  async #switchAccount(providerId, accountId) {
     await loadPi();
     const entry = this.vault.find(providerId, accountId);
     if (!entry?.credential) throw new Error("账户不存在或凭据已丢失");
     const mr = this.modelRuntime;
     if (!mr) throw new Error("Model runtime not ready");
-    await this.#writeStoredCredential(providerId, entry.credential);
+    const credential = await this.#writeStoredCredential(providerId, async (current) => {
+      if (current?.type) this.vault.upsert(providerId, current);
+      // Capture may have updated this same account after the SDK refreshed its token.
+      const target = this.vault.find(providerId, accountId);
+      if (!target?.credential) throw new Error("账户不存在或凭据已丢失");
+      // Opaque OAuth tokens have no stable identity to merge after an external refresh.
+      // Keep the live credential as its own entry and validate the selected copy first.
+      const verifyOpaque = target.credential.type === "oauth" && !target.credential.accountId &&
+        HaloAuthVault.fingerprint(current) !== HaloAuthVault.fingerprint(target.credential);
+      return this.#freshCredential(providerId, target.credential, verifyOpaque);
+    });
     try { await mr.refresh({ providers: [providerId], allowNetwork: false }); } catch {}
     this.vault.setActive(providerId, accountId);
+    this.#quotaCache.delete(providerId);
     // 切换后立即拉一次新账户额度：随切换结果返回，底部额度条与账户芯片同步更新
     let quota = null;
     try {
-      quota = await this.#quotaFetch(providerId, this.#piCredential(providerId) || entry.credential);
+      quota = await this.#quotaFetch(providerId, credential);
       if (quota) {
         this.#quotaCache.set(providerId, { ts: Date.now(), data: quota });
         this.#accountQuotaCache.set(`${providerId}:${accountId}`, { ts: Date.now(), data: quota });
@@ -1047,16 +1120,22 @@ async _doStart() {
   }
 
   async authAccountRemove(providerId, accountId) {
-    return { removed: this.vault.remove(providerId, accountId) };
+    return this.#queueAccountOperation(providerId, () => ({ removed: this.vault.remove(providerId, accountId) }));
   }
 
   async authAccountRename(providerId, accountId, label) {
-    if (!this.vault.rename(providerId, accountId, label)) throw new Error("账户不存在");
-    return true;
+    return this.#queueAccountOperation(providerId, () => {
+      if (!this.vault.rename(providerId, accountId, label)) throw new Error("账户不存在");
+      return true;
+    });
   }
 
   /** 批量拉取某供应商下每个账户的剩余额度（并行，逐账户 60s 缓存） */
-  async authAccountsQuota(providerId) {
+  authAccountsQuota(providerId) {
+    return this.#queueAccountOperation(providerId, () => this.#accountsQuota(providerId));
+  }
+
+  async #accountsQuota(providerId) {
     const kind = this.#quotaKindFor(providerId);
     if (kind === "context") return []; // 该供应商没有额度接口
     const accounts = this.vault.list(providerId);
@@ -1084,34 +1163,49 @@ async _doStart() {
   }
 
   /** 非活跃账户的 OAuth 令牌过期时尽力刷新（只更新保管库，不碰 auth.json；防止轮换后旧令牌失效） */
-  async #freshCredential(providerId, cred) {
+  async #freshCredential(providerId, cred, force = false) {
     if (!cred || cred.type !== "oauth") return cred;
-    if (!cred.expires || cred.expires > Date.now() + 120_000) return cred;
+    if (!force && (!cred.expires || cred.expires > Date.now() + 300_000)) return cred;
     const mr = this.modelRuntime;
     const provs = mr?.getProviders?.() || [];
     const arr = Array.isArray(provs) ? provs : Object.values(provs || {});
     const oauth = arr.find((p) => (p.id || p.providerId) === providerId)?.auth?.oauth;
-    if (!oauth?.refresh) return cred;
+    if (!oauth?.refresh) {
+      if (force) throw new Error("无法验证该账户的 OAuth 凭据，请重新登录");
+      return cred;
+    }
     const fresh = await oauth.refresh(cred, AbortSignal.timeout(15000));
-    const entry = this.vault.list(providerId).find((a) => a.credential?.refresh === cred.refresh || a.credential === cred);
-    if (entry) { entry.credential = fresh; entry.savedAt = Date.now(); this.vault.save(); }
+    if (cred.accountId && fresh?.accountId && cred.accountId !== fresh.accountId) throw new Error("刷新返回的账户身份不一致");
+    const entry = this.vault.list(providerId).find((a) => a.credential === cred);
+    if (entry) {
+      entry.credential = fresh;
+      entry.fingerprint = HaloAuthVault.fingerprint(fresh);
+      entry.savedAt = Date.now();
+      this.vault.save();
+    }
     return fresh;
   }
 
   /** 写入凭据：优先走 pi 的 CredentialStore.modify（跨进程文件锁），兜底直写 auth.json */
-  async #writeStoredCredential(providerId, credential) {
+  async #writeStoredCredential(providerId, update) {
     const creds = this.modelRuntime?.credentials;
     if (creds && typeof creds.modify === "function") {
-      await creds.modify(providerId, async () => credential);
-      return;
+      let credential;
+      await creds.modify(providerId, async (current) => {
+        credential = await update(current);
+        return credential;
+      });
+      return credential;
     }
     const file = path.join(os.homedir(), ".pi", "agent", "auth.json");
     let data = {};
     try { data = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
+    const credential = await update(data[providerId]);
     if (credential) data[providerId] = credential;
     else delete data[providerId];
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    return credential;
   }
 
   setThinkingLevel(level) {
@@ -1221,30 +1315,24 @@ async _doStart() {
         });
       }
     } catch {}
-    // 当前会话若尚未落盘但已有消息，目录里扫不到 —— 手动补进列表
-    // （空会话不补：新建/删除后的空会话不显示，避免“总出现一个新会话”）
-    try {
-      const sf = this.session?.sessionFile;
-      const st = this.publicState();
-      if (PiBridge.normPath(cwd) === PiBridge.normPath(this.cwd) && sf && (st.messageCount ?? 0) > 0 && !out.some((s) => PiBridge.normPath(s.file) === PiBridge.normPath(sf))) {
-        out.unshift({
-          file: sf,
-          id: st.sessionId || "",
-          name: "新会话",
-          modified: Date.now(),
-          messageCount: st.messageCount ?? 0,
-        });
-      }
-    } catch {}
-    // Drafts may not have a file yet; include their live identity in the list.
+    // Merge every live session, including background tasks not yet listed on disk.
     for (const ctx of this.#pool.values()) {
-      const session = ctx.runtime.session;
-      const file = session.sessionFile;
-      if (PiBridge.normPath(ctx.cwd || "") !== PiBridge.normPath(cwd) ||
-          !file || (session.messages?.length ?? 0) !== 0 ||
-          out.some((s) => PiBridge.normPath(s.file) === PiBridge.normPath(file))) continue;
-      out.unshift({ file, name: "新会话", modified: ctx.createdAt || Date.now(),
-        messageCount: 0, running: !!ctx.busy || !!session.isStreaming });
+      const session = ctx.runtime.session, file = session.sessionFile;
+      if (!file || PiBridge.normPath(ctx.cwd || '') !== PiBridge.normPath(cwd)) continue;
+      const messages = session.messages || [];
+      const running = !!ctx.busy || !!session.isStreaming;
+      const existing = out.find(item => PiBridge.normPath(item.file) === PiBridge.normPath(file));
+      if (existing) {
+        existing.running = running;
+        existing.messageCount = Math.max(existing.messageCount || 0, messages.length);
+        continue;
+      }
+      const first = messages.find(message => message.role === 'user');
+      const title = typeof first?.content === 'string' ? first.content
+        : (first?.content || []).filter(part => part.type === 'text').map(part => part.text).join(' ');
+      out.push({ file, id: session.sessionId || '', name: title?.slice(0, 200) || '新会话',
+        modified: messages.at(-1)?.timestamp || ctx.startedAt || ctx.createdAt || Date.now(),
+        messageCount: messages.length, running });
     }
     out.sort((a, b) => new Date(b.modified || 0) - new Date(a.modified || 0));
     return out.slice(0, 40);
@@ -1354,15 +1442,8 @@ async _doStart() {
     return j?.[providerId] || null;
   }
 
-  /** chatgpt.com 需走系统代理；国内端点直连 */
+  /** 与登录和模型请求共用主进程代理配置（包括 NO_PROXY）。 */
   async #proxiedFetch(url, init) {
-    const proxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy || "";
-    if (proxy) {
-      try {
-        const undici = await import("undici");
-        if (undici?.ProxyAgent) return fetch(url, { ...init, dispatcher: new undici.ProxyAgent(proxy) });
-      } catch {}
-    }
     return fetch(url, init);
   }
 
@@ -1570,7 +1651,11 @@ async _doStart() {
   }
 
   /** 当前 provider 的剩余额度；内存缓存仅作防抖，force=true 跳过（每轮对话结束/切换账户后强制拉新） */
-  async modelQuota(provider, force = false) {
+  modelQuota(provider, force = false) {
+    return this.#queueAccountOperation(provider, () => this.#modelQuota(provider, force));
+  }
+
+  async #modelQuota(provider, force = false) {
     const kind = this.#quotaKindFor(provider);
     if (kind === "context") return { kind: "context" };
     const hit = this.#quotaCache.get(provider);
@@ -1639,12 +1724,21 @@ async _doStart() {
       await this.#disposeCtx(ctx);
       this.#pool.delete(key);
       if (this.#focusedKey === key) {
-        // 聚焦到最近使用的其他会话；池空则新建
+        // Stay in the same project/server instead of selecting an unrelated runtime.
+        const serverId = this.serverTargets.get(ctx.runtime.session.sessionId) || null;
+        const localCwd = serverId ? this.cwd : ctx.cwd || this.cwd;
+        const newest = (matches) => {
+          let candidate = null;
+          for (const c of this.#pool.values()) if (matches(c) && (!candidate || c.lastFocus > candidate.lastFocus)) candidate = c;
+          return candidate;
+        };
+        const local = (c) => !this.serverTargets.get(c.runtime.session.sessionId) && PiBridge.normPath(c.cwd) === PiBridge.normPath(localCwd);
         let next = null;
-        for (const c of this.#pool.values()) if (!next || c.lastFocus > next.lastFocus) next = c;
+        if (serverId) next = newest(c => this.serverTargets.get(c.runtime.session.sessionId) === serverId);
+        next ||= newest(local);
         if (next) this.#focus(next);
         else {
-          const fresh = await this.#ensureFresh();
+          const fresh = await this.#ensureFresh({ cwd: localCwd });
           this.#focus(fresh);
         }
         this._recomputeUsageFromSession();

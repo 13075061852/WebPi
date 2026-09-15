@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isTrustedUIURL } from '../src/main/trusted-ui-url.mjs';
 const source = fs.readFileSync('src/main/main.mjs', 'utf8');
 const start = source.indexOf('  const trustedSender = ');
 const end = source.indexOf('  const handle = ', start);
@@ -11,7 +12,7 @@ const frame = { url: pathToFileURL(path.join(DIST, 'src', 'renderer', 'index.htm
 const splashFrame = { url: pathToFileURL(path.join(DIST, 'src', 'renderer', 'splash.html')).href };
 const contents = { mainFrame: frame }, splashContents = { mainFrame: splashFrame };
 const context = vm.createContext({
-  DIST, path, pathToFileURL,
+  DIST, path, pathToFileURL, isTrustedUIURL,
   mainWin: { isDestroyed: () => false, webContents: contents },
   splashWin: { isDestroyed: () => false, webContents: splashContents },
 });

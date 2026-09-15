@@ -6,6 +6,8 @@
 
 这些文档记录对应日期的实施和验证结果，不代表当前版本已重新执行所有检查。
 
+- [2026-09-14 BUG 排查、修复与回归验证](reports/BUG-REVIEW-2026-09-14.md)
+
 - [全面排查报告](reports/AUDIT-REPORT.md)
 - [排查进度记录](reports/AUDIT-PROGRESS.md)
 - [Office 验证记录](reports/OFFICE-VALIDATION.md)

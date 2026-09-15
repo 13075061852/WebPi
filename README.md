@@ -40,11 +40,21 @@ npm install        # 安装 electron（二进制需可访问 npm 镜像）
 npm start
 ```
 
-内置引擎直接复用全局安装的 `@earendil-works/pi-coding-agent`（ESM 动态 import），认证、模型、技能、扩展与 `pi` CLI 完全共享（`~/.pi/agent/`）。未配置 API Key 时按 pi 的规则回退，选择模型后即可对话。
+安装包内置固定版本的 `@earendil-works/pi-coding-agent` 和 Electron 自带的 Node 运行时，新电脑无需预装 Pi 或 Node 即可启动、登录并对话。已有 Pi 用户仍共用 `~/.pi/agent/` 下的认证、模型、技能和扩展；应用始终优先使用随包内核，避免全局 Pi 升级影响兼容性。Windows 未配置默认工具时使用系统 PowerShell 执行本地命令。
 
-> 网络提示：部分供应商（如 openai-codex）需要代理才能访问。`npm start` 会自动注入 `NODE_USE_ENV_PROXY=1`，使 Electron 内置 fetch 遵循你终端里的 `HTTP(S)_PROXY` 环境变量（与 pi CLI 行为一致）；若仍报 `fetch failed`，请确认终端已设置代理环境变量或开启系统代理。pi 的传输策略可通过 `~/.pi/agent/settings.json` 的 `transport`（`sse` / `websocket` / `auto`）调整。
+**设置 → 环境配置** 自动检测全局 Python 3、Node.js、Git 的版本和路径。点击「一键配置环境」通过 Windows WinGet 安装缺失工具：Python 3.14、Node.js LTS、Git，采用系统安装范围并由官方安装程序配置持久化 PATH；已安装版本会保留。需要管理员权限时由 Windows 请求授权，安装进度与失败原因显示在页面中，完成后重新检测确认命令可用。Halo 会刷新自身 PATH，已打开的外部终端需重新打开；Pi 配置和数据仍共享。自动安装需要 [Microsoft 应用安装程序（WinGet）](https://learn.microsoft.com/windows/package-manager/winget/)，缺少时页面会提供安装说明。
+
+> 网络配置：开发版和安装版 EXE 都在主进程启动时读取 `HTTP_PROXY`、`HTTPS_PROXY`（也支持小写），地址和端口来自环境变量。`ALL_PROXY` 用于未单独配置协议时的回退，`NO_PROXY` 指定直连地址。登录、令牌刷新、模型请求、额度查询和生图共用此配置。Windows 的 `setx` 只影响后续进程，设置后需完全退出应用，并从已获得新环境变量的终端或桌面会话启动；无需另外设置 `NODE_USE_ENV_PROXY`。这与代理工具的 Windows 系统代理开关不同。pi 的传输策略可通过 `~/.pi/agent/settings.json` 的 `transport`（`sse` / `websocket` / `auto`）调整。
 
 > 平台说明：当前以 Windows 为主平台（内置终端依赖 cmd.exe / GBK / taskkill）；macOS / Linux 可启动但内置终端与部分路径逻辑未适配。
+
+### 视频模型
+
+在「设置 → 视频模型」保存 MiniMax API Key，选择默认分辨率、时长和比例；「测试连接」只查询任务列表，不创建收费的视频任务。初期接入 [MiniMax H3 V2](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)，支持文字生成和本地图片首帧生成，默认 768P、5 秒、16:9，可选 2K 和 4–15 秒。
+
+对话中要求生成视频时，Pi 可调用 `video_generate`，结果下载到当前项目的 `output/`，在对话和预览区播放。任务 ID 保存在 `~/.pi/agent/halo-video-jobs.json`，停止等待不会取消云端生成；需要恢复时让助手查询已有视频任务（`list` / `status`），避免重复提交。Key 使用系统加密，存于 `~/.pi/agent/halo-video.json`，不返回给模型或界面；复制配置到另一台电脑后需要重新填写 Key。
+
+平台参数与 HTTP 实现位于 `src/main/video-providers.mjs`；增加其他平台时扩展注册表与适配器。离线验证：`node test/verify-video-generation.mjs`、`node test/e2e/e2e-video-settings.mjs`。这些检查使用模拟服务和本地测试视频，真实 H3 出片需要有效 Key 与平台额度。
 
 ## 安全与配置
 
@@ -59,8 +69,10 @@ npm start
 npm run check          # 全量语法检查（node --check 遍历 src/scripts/test）
 npm run lint           # eslint 静态检查
 npm run test:inject    # 预览注入脚本语法（离线）
+npm run test:regressions # 离线功能回归：项目/账户隔离、用量、输入消息和文档预览，无需模型账户
 npm run test:render    # 注入模拟 pi 事件流 + DOM 断言 + 截图（test/e2e/）
 node test/e2e/verify-stream-render.mjs  # 流式 markdown 增量渲染与全量渲染等价性
+node test/e2e/e2e-environment-settings.mjs # 实际 Electron 检测 + 模拟安装交互，不安装系统软件；加 --packaged 检查打包版
 npm run test:treewatch # 文件树 watcher：外部改动自动刷新
 npm run test:multisession    # 多会话并发：A 后台执行中切 B 发任务，验证不中断 + 徽标 + 切换保留（真实模型）
 npm run test:multisession-ui # 多会话 UI 级：执行中新建会话、running 徽标、切回后结果渲染（真实模型）
@@ -90,7 +102,7 @@ npm run dist       # 产出 NSIS 安装器（dist/Pi Halo Setup 1.0.0.exe）
 npm run dist:dir   # 仅产出免安装目录（dist/win-unpacked/），快速验证
 ```
 
-打包后的应用通过 `%APPDATA%\npm\node_modules\@earendil-works\pi-coding-agent` 复用全局 pi SDK（与开发模式一致），也可用 `PI_HALO_PI_PATH` 环境变量显式指定 SDK 入口。
+打包时会携带锁文件固定的 Pi SDK 与生产依赖。依赖树放在 `resources/app.asar.unpacked/node_modules`，供 SDK、原生模块、图片 Worker 和内置 Pi CLI 共同使用；新电脑无需安装全局 Pi。开发调试仍可通过 `PI_HALO_PI_PATH` 显式指定 SDK 入口。安装额外的 npm/Git 来源插件时，仍需要相应的 npm/Git 工具；这些不影响内核启动和普通对话。
 
 ## 快捷键
 

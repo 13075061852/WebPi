@@ -15,11 +15,13 @@ function runOfficeWorker(args,cwd,signal) {
     const abort=()=>{child.kill();finish(Error('文档任务已取消'));};
     const timer=setTimeout(()=>{child.kill();finish(Error('文档处理超过 120 秒，已结束'));},120000);
     signal?.addEventListener('abort',abort,{once:true});
+    child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
     child.stdout.on('data',data=>{stdout+=data;if(stdout.length>2000000){child.kill();finish(Error('文档脚本输出过多'));}});
     child.stderr.on('data',data=>{stderr=(stderr+data).slice(-12000);});
     child.on('error',error=>finish(error));child.stdin.on('error',()=>{});
     child.on('close',code=>{
-      const marker='HALO_OFFICE_RESULT=',index=stdout.lastIndexOf(marker);
+      // The worker starts its result on a new line; JSON strings escape embedded newlines.
+      const marker='\nHALO_OFFICE_RESULT=',index=stdout.lastIndexOf(marker);
       if(code!==0||index<0)return finish(Error(stderr||stdout||'文档进程未返回结果'));
       try{finish(null,{...JSON.parse(stdout.slice(index+marker.length).trim()),log:stdout.slice(0,index).trim().slice(-10000),warnings:stderr});}catch(error){finish(error);}
     });

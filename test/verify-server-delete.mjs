@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { PiBridge, HaloStore } from '../src/main/pi-bridge.mjs';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
-const dir = mkdtempSync(path.join(tmpdir(), 'halo-server-delete-'));
+import fs from 'node:fs';
+import { isolatePi } from './helpers/isolated-pi.mjs';
+const fixture = isolatePi('halo-server-delete-');
+const dir = fixture.dir;
 const settings = path.join(dir, 'settings.json');
 const store = new HaloStore(settings);
 const bridge = new PiBridge(store, {}, { sessionDir: path.join(dir, 'sessions') });
+let servers = [{ id: 'server-a' }, { id: 'server-b' }];
+bridge.servers = { list: () => servers, remove: id => { servers = servers.filter(s => s.id !== id); } };
 try {
   await bridge.start(dir);
   const first = await bridge.newSession('server-a');
@@ -28,6 +31,25 @@ try {
   const saved = new HaloStore(settings);
   assert.equal(saved.data.serverSessions[file], undefined);
   assert.equal(saved.data.serverTargets[first.sessionId], undefined);
+  await bridge.newSession('server-a');
+  const remote = bridge.session;
+  remote.sessionManager.appendMessage({ role: 'user', content: 'Preserved history' });
+  bridge._noteSession();
+  bridge.serverTargets.set('old-unloaded-session', 'server-a');
+  remote.isStreaming = true;
+  await assert.rejects(bridge.removeServer('server-a'), /任务进行中/);
+  assert.equal(servers.length, 2);
+  remote.isStreaming = false;
+  assert.equal((await bridge.removeServer('server-a')).switched, true);
+  assert.notEqual(bridge.session, remote);
+  assert.equal(bridge.cwd, dir.replaceAll('\\', '/'));
+  assert.ok(fs.existsSync(remote.sessionFile), 'Server removal must preserve history files');
+  assert.equal([...bridge.serverTargets.values()].includes('server-a'), false);
+  assert.equal((await bridge.serverConversations()).some(r => r.serverId === 'server-a'), false);
+  assert.equal(servers.length, 1);
+  const local = bridge.session;
+  assert.equal((await bridge.removeServer('server-b')).switched, false);
+  assert.equal(bridge.session, local);
+  assert.equal(servers.length, 0);
   console.log('PASS server conversation deletion, focus fallback and persisted cleanup');
-} finally { await bridge.runtime?.dispose(); }
-process.exit(0);
+} finally { await bridge.dispose(); fixture.cleanup(); }

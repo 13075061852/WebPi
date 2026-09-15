@@ -7,6 +7,7 @@ const listen = (channel) => (cb) => {
 };
 
 contextBridge.exposeInMainWorld("halo", {
+  onWebsiteZoom: listen('halo:website-zoom'),
   serverNewSession: (id) => ipcRenderer.invoke("halo:server-new-session", id),
   serverPreview: (id, item) => ipcRenderer.invoke("halo:server-preview", id, item),
   serverPorts: (id) => ipcRenderer.invoke("halo:server-ports", id),
@@ -19,6 +20,25 @@ contextBridge.exposeInMainWorld("halo", {
   serverRemove: (id) => ipcRenderer.invoke("halo:server-remove", id),
   // state / session
   getState: () => ipcRenderer.invoke("halo:get-state"),
+  environmentStatus: () => ipcRenderer.invoke('halo:environment-status'),
+  environmentInstall: () => ipcRenderer.invoke('halo:environment-install'),
+  onEnvironmentProgress: listen('halo:environment-progress'),
+  videoSettings: () => ipcRenderer.invoke('halo:video-settings'),
+  videoBalance: input => ipcRenderer.invoke('halo:video-balance', input),
+  videoHistory: () => ipcRenderer.invoke('halo:video-history'),
+  environmentRepair: () => ipcRenderer.invoke('halo:environment-repair'),
+  githubStatus: () => ipcRenderer.invoke('halo:github-status'),
+  cloudflareStatus: () => ipcRenderer.invoke('halo:cloudflare-status'),
+  cloudflareLogin: () => ipcRenderer.invoke('halo:cloudflare-login'),
+  cloudflareLogout: () => ipcRenderer.invoke('halo:cloudflare-logout'),
+  githubLogin: () => ipcRenderer.invoke('halo:github-login'),
+  githubLogout: account => ipcRenderer.invoke('halo:github-logout', account),
+  environmentRepairStop: () => ipcRenderer.invoke('halo:environment-repair-stop'),
+  onEnvironmentRepairProgress: listen('halo:environment-repair-progress'),
+  videoSave: input => ipcRenderer.invoke('halo:video-save', input),
+  videoTest: input => ipcRenderer.invoke('halo:video-test', input),
+  videoEstimate: input => ipcRenderer.invoke('halo:video-estimate', input),
+  videoModelPrices: input => ipcRenderer.invoke('halo:video-model-prices', input),
   init: (cwd) => ipcRenderer.invoke("halo:init", cwd),
   prompt: (text, opts) => ipcRenderer.invoke("halo:prompt", text, opts),
   steer: (text) => ipcRenderer.invoke("halo:steer", text),

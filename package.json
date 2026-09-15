@@ -18,17 +18,17 @@
     "lint": "eslint src scripts test --max-warnings 0",
     "dist": "electron-builder --win",
     "dist:dir": "electron-builder --win dir",
-    "test:audit": "node scripts/test-audit.mjs"
+    "test:audit": "node scripts/test-audit.mjs",
+    "test:regressions": "node scripts/test-regressions.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "build": {
     "appId": "com.pihalo.app",
     "productName": "Pi Halo",
     "asarUnpack": [
-      "node_modules/node-pty/**",
-      "node_modules/@napi-rs/**"
+      "node_modules/**"
     ],
     "files": [
       "src/**/*",
@@ -67,6 +67,7 @@
     "globals": "^17.11.0"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
     "@napi-rs/canvas": "^1.0.9",
     "docx": "^9.7.1",
     "docx-preview": "^0.4.0",
@@ -81,7 +82,8 @@
     "pptx-preview": "^1.0.7",
     "pptxgenjs": "^4.0.1",
     "ssh2": "^1.17.0",
-    "undici": "^7.29.0"
+    "undici": "^7.29.0",
+    "wrangler": "4.131.2"
   },
   "overrides": {
     "exceljs": {

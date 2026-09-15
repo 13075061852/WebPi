@@ -6,8 +6,8 @@ import assert from "node:assert/strict";
 
 const code = readFileSync("src/renderer/js/markdown.js", "utf8");
 const sandbox = {};
-const fn = new Function("window", code + "\n;return { mdRender, rich, mdStreamSplit, streamRender };");
-const { mdRender, mdStreamSplit, streamRender } = fn(sandbox);
+const fn = new Function("window", "document", code + "\n;return { mdRender, rich, mdStreamSplit, streamRender };");
+const { mdRender, mdStreamSplit, streamRender } = fn(sandbox, { documentElement: { dataset: { projectCwd: "" } } });
 assert.equal(mdRender('\uFEFF# 标题\r\n\r\n  ## 章节\r\n正文\r\n'), '<h1>标题</h1><h2>章节</h2><p>正文</p>');
 assert.match(mdRender('```txt\r\n# 原样代码\r\n```'), /<pre><code># 原样代码<\/code><\/pre>/);
 

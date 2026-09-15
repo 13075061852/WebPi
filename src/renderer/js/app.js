@@ -1,5 +1,9 @@
 import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
-import { userMessageText } from "./user-message.mjs";
+import { websiteURL, renderWebsiteCards, mountWebsiteBrowser } from './website-preview.mjs';
+import { userMessageText, userMessageParts } from "./user-message.mjs";
+import { initEnvironmentSettings } from "./environment-settings.mjs";
+import { initVideoSettings } from "./video-settings.mjs";
+import { videoBalanceText } from "./video-balance.mjs";
 /* ============================================================
    Pi Halo — app orchestration (v2, hardened)
    Maps pi SDK session events onto the celestial UI.
@@ -10,6 +14,8 @@ import { userMessageText } from "./user-message.mjs";
    ============================================================ */
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+let environmentSettings;
+let videoSettings;
 
 /* ---- 渲染层常量（与主进程 LIMITS 对应，收敛魔法数字） ---- */
 const CONFIRM_RESET_MS = 2600;        // 两步删除确认：未二次确认时恢复的毫秒数
@@ -31,6 +37,7 @@ const S = {
   streamingTool: null,
   retrying: null,             // {attempt, maxAttempts} | null
   images: [],                 // pending attachments [{name, mediaType, data}]
+  composerRevision: 0,        // protects a newer text/attachment draft from delayed send failures
   lastUserPrompt: null,       // for retry button
   models: [],
   resources: { skills: [], prompts: [], extensions: [] },
@@ -73,6 +80,9 @@ function applyTheme(t, { persist = true } = {}) {
    ============================================================ */
 document.addEventListener("DOMContentLoaded", () => {
   requestAnimationFrame(() => document.body.classList.add("enter"));
+  environmentSettings = initEnvironmentSettings();
+  videoSettings = initVideoSettings({ onSaved: () => void loadVideoBalance() });
+  void loadVideoBalance();
   wireUI();
   wirePi();
   initServerUI();
@@ -111,6 +121,24 @@ let browsingServerId = null, portServerId = null, portRequest = 0, portPreviewRe
 const portCache = new Map();
 let selectedPortKey = null;
 let previewService = null;
+function openWebsite(value) {
+  const url = websiteURL(value); if (!url) return;
+  const request = ++portPreviewRequest;
+  S.previewFile = null; selectedPortKey = null; updatePortSelection();
+  previewService = {kind:'website', url, status:'loading'};
+  $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
+  $('#pvName').textContent = new URL(url).hostname;
+  mountWebsiteBrowser($('#pvBody'), url, state => {
+    if (request !== portPreviewRequest) return;
+    Object.assign(previewService, state, {status:'loaded'});
+    $('#pvName').textContent = state.title || new URL(state.url).hostname;
+  }, mediaPreviewShell);
+}
+document.addEventListener('click', event => {
+  const link = event.target.closest('.md a[href]');
+  if (!link || !websiteURL(link.href)) return;
+  event.preventDefault(); openWebsite(link.href);
+});
 function currentPreviewContext() {
   if (S.previewFile) return {kind:'file', file:S.previewFile};
   if (!previewService) return null;
@@ -275,9 +303,7 @@ async function refreshServers() {
       await refreshServers();
     });
     $(".server-group-remove", group).addEventListener("click", async () => {
-      const result = await window.halo.serverRemove(server.id);
-      if (!result.ok) toast(result.error, "err");
-      await refreshServers();
+      await removeWorkspaceItem(() => window.halo.serverRemove(server.id), server.id);
     });
     $(".server-group-new", group).addEventListener("click", async () => {
       if (S.switchingSession) return;
@@ -417,6 +443,21 @@ function applyState(st) {
 
 /* 当前模型的剩余额度：切模型 / 每轮对话结束时刷新（force 跳过主进程防抖缓存） */
 let quotaFetching = false;
+let videoBalanceVersion = 0;
+async function loadVideoBalance() {
+  const el = $('#ctxVideoQuota');
+  if (!el || !window.halo?.videoBalance) return;
+  const version = ++videoBalanceVersion;
+  el.textContent = '视频 查询中…';
+  try {
+    const reply = await window.halo.videoBalance({});
+    if (version !== videoBalanceVersion) return;
+    const value = reply?.ok ? reply.data : null;
+    el.textContent = `视频 ${value?.provider_name || ''} ${videoBalanceText(value)}`;
+    el.title = value ? `默认视频平台：${value.provider_name} · ${value.model}${value.enabled ? '' : '（已停用）'}，点击查看视频消耗记录`
+      : reply?.error || '视频余额查询失败，点击查看消耗记录';
+  } catch { if (version === videoBalanceVersion) el.textContent = '视频 查询失败'; }
+}
 async function loadQuota(provider, force = false) {
   if (!provider) return;
   if (S.quota.provider === provider && !force) return;
@@ -730,10 +771,10 @@ function ensureTurn() {
   return wrap;
 }
 
-// Keep only the latest three tool steps in the live timeline.
+// Keep only the latest tool step in the live timeline.
 function compactToolTimeline(turn) {
   const tools = Array.from(turn.children).filter(node => node.classList.contains('tool'));
-  if (tools.length <= 3) return;
+  if (tools.length <= 1) return;
   let archive = turn.querySelector(':scope > .tool-history');
   if (!archive) {
     archive = document.createElement('details');
@@ -742,7 +783,7 @@ function compactToolTimeline(turn) {
     turn.insertBefore(archive, turn.firstChild);
   }
   const body = archive.querySelector('.process-body');
-  const cutoff = tools[tools.length - 3];
+  const cutoff = tools[tools.length - 1];
   for (const node of Array.from(turn.children)) {
     if (node === cutoff) break;
     if (node.matches('.tool, .think, .md, .stall-hint')) body.appendChild(node);
@@ -759,26 +800,90 @@ function formatDuration(seconds) {
   return [hours ? hours + '小时' : '', minutes ? minutes + '分钟' : '', secs || !total ? secs + '秒' : ''].filter(Boolean).join(' ');
 }
 
+function updateVideoArtifactCard(button, file, turn, cwd) {
+  if (!button?.classList.contains('artifact-video')) return;
+  const result = [...(turn.__videoResults?.values() || [])].find(item => {
+    const recorded = artifactPath(item.file, cwd);
+    return recorded && normPath(recorded) === normPath(file);
+  });
+  if (!result) return;
+  const meta = button.querySelector('.artifact-meta');
+  meta.classList.add('artifact-video-details');
+  let model = meta.querySelector('.artifact-video-model');
+  if (!model) {
+    model = document.createElement('span'); model.className = 'artifact-video-model';
+    const metrics = document.createElement('span'); metrics.className = 'artifact-video-metrics';
+    meta.replaceChildren(model, metrics);
+  }
+  model.textContent = `${result.provider_name || result.provider} · ${result.model}`;
+  const duration = result.timing?.totalMs;
+  const validDuration = value => Number.isFinite(value) && value >= 0;
+  const time = validDuration(duration) ? `生成用时 ${formatDuration(duration / 1000)}`
+    : validDuration(result.__toolDurationMs) ? `工具用时 ${formatDuration(result.__toolDurationMs / 1000)}` : '生成用时未记录';
+  const usage = result.usage;
+  const amountText = value => new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 6, useGrouping: false }).format(value);
+  const unitText = unit => unit === 'Credits' ? '积分' : unit || '';
+  const cost = usage && Number.isFinite(usage.amount) && usage.amount >= 0
+    ? `实际消耗 ${amountText(usage.amount)} ${unitText(usage.unit)}`
+    : '平台未返回实际消耗';
+  meta.querySelector('.artifact-video-metrics').textContent = `${time} · ${cost}`;
+  const stages = [['platformMs', '平台耗时'], ['submissionMs', '提交'], ['generationMs', '生成及查询'], ['downloadMs', '下载']]
+    .filter(([key]) => validDuration(result.timing?.[key]))
+    .map(([key, label]) => `${label} ${formatDuration(result.timing[key] / 1000)}`);
+  const source = { credits_cost: '平台结算积分', cost_usd_x10: '平台结算金额换算（1 美元 = 10 积分）' }[result.billing?.platform?.source];
+  const estimate = result.billing?.estimate;
+  let billingText = '';
+  if (estimate?.available && Number.isFinite(estimate.total) && estimate.total >= 0) {
+    billingText = `预估 ${amountText(estimate.total)} ${unitText(estimate.currency)}`;
+    if (usage?.unit === estimate.currency && Number.isFinite(usage.amount) && usage.amount >= 0) {
+      const delta = Number.isFinite(result.billing.delta) ? result.billing.delta : usage.amount - estimate.total;
+      billingText += ` · 实际 ${amountText(usage.amount)} ${unitText(usage.unit)} · 差额 ${delta > 0 ? '+' : ''}${amountText(delta)} ${unitText(usage.unit)}`;
+    }
+  }
+  button.title = [file, `任务 ID：${result.task_id}`, stages.join(' · '),
+    source ? `计费来源：${source}` : '', billingText].filter(Boolean).join('\n');
+  button.setAttribute('aria-label', `预览视频：${file.split(/[\\/]/).pop()}，${model.textContent}，${time}，${cost}`);
+}
+
 async function showTurnArtifacts(turn) {
-  turn.querySelector(':scope > .turn-artifacts')?.remove();
+  renderWebsiteCards(turn, openWebsite);
+  const request = turn.__artifactRequest = (turn.__artifactRequest || 0) + 1;
+  const switchSeq = S.sessionSwitchSeq;
   const cwd = S.state?.cwd || '';
   let paths = replyArtifacts(turn.__texts?.at(-1) || '', cwd);
   for (const file of turn.__artifactFiles || []) {
     const p = artifactPath(file, cwd);
     if (p && !paths.some(x => normPath(x) === normPath(p))) paths.push(p);
   }
-  if (!paths.length) return;
+  if (!paths.length) { turn.querySelector(':scope > .turn-artifacts')?.remove(); return; }
   // Resolve delivery paths after renames; never advertise vanished intermediate files.
   const checked=await window.halo.artifactFiles(paths.slice(0,100)).catch(()=>null);
-  if (!turn.isConnected || cwd !== (S.state?.cwd || '') || !checked?.ok) return;
-  paths=checked.data;
-  if (!paths.length) return;
-  const box = document.createElement('div');
+  if (!turn.isConnected || request !== turn.__artifactRequest || switchSeq !== S.sessionSwitchSeq ||
+      cwd !== (S.state?.cwd || '') || !checked?.ok) return;
+  paths = [...new Map(checked.data.map(file => [normPath(file), file])).values()];
+  let box = turn.querySelector(':scope > .turn-artifacts');
+  if (!paths.length) { box?.remove(); return; }
+  box ||= document.createElement('div');
   box.className = 'turn-artifacts';
   box.setAttribute('aria-label','生成文件');
+  // Reconcile deliveries in place: final text and repeated status results must
+  // neither duplicate a file card nor reload its thumbnail.
+  const existing = new Map(Array.from(box.children, node => [node.dataset.artifactPath, node]));
+  const wanted = new Set(paths.map(normPath));
+  for (const [key, node] of existing) if (!wanted.has(key)) node.remove();
+  let index = 0;
   for (const file of paths) {
+    const key = normPath(file);
+    const previous = existing.get(key);
+    if (previous) {
+      updateVideoArtifactCard(previous.querySelector('.artifact-video'), file, turn, cwd);
+      if (box.children[index] !== previous) box.insertBefore(previous, box.children[index] || null);
+      index++;
+      continue;
+    }
     const button=document.createElement('button');
     decorateArtifactCard(button, file, previewURL(file));
+    updateVideoArtifactCard(button, file, turn, cwd);
     button.onclick=async()=>{
       document.body.classList.remove('preview-collapsed','focus-mode');
       $('#center').inert=false;
@@ -787,6 +892,7 @@ async function showTurnArtifacts(turn) {
       const toggle=$('#btnPreviewToggle');toggle.setAttribute('aria-expanded','true');toggle.title='收起预览区';toggle.setAttribute('aria-label',toggle.title);
       try { await setPreview(file,true); saveWorkspace(); } catch(error){toast(error.message,'err');}
     };
+    let entry = button;
     if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(file)) {
       const row=document.createElement('div');row.className='artifact-image-row';
       const copy=document.createElement('button');copy.className='artifact-copy-button';copy.type='button';
@@ -798,10 +904,15 @@ async function showTurnArtifacts(turn) {
         catch(error){toast(error.message,'err');}
         finally{copy.disabled=false;}
       };
-      row.append(button,copy);box.appendChild(row);
-    } else box.appendChild(button);
+      row.append(button,copy);entry = row;
+    } else if (/\.(mp4|webm)$/i.test(file)) {
+      const row = document.createElement('div'); row.className = 'artifact-video-row';
+      row.append(button); entry = row;
+    }
+    entry.dataset.artifactPath = key;
+    box.insertBefore(entry, box.children[index++] || null);
   }
-  turn.appendChild(box);
+  if (!box.isConnected) turn.appendChild(box);
   // The file card is the preview entry; avoid repeating the same image at full size.
   for (const img of turn.querySelectorAll('.md img')) {
     const file = artifactPath(img.getAttribute('src'), cwd);
@@ -810,12 +921,28 @@ async function showTurnArtifacts(turn) {
     img.remove();
     if (paragraph && !paragraph.textContent.trim() && !paragraph.querySelector('img, a, code')) paragraph.remove();
   }
+  scrollDown();
 }
-function collectArtifactResult(turn, toolName, text) {
-  if (!turn || !['image_generate','office_document'].includes(toolName)) return;
+function collectArtifactResult(turn, toolName, text, toolDurationMs) {
+  if (!turn || !['image_generate','video_generate','office_document','cloudflare_deploy'].includes(toolName)) return;
   try {
     const result=JSON.parse(text);
-    const files=toolName==='image_generate'?[result.file]:(result.files || []);
+    if (toolName === 'cloudflare_deploy') {
+      if (result.deployed && Array.isArray(result.urls)) {
+        const urls = (turn.__websiteURLs ||= new Set());
+        result.urls.forEach(url => { if (websiteURL(url)) urls.add(websiteURL(url)); });
+      }
+      return;
+    }
+    if (toolName === 'video_generate' && result.task_id && result.model) {
+      const records = (turn.__videoResults ||= new Map());
+      const key = `${result.provider}:${result.task_id}`;
+      const previous = records.get(key);
+      records.set(key, { ...previous, ...result, file: result.file || previous?.file,
+        usage: result.usage || previous?.usage, timing: result.timing || previous?.timing,
+        __toolDurationMs: previous?.__toolDurationMs ?? toolDurationMs });
+    }
+    const files=['image_generate','video_generate'].includes(toolName)?[result.file]:(result.files || []);
     if(Array.isArray(files)) (turn.__artifactFiles ||= []).push(...files.filter(f=>typeof f==='string'));
   } catch {}
 }
@@ -865,6 +992,10 @@ function finalizeTurn() {
 let _statusTimer = null;
 function turnStatusText() {
   if (S.retrying) return `自动重试中 (${S.retrying.attempt}/${S.retrying.maxAttempts})`;
+  if (S.streamingTool === 'video_generate') {
+    const rec = [...S.toolCards.values()].reverse().find(item => item.toolName === 'video_generate' && item.card.classList.contains('running'));
+    if (rec?.videoProgress) return rec.videoProgress;
+  }
   if (S.streamingTool) return `正在执行 ${S.streamingTool}`;
   if (S.assistant) return "正在回复…";
   if (S.streaming) return "正在思考…";
@@ -946,7 +1077,17 @@ function finalizeMessage() {
 }
 
 function onMessageStart(msg) {
-  if (!msg || msg.role !== "assistant") return; // user messages are rendered locally
+  if (msg?.role === "user") {
+    const { text, images } = userMessageParts(msg);
+    if (!text.trim() && !images.length) return;
+    finalizeMessage();
+    finalizeTurn();
+    renderUserMsg(text, images);
+    S.lastUserPrompt = { text: userMessageText(text), images };
+    if (S.streaming) ensureTurn();
+    return;
+  }
+  if (!msg || msg.role !== "assistant") return;
   S.assistantText = "";
   S.thinkStreamed = false; // 本条消息是否流式收到过思考 delta（防止单尾重复恢复）
   collapseThink(); // 上一条消息残留的思考阶段收起，不能直接丢弃
@@ -1066,12 +1207,13 @@ function renderFatalError(raw) {
 }
 
 async function retryLast() {
+  if (S.switchingSession) return toast("正在切换会话，请稍候再发送", "");
   if (!S.lastUserPrompt) return toast("没有可重试的消息", "err");
   if (S.streaming) return toast("任务进行中", "err");
   const { text, images } = S.lastUserPrompt;
-  renderUserMsg(text, images);
   try {
-    await window.halo.prompt(text, { preview: currentPreviewContext(), ...(images.length ? { images: images.map(toPiImage) } : {}) });
+    const result = await window.halo.prompt(text, { preview: currentPreviewContext(), ...(images.length ? { images: images.map(toPiImage) } : {}) });
+    if (result?.ok === false) throw new Error(result.error || "指令执行失败");
   } catch (e) { toast(`发送失败：${e?.message || e}`, "err"); }
 }
 
@@ -1144,6 +1286,17 @@ function onToolStart(ev) {
 function onToolUpdate(ev) {
   const rec = S.toolCards.get(ev.toolCallId);
   if (!rec) return;
+  if (rec.toolName === 'video_generate') {
+    const partial = ev.partialResult || ev.partial || ev.result;
+    const details = partial?.details;
+    if (details?.model && details?.provider) {
+      const status = { preparing: '提交中', queued: '排队中', running: '正在生成', succeeded: '正在下载', failed: '生成失败', cancelled: '已取消' }[details.status] || '正在生成';
+      rec.videoProgress = `${details.provider_name || details.provider} · ${details.model} · ${status}`;
+      rec.arg.textContent = rec.videoProgress;
+      updateTurnStatus();
+      return;
+    }
+  }
   const args = ev.partial?.args || ev.args;
   if (args) rec.arg.textContent = trunc(toolDesc(rec.toolName, args), TRUNC_TOOL_ARG);
 }
@@ -1164,7 +1317,17 @@ function onToolEnd(ev) {
   let text = "";
   const contents = result?.content || [];
   for (const c of contents) if (c.type === "text") text += (text ? "\n" : "") + c.text;
-  if (!isError) collectArtifactResult(S.turn, rec.toolName, text);
+  const turn = rec.card.closest('.turn');
+  if (!isError) {
+    collectArtifactResult(turn, rec.toolName, text, secs * 1000);
+    // The completed file is deliverable now, even if the assistant continues
+    // thinking or running unrelated tools before its final response.
+    if (turn?.isConnected && rec.toolName === 'video_generate') {
+      showTurnArtifacts(turn);
+      void loadVideoBalance();
+      scheduleTreeRefresh();
+    }
+  }
   const diff = result?.details?.diff || result?.details?.patch;
   if (diff && !text) text = diff;
 
@@ -1317,17 +1480,16 @@ function handleMentionKey(e) {
   return true;
 }
 
-async function send() {
+async function send(queueMode = "steer") {
   const input = $("#input");
   const text = input.value.trim();
   if (!text && S.images.length === 0) return;
+  if (S.switchingSession) return toast("正在切换会话，请稍候再发送", "");
 
-  if (S.streaming) {
+  const queued = S.streaming;
+  if (queued) {
     if (text.startsWith("/")) return toast("任务进行中，命令暂不可用", "err");
-    await window.halo.steer(text);
-    input.value = "";
-    autoGrow();
-    return;
+    if (S.images.length) return toast("图片附件请在当前任务结束后发送，草稿已保留", "");
   }
 
   if (!S.state?.ready) return toast("核心尚未就绪，请稍候", "err");
@@ -1346,26 +1508,32 @@ async function send() {
   }
   if (lc === "/help") { input.value = ""; return openModal("helpModal"); }
 
-  // A4: snapshot for rollback
+  // Accepted user messages are rendered only by message_start, including queued
+  // messages. Do not deduplicate by text: identical consecutive prompts are valid.
+  const focus = { seq: S.sessionSwitchSeq, sessionId: S.state.sessionId, cwd: S.state.cwd };
   const sentImages = S.images.slice();
-  renderUserMsg(text, sentImages);
-  S.lastUserPrompt = { text, images: sentImages };
   S.images = [];
   renderAttachments();
   input.value = "";
   autoGrow();
+  const clearedRevision = S.composerRevision;
 
   try {
-    const result = await window.halo.prompt(text, { preview: currentPreviewContext(), ...(sentImages.length ? { images: sentImages.map(toPiImage) } : {}) });
+    const result = queued
+      ? await window.halo[queueMode === "followUp" ? "followUp" : "steer"](text)
+      : await window.halo.prompt(text, { preview: currentPreviewContext(), ...(sentImages.length ? { images: sentImages.map(toPiImage) } : {}) });
     if (result?.ok === false) throw new Error(result.error || "指令执行失败");
   } catch (e) {
     toast(`发送失败：${e?.message || e}`, "err");
-    // A4: rollback so the user doesn't lose their text
-    input.value = text;
-    S.images = sentImages;
-    renderAttachments();
-    autoGrow();
-    setStreamingUI(false);
+    // Restore only the untouched draft in the original view. State events remain
+    // authoritative for running tasks, including a task started in another view.
+    if (!S.switchingSession && focus.seq === S.sessionSwitchSeq && focus.sessionId === S.state?.sessionId &&
+        focus.cwd === S.state?.cwd && clearedRevision === S.composerRevision && !input.value && !S.images.length) {
+      input.value = text;
+      S.images = sentImages;
+      renderAttachments();
+      autoGrow();
+    }
   }
 }
 
@@ -1417,11 +1585,10 @@ async function restoreHistory(viewOverride) {
     const timestamp = m.timestamp ? new Date(m.timestamp).getTime() : null;
     if (m.role !== 'user' && S.turn && timestamp) S.turn.__endedAt = savedTiming?.end || timestamp;
     if (m.role === "user") {
-      const blocks = Array.isArray(m.content) ? m.content : [{type:'text',text:m.content || ''}];
-      const text = blocks.filter(c => c.type === 'text').map(c => c.text).join('\n');
-      const images = blocks.filter(c => c.type === 'image' && c.data && c.mimeType).map(c => ({mediaType:c.mimeType,data:c.data,name:'附件'}));
+      const { text, images } = userMessageParts(m);
       if (text.trim() || images.length) {
         finalizeTurn(); renderUserMsg(text, images);
+        S.lastUserPrompt = { text: userMessageText(text), images };
         savedTiming = view.turnTimings?.[String(m.timestamp)] || null;
         turnStart = savedTiming?.start || timestamp;
       }
@@ -1432,7 +1599,8 @@ async function restoreHistory(viewOverride) {
       const rec = toolCards.get(m.toolCallId);
       if (rec) {
         const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
-        if (!m.isError) collectArtifactResult(S.turn, rec.toolName, text);
+        if (!m.isError) collectArtifactResult(S.turn, rec.toolName, text,
+          m.timestamp && rec.startedAt ? new Date(m.timestamp) - rec.startedAt : undefined);
         rec.out.dataset.has = "1";
         rec.out.textContent = text ? trunc(text, 4000) : (m.isError ? "（无输出）" : "（完成）");
         if (!m.isError && AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim()) rec.out.hidden = false;
@@ -1530,6 +1698,7 @@ async function restoreHistory(viewOverride) {
     S.streamingTool = Object.values(view.activeTools || {}).join("、") || null;
     setStreamingUI(true);
     updateTurnStatus();
+    showTurnArtifacts(turn);
   } else finalizeTurn();
   scrollDown();
   // 同步插入已完成（期间无帧绘制），此刻移除才不会触发入场动画
@@ -1540,9 +1709,12 @@ async function restoreHistory(viewOverride) {
 /* ============================================================
    sessions / resources / models
    ============================================================ */
+let sessionListRequest = 0;
 async function loadSessions() {
+  const request = ++sessionListRequest, cwd = S.state?.cwd;
   loadProjects();
   const r = await window.halo.listSessions();
+  if (request !== sessionListRequest || cwd !== S.state?.cwd) return;
   S.sessions = r?.data || [];
   const cur = normPath(S.state?.sessionFile || "");
   const list = $("#sessionList");
@@ -1747,9 +1919,9 @@ function renderResources() {
     }));
 
   $("#skillList").querySelectorAll("[data-skill]").forEach((b) =>
-    b.addEventListener("click", () => { $("#input").value = `/skill:${b.dataset.skill} `; $("#input").focus(); }));
+    b.addEventListener("click", () => { $("#input").value = `/skill:${b.dataset.skill} `; autoGrow(); $("#input").focus(); }));
   $("#promptList").querySelectorAll("[data-prompt]").forEach((b) =>
-    b.addEventListener("click", () => { $("#input").value = `/${b.dataset.prompt} `; $("#input").focus(); }));
+    b.addEventListener("click", () => { $("#input").value = `/${b.dataset.prompt} `; autoGrow(); $("#input").focus(); }));
 }
 
 /* ---- models ---- */
@@ -1881,6 +2053,8 @@ function wireUI() {
     document.querySelectorAll("#settingsModal .set-nav").forEach((x) => x.classList.toggle("active", x === b));
     document.querySelectorAll("#settingsModal .set-pane").forEach((p) => p.classList.toggle("active", p.id === "setPane-" + b.dataset.pane));
     if (b.dataset.pane === "usage") loadUsage(); // 打开面板时刷新统计
+    if (b.dataset.pane === "environment") void environmentSettings?.refresh();
+    if (b.dataset.pane === "video") void videoSettings?.refresh();
   }));
   $("#usageRange").addEventListener("click", (e) => {
     const b = e.target.closest("[data-d]");
@@ -1957,7 +2131,7 @@ function wireUI() {
       e.preventDefault();
       if (e.altKey) {
         const t = input.value.trim();
-        if (t && S.streaming) { window.halo.followUp(t); input.value = ""; autoGrow(); }
+        if (t && S.streaming) send("followUp");
       } else {
         send();
       }
@@ -1977,7 +2151,7 @@ function wireUI() {
     // streaming + text -> steer; streaming + empty -> abort
     if (S.streaming) {
       const t = input.value.trim();
-      if (t) { window.halo.steer(t); input.value = ""; autoGrow(); toast("已入队引导消息", "ok"); }
+      if (t || S.images.length) send();
       else abort();
       return;
     }
@@ -1991,6 +2165,7 @@ function wireUI() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if (document.querySelector("select:open")) return;
     if (document.querySelector(".image-viewer[open]")) return;
     const open = $(".modal.show");
     if (open) { closeModal(open); return; }
@@ -2001,6 +2176,8 @@ function wireUI() {
   $("#btnThink").addEventListener("click", () => { renderThinkList(); openModal("thinkModal"); });
   $("#btnModel").addEventListener("click", () => { loadModels(); openModal("modelModal"); });
   $("#ctxQuota").addEventListener("click", openUsageDetails);
+  $('#ctxVideoQuota').addEventListener('click', openVideoUsage);
+  $('#refreshVideoUsage').addEventListener('click', () => { void loadVideoBalance(); void openVideoUsage(); });
   $("#ctxQuota").tabIndex = 0;
   $("#ctxQuota").setAttribute("role", "button");
   $("#ctxQuota").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openUsageDetails(); } });
@@ -2341,6 +2518,24 @@ const currentPreviewDevice = () => {
   return c.contains("dev-tablet") ? "tablet" : c.contains("dev-mobile") ? "mobile" : "desktop";
 };
 
+function previewDeviceStatusbar() {
+  const now = new Date();
+  const time = now.getHours() + ":" + String(now.getMinutes()).padStart(2, "0");
+  return `<div class="dev-statusbar" aria-hidden="true"><span class="dsb-time">${time}</span><span class="dsb-cam"></span><span class="dsb-icons">` +
+    `<svg viewBox="0 0 16 12"><rect x="0" y="7" width="2.5" height="5" rx="0.8"/><rect x="4" y="5" width="2.5" height="7" rx="0.8"/><rect x="8" y="3" width="2.5" height="9" rx="0.8"/><rect x="12" y="1" width="2.5" height="11" rx="0.8" opacity="0.4"/></svg>` +
+    `<svg viewBox="0 0 16 12"><path d="M8 10.8a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8Z"/><path d="M3.6 7.2a6.2 6.2 0 0 1 8.8 0l-1.4 1.4a4.2 4.2 0 0 0-6 0Z"/><path d="M1.2 4.8a9.6 9.6 0 0 1 13.6 0l-1.4 1.4a7.6 7.6 0 0 0-10.8 0Z"/></svg>` +
+    `<svg viewBox="0 0 22 12"><rect x="0.5" y="1.5" width="18" height="9" rx="2.5" fill="none" stroke="currentColor" stroke-width="1"/><rect x="2.2" y="3.2" width="11" height="5.6" rx="1.2"/><rect x="19.8" y="4" width="2" height="4" rx="1"/></svg>` +
+    `</span></div>`;
+}
+
+function mediaPreviewShell(media) {
+  const shell = document.createElement('div');
+  shell.className = 'dev-shell dev-media-shell';
+  shell.innerHTML = `${previewDeviceStatusbar()}<div class="dev-screen"></div>`;
+  shell.querySelector('.dev-screen').appendChild(media);
+  return shell;
+}
+
 async function setPreview(p, force) {
   if (!p) return;
   if (!force && S.previewFile === p) return;
@@ -2382,16 +2577,19 @@ async function setPreview(p, force) {
       }
     };
     await load();
+  } else if (["mp4", "webm"].includes(ext)) {
+    const player = document.createElement('video'); player.className = 'pv-video'; player.controls = true; player.preload = 'metadata';
+    player.src = previewURL(p); player.setAttribute('aria-label', '视频预览'); body.replaceChildren(mediaPreviewShell(player));
   } else if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) {
     const img=document.createElement('img');img.className='pv-img';img.alt='图片预览';
     img.onerror=()=>{if(request===portPreviewRequest)body.innerHTML='<div class="fv-note">图片已移动、删除或无法读取，请从文件列表重新选择。</div>';};
-    img.src=previewURL(p);body.replaceChildren(img);
+    img.src=previewURL(p);body.replaceChildren(mediaPreviewShell(img));
   } else if (["md", "markdown"].includes(ext)) {
     body.innerHTML = `<div class="md-view">加载中…</div>`;
     const r = await window.halo.readFile(p);
     if (request !== portPreviewRequest) return;
     body.innerHTML = r?.data
-      ? `<div class="md-view">${rich(r.data.content)}</div>`
+      ? `<div class="md-view">${mdRender(r.data.content, r.data.path || p)}</div>`
       : `<div class="pv-empty"><p>无法读取：${esc(r?.error || "")}</p></div>`;
   } else if (["html", "htm"].includes(ext) || ext === "htm") {
     if (S.previewMode === "source") {
@@ -2408,15 +2606,7 @@ async function setPreview(p, force) {
       const nums = Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
       body.innerHTML = `<div class="file-view"><div class="fv-code"><div class="fvc-ln">${nums}</div><pre class="fvc-body">${hlFile(content, "html")}</pre></div></div>`;
     } else {
-      // 手机状态栏：实时时间 + 信号/wifi/电池 + 中央打孔摄像头（仅手机模式显示，CSS 控制）
-      const now = new Date();
-      const timeStr = now.getHours() + ":" + String(now.getMinutes()).padStart(2, "0");
-      const statusbar = `<div class="dev-statusbar"><span class="dsb-time">${timeStr}</span><span class="dsb-cam"></span><span class="dsb-icons">` +
-        `<svg viewBox="0 0 16 12"><rect x="0" y="7" width="2.5" height="5" rx="0.8"/><rect x="4" y="5" width="2.5" height="7" rx="0.8"/><rect x="8" y="3" width="2.5" height="9" rx="0.8"/><rect x="12" y="1" width="2.5" height="11" rx="0.8" opacity="0.4"/></svg>` +
-        `<svg viewBox="0 0 16 12"><path d="M8 10.8a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8Z"/><path d="M3.6 7.2a6.2 6.2 0 0 1 8.8 0l-1.4 1.4a4.2 4.2 0 0 0-6 0Z"/><path d="M1.2 4.8a9.6 9.6 0 0 1 13.6 0l-1.4 1.4a7.6 7.6 0 0 0-10.8 0Z"/></svg>` +
-        `<svg viewBox="0 0 22 12"><rect x="0.5" y="1.5" width="18" height="9" rx="2.5" fill="none" stroke="currentColor" stroke-width="1"/><rect x="2.2" y="3.2" width="11" height="5.6" rx="1.2"/><rect x="19.8" y="4" width="2" height="4" rx="1"/></svg>` +
-        `</span></div>`;
-      body.innerHTML = `<div class="dev-shell">${statusbar}<iframe src="${previewURL(p)}"></iframe></div>`;
+      body.innerHTML = `<div class="dev-shell">${previewDeviceStatusbar()}<iframe src="${previewURL(p)}"></iframe></div>`;
       window.halo.previewTouch?.(currentPreviewDevice() !== "desktop");
     }
   } else {
@@ -2573,6 +2763,7 @@ function openImagePreview(src, name = "截图", gallery = [{ src, name }], initi
 }
 
 function renderAttachments() {
+  S.composerRevision++;
   const row = $("#attachRow");
   row.hidden = S.images.length === 0;
   row.innerHTML = "";
@@ -2598,30 +2789,38 @@ async function applyProjectReset() {
 }
 
 async function pickProject() {
-  
-  const prev = S.state?.cwd || ""; // 必须在对话框之前保存：主进程选完目录会立即切换并推送状态
+  const prev = S.state?.cwd || "";
   const r = await window.halo.pickProject(prev);
   const dir = r?.data;
   if (!dir) return;
-  // 注意：此刻 S.state.cwd 已被主进程更新为新目录，不能再拿它做比较，
-  // 否则守卫恒真、switchProjectViaAdd 永不执行，左侧列表永远不刷新
-  if (normPath(dir) === normPath(prev)) return; // 选的是当前项目 → 无操作
-  // projectAdd 内部去重：已在列表只切换，新目录加入列表后切换
+  if (normPath(dir) === normPath(S.state?.cwd || "")) return;
+  // The picker only selects a directory. projectAdd registers it and switches
+  // through the main process's serialized session transition.
   await switchProjectViaAdd(dir);
 }
 async function switchProjectViaAdd(dir) {
+  const seq = ++S.sessionSwitchSeq;
+  S.switchingSession = true;
   toast(`正在添加项目 · ${String(dir).split(/[\\/]/).pop()}…`, "");
   const box = $("#projList");
   if (box) box.style.opacity = "0.5";
-  const r = await window.halo.projectAdd(dir);
-  if (box) box.style.opacity = "";
-  if (!r?.ok) return toast(`添加失败：${r?.error || ""}`, "err");
-  applyProjectReset();
-  await Promise.all([loadTree(true), loadSessions(), loadResources()]);
-  loadProjects();
-  await restoreHistory();
-  saveWorkspace();
-  toast(`已添加项目 · ${String(dir).split(/[\\/]/).pop()}`, "ok");
+  try {
+    const r = await window.halo.projectAdd(dir);
+    if (seq !== S.sessionSwitchSeq) return;
+    if (!r?.ok) return toast(`添加失败：${r?.error || ""}`, "err");
+    applyProjectReset();
+    await restoreHistory();
+    if (seq !== S.sessionSwitchSeq) return;
+    await Promise.all([loadTree(true), loadSessions(), loadResources(), loadProjects()]);
+    if (seq !== S.sessionSwitchSeq) return;
+    saveWorkspace();
+    toast(`已添加项目 · ${String(dir).split(/[\\/]/).pop()}`, "ok");
+  } finally {
+    if (seq === S.sessionSwitchSeq) {
+      if (box) box.style.opacity = "";
+      finishSessionSwitch();
+    }
+  }
 }
 
 /* ---- 项目：一个项目 = 一个文件夹，各自记住上一个对话 ---- */
@@ -2691,9 +2890,7 @@ async function loadProjects() {
     toggle.title = p.cwd;
     children.hidden = collapsedProjects.has(p.cwd);
     addConversationFold(toggle, children, collapsedProjects, p.cwd, p.name);
-    $(".project-remove", group).disabled = p.active;
-    if (p.active) $(".project-remove", group).title = "请先切换到其他项目再移除";
-    $(".project-remove", group).addEventListener("click", async () => { closeServerMenus(); const result = await window.halo.projectRemove(p.cwd); if (!result?.ok) toast(result?.error || "移除失败", "err"); await loadProjects(); });
+    $(".project-remove", group).addEventListener("click", () => removeWorkspaceItem(() => window.halo.projectRemove(p.cwd)));
     $(".project-new", group).addEventListener("click", async () => {
       if (!p.active) { await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
       collapsedProjects.delete(p.cwd); await newSession(); await loadProjects(); $("#input").focus();
@@ -2715,6 +2912,29 @@ async function loadProjects() {
       row.append(button, remove); children.appendChild(row);
     }
     box.appendChild(group);
+  }
+}
+async function removeWorkspaceItem(remove, serverId = null) {
+  if (S.switchingSession) return;
+  closeServerMenus();
+  const seq = ++S.sessionSwitchSeq;
+  S.switchingSession = true;
+  try {
+    const r = await remove();
+    if (seq !== S.sessionSwitchSeq) return;
+    if (!r?.ok) throw Error(r?.error || "移除失败");
+    if (serverId && browsingServerId === serverId) browsingServerId = null;
+    const reset = r.data.switched || (serverId && previewService?.serverId === serverId);
+    if (reset) await applyProjectReset();
+    applyState(r.data.state);
+    if (reset) await restoreHistory();
+    if (seq !== S.sessionSwitchSeq) return;
+    await Promise.all([loadTree(true), loadSessions(), loadResources(), loadProjects(), refreshServers()]);
+    saveWorkspace();
+  } catch (e) {
+    if (seq === S.sessionSwitchSeq) toast(e?.message || "移除失败", "err");
+  } finally {
+    if (seq === S.sessionSwitchSeq) finishSessionSwitch();
   }
 }
 async function switchProject(cwd) {
@@ -2741,17 +2961,25 @@ async function switchProject(cwd) {
 /* ============================================================
    modals / toast / misc
    ============================================================ */
+const modalCloseTimers = new WeakMap();
 function openModal(id) {
   const m = document.getElementById(id);
+  clearTimeout(modalCloseTimers.get(m));
   m.hidden = false;
-  requestAnimationFrame(() => m.classList.add("show"));
+  if (id === "usageDetailModal" || id === "videoUsageModal") void m.offsetWidth; // Commit the starting style before transitioning.
+  requestAnimationFrame(() => { if (!m.hidden && !modalCloseTimers.has(m)) m.classList.add("show"); });
+  modalCloseTimers.delete(m);
   if (id === "modelModal") { $("#modelSearch").value = ""; loadModels(); }
 }
 function closeModal(m) {
   const el = m || $(".modal.show");
   if (!el) return;
   el.classList.remove("show");
-  setTimeout(() => (el.hidden = true), 280);
+  clearTimeout(modalCloseTimers.get(el));
+  modalCloseTimers.set(el, setTimeout(() => {
+    el.hidden = true;
+    modalCloseTimers.delete(el);
+  }, ["usageDetailModal", "videoUsageModal"].includes(el.id) ? 180 : 280));
 }
 
 /* 提示气泡：错误/警告始终显示（静默失败 = 用户无感知，属缺陷）；
@@ -2771,6 +2999,7 @@ function toast(text, kind = "") {
 }
 
 function autoGrow() {
+  S.composerRevision++;
   const input = $("#input");
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 180) + "px";
@@ -3151,6 +3380,8 @@ $$("[data-theme-choice]").forEach((b) => b.addEventListener("click", () => apply
 function openSettings() {
   syncThemeChoices();
   openModal("settingsModal");
+  if ($("#setPane-environment").classList.contains("active")) void environmentSettings?.refresh();
+  if ($("#setPane-video").classList.contains("active")) void videoSettings?.refresh();
   loadDefaultModels();
   S.pkgLoaded = true;
   loadInstalled(); // 已安装数据每次打开都刷新
@@ -3229,6 +3460,38 @@ async function loadDefaultModels() {
 }
 
 /* ---- 用量统计 ---- */
+let videoUsageRequest = 0;
+async function openVideoUsage() {
+  openModal('videoUsageModal');
+  const seq = ++videoUsageRequest, body = $('#videoUsageBody');
+  body.innerHTML = '<div class="model-empty">正在读取记录…</div>';
+  try {
+    const reply = await window.halo.videoHistory();
+    if (seq !== videoUsageRequest) return;
+    if (!reply?.ok) throw Error(reply?.error || '读取失败');
+    body.replaceChildren();
+    if (!reply.data.length) { body.textContent = '暂无视频生成记录'; return; }
+    for (const job of reply.data) {
+      const row = document.createElement('div'); row.className = 'usage-session-row';
+      const main = document.createElement('div'), title = document.createElement('b'), detail = document.createElement('small');
+      title.textContent = `${job.providerName} · ${job.model}`;
+      detail.textContent = `${job.createdAt ? new Date(job.createdAt).toLocaleString() : ''} · ${job.resolution || '—'} · ${job.duration || '—'} 秒`;
+      main.append(title, detail);
+      const numbers = document.createElement('div'); numbers.className = 'usage-session-numbers';
+      const amount = document.createElement('strong'), status = document.createElement('small');
+      const actual = job.actual, estimate = job.estimate;
+      const value = Number.isFinite(actual?.amount) ? actual.amount : estimate?.total;
+      const unit = Number.isFinite(actual?.amount) ? actual.unit : estimate?.currency;
+      amount.textContent = Number.isFinite(value) ? `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(value)} ${unit === 'Credits' ? '积分' : unit || ''}` : '消耗未返回';
+      status.textContent = `${({delivered:'已完成', succeeded:'生成成功', failed:'失败', queued:'排队中', processing:'生成中'})[job.status] || job.status || '未知状态'} · ${Number.isFinite(actual?.amount) ? '实际消耗' : '暂无实际消耗'}`;
+      if (!Number.isFinite(actual?.amount) && Number.isFinite(value)) amount.textContent = '预估 ' + amount.textContent;
+      row.title = `任务 ${job.id}`;
+      numbers.append(amount, status); row.append(main, numbers); body.append(row);
+    }
+  } catch {
+    if (seq === videoUsageRequest) body.innerHTML = '<div class="model-empty">读取失败，请点击刷新重试</div>';
+  }
+}
 let usageDetailRequest = 0;
 async function openUsageDetails() {
   openModal("usageDetailModal");
@@ -3239,12 +3502,10 @@ async function openUsageDetails() {
   if (seq !== usageDetailRequest) return;
   if (!result?.ok) { body.innerHTML = '<div class="model-empty">统计失败，请点击刷新重试</div>'; return; }
   const d = result.data, today = d.today || {}, rows = d.sessionDetails || [];
-  body.innerHTML = '<div class="usage-detail-date">今日 · '+esc(today.date || '')+' · 本地时间</div><div class="usage-cards">' +
-    '<div class="usage-card"><b>'+fmtTokens(today.totalTokens || 0)+'</b><small>今日 Token</small></div>' +
-    '<div class="usage-card"><b>'+fmtCost(today.cost || 0)+'</b><small>今日估算费用 · USD</small></div></div>' +
-    '<p class="settings-hint">输入 '+fmtTokens(today.input || 0)+' · 输出 '+fmtTokens(today.output || 0)+' · 缓存 '+fmtTokens((today.cacheRead || 0)+(today.cacheWrite || 0))+'</p>' +
-    '<p class="usage-cost-note">费用按 pi 本地记录的模型计价估算（美元），不是余额扣款账单。订阅或缺少价格的模型可能记录为 0；不包含其他客户端未保存到本地的使用量。</p>' +
-    '<div class="usage-detail-date">历史会话 · '+rows.length+' 个 · 累计 '+fmtCost(d.totals.cost || 0)+'</div><div id="usageSessionRows"></div>';
+  body.innerHTML = '<div class="usage-summary-heading"><b>今日用量</b><span>'+esc(today.date || '')+'</span></div><div class="usage-cards">' +
+    '<div class="usage-card"><small>Token</small><b>'+fmtTokens(today.totalTokens || 0)+'</b></div>' +
+    '<div class="usage-card" title="按本地记录估算，非实际扣款；订阅模型可能显示为 0"><small>预估费用 · USD</small><b>'+fmtCost(today.cost || 0)+'</b></div></div>' +
+    '<div class="usage-history-heading"><b>历史记录 <span>'+rows.length+'</span></b><span>累计预估 <strong>'+fmtCost(d.totals?.cost || 0)+'</strong></span></div><div id="usageSessionRows"></div>';
   const list = $("#usageSessionRows");
   if (!rows.length) list.textContent = "暂无用量记录";
   for (const r of rows) {
@@ -3407,8 +3668,8 @@ function renderInstalled() {
         <div class="pkg-installed-desc">${esc(p.desc || "暂未提供简短说明，可打开介绍页面查看功能与用法。")}</div>
       </div>
       <div class="pkg-ops">
-        ${introButton(p)}
         <button class="ext-switch${p.disabled ? "" : " on"}" data-act="toggle" title="${p.disabled ? "启用" : "停用"}"></button>
+        ${introButton(p)}
         ${p.update ? `<button class="mini-btn accent" data-act="update">更新</button>` : ""}
         <button class="mini-btn danger" data-act="remove">卸载</button>
       </div>

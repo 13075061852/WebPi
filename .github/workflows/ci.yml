@@ -21,3 +21,5 @@ jobs:
       - run: node test/check-touch-script.mjs
       # 静态检查
       - run: npm run lint
+      # 离线功能回归：隔离会话/认证夹具，不需要模型账户或全局 pi SDK
+      - run: npm run test:regressions

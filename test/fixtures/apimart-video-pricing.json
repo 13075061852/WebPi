@@ -1,0 +1,654 @@
+{
+  "source": "https://apimart.ai/pricing",
+  "verifiedAt": "2026-09-14",
+  "models": [
+    {
+      "id": "MiniMax-H3",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.1143,
+            "after_discount": 0.09144
+          },
+          {
+            "key": "2K",
+            "original_price": 0.1143,
+            "after_discount": 0.09144
+          },
+          {
+            "key": "768P",
+            "original_price": 0.0714,
+            "after_discount": 0.05712
+          }
+        ]
+      },
+      "input_material_prices": {
+        "image": {
+          "unit": "usd_per_image",
+          "free_count": 5,
+          "original_price": 0.0286,
+          "after_discount": 0.02288
+        },
+        "video": {
+          "unit": "usd_per_second",
+          "items": [
+            {
+              "key": "default",
+              "original_price": 0.1143,
+              "after_discount": 0.09144
+            },
+            {
+              "key": "2K",
+              "original_price": 0.1143,
+              "after_discount": 0.09144
+            },
+            {
+              "key": "768P",
+              "original_price": 0.0714,
+              "after_discount": 0.05712
+            }
+          ],
+          "billing_mode": "additive_duration",
+          "max_billable_seconds": 15
+        }
+      }
+    },
+    {
+      "id": "sora-2",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.1,
+            "after_discount": 0.08
+          },
+          {
+            "key": "official-720P",
+            "original_price": 0.1,
+            "after_discount": 0.08
+          }
+        ]
+      }
+    },
+    {
+      "id": "veo3.1-fast",
+      "fixed_prices": {
+        "unit": "usd_per_call",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.175,
+            "after_discount": 0.14
+          },
+          {
+            "key": "4K",
+            "original_price": 0.8,
+            "after_discount": 0.64
+          },
+          {
+            "key": "EXTEND-4K",
+            "original_price": 0.8,
+            "after_discount": 0.64
+          },
+          {
+            "key": "extend",
+            "original_price": 0.175,
+            "after_discount": 0.14
+          }
+        ]
+      }
+    },
+    {
+      "id": "veo3.1-quality",
+      "fixed_prices": {
+        "unit": "usd_per_call",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 1.25,
+            "after_discount": 1
+          },
+          {
+            "key": "4K",
+            "original_price": 1.875,
+            "after_discount": 1.5
+          },
+          {
+            "key": "EXTEND-4K",
+            "original_price": 1.875,
+            "after_discount": 1.5
+          },
+          {
+            "key": "extend",
+            "original_price": 1.25,
+            "after_discount": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "grok-imagine-video",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.05,
+            "after_discount": 0.04
+          },
+          {
+            "key": "480P",
+            "original_price": 0.05,
+            "after_discount": 0.04
+          },
+          {
+            "key": "720P",
+            "original_price": 0.07,
+            "after_discount": 0.056
+          }
+        ]
+      },
+      "input_material_prices": {
+        "image": {
+          "unit": "usd_per_image",
+          "free_count": 0,
+          "original_price": 0.002,
+          "after_discount": 0.0016
+        },
+        "video": {
+          "unit": "usd_per_second",
+          "original_price": 0.01,
+          "after_discount": 0.008
+        }
+      }
+    },
+    {
+      "id": "grok-imagine-video-1.5",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.08,
+            "after_discount": 0.064
+          },
+          {
+            "key": "1080P",
+            "original_price": 0.25,
+            "after_discount": 0.2
+          },
+          {
+            "key": "480P",
+            "original_price": 0.08,
+            "after_discount": 0.064
+          },
+          {
+            "key": "720P",
+            "original_price": 0.14,
+            "after_discount": 0.112
+          }
+        ]
+      },
+      "input_material_prices": {
+        "image": {
+          "unit": "usd_per_image",
+          "free_count": 0,
+          "original_price": 0.01,
+          "after_discount": 0.008
+        }
+      }
+    },
+    {
+      "id": "kling-v3",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.084,
+            "after_discount": 0.0672
+          },
+          {
+            "key": "4k",
+            "original_price": 0.5357,
+            "after_discount": 0.42856
+          },
+          {
+            "key": "4k-sound",
+            "original_price": 0.5357,
+            "after_discount": 0.42856
+          },
+          {
+            "key": "pro",
+            "original_price": 0.112,
+            "after_discount": 0.0896
+          },
+          {
+            "key": "pro-sound",
+            "original_price": 0.168,
+            "after_discount": 0.1344
+          },
+          {
+            "key": "sound",
+            "original_price": 0.126,
+            "after_discount": 0.1008
+          }
+        ]
+      }
+    },
+    {
+      "id": "seedance-2.0",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "1080P",
+            "original_price": 0.443,
+            "after_discount": 0.3544
+          },
+          {
+            "key": "1080P-input",
+            "original_price": 0.2696,
+            "after_discount": 0.21568
+          },
+          {
+            "key": "480P",
+            "original_price": 0.0825,
+            "after_discount": 0.066
+          },
+          {
+            "key": "480P-input",
+            "original_price": 0.05,
+            "after_discount": 0.04
+          },
+          {
+            "key": "4K",
+            "original_price": 0.9025,
+            "after_discount": 0.722
+          },
+          {
+            "key": "4K-input",
+            "original_price": 0.5554,
+            "after_discount": 0.44432
+          },
+          {
+            "key": "720P",
+            "original_price": 0.1775,
+            "after_discount": 0.142
+          },
+          {
+            "key": "720P-input",
+            "original_price": 0.1073,
+            "after_discount": 0.08584
+          }
+        ]
+      }
+    },
+    {
+      "id": "seedance-2.0-fast",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "480P",
+            "original_price": 0.0498,
+            "after_discount": 0.03984
+          },
+          {
+            "key": "480P-input",
+            "original_price": 0.0296,
+            "after_discount": 0.02368
+          },
+          {
+            "key": "720P",
+            "original_price": 0.107,
+            "after_discount": 0.0856
+          },
+          {
+            "key": "720P-input",
+            "original_price": 0.0641,
+            "after_discount": 0.05128
+          }
+        ]
+      }
+    },
+    {
+      "id": "seedance-2.0-mini",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "480P",
+            "original_price": 0.0132,
+            "after_discount": 0.01056
+          },
+          {
+            "key": "480P-input",
+            "original_price": 0.008,
+            "after_discount": 0.0064
+          },
+          {
+            "key": "720P",
+            "original_price": 0.0286,
+            "after_discount": 0.02288
+          },
+          {
+            "key": "720P-input",
+            "original_price": 0.0173,
+            "after_discount": 0.01384
+          }
+        ]
+      }
+    },
+    {
+      "id": "seedance-2.5",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.27,
+            "after_discount": 0.216
+          },
+          {
+            "key": "1080P",
+            "original_price": 0.4811,
+            "after_discount": 0.38488
+          },
+          {
+            "key": "1080P-input",
+            "original_price": 0.2874,
+            "after_discount": 0.22992
+          },
+          {
+            "key": "480P",
+            "original_price": 0.1201,
+            "after_discount": 0.09608
+          },
+          {
+            "key": "480P-input",
+            "original_price": 0.072,
+            "after_discount": 0.0576
+          },
+          {
+            "key": "720P",
+            "original_price": 0.27,
+            "after_discount": 0.216
+          },
+          {
+            "key": "720P-input",
+            "original_price": 0.162,
+            "after_discount": 0.1296
+          }
+        ]
+      },
+      "token_settlement_prices": {
+        "unit": "usd_per_million_tokens",
+        "items": [
+          {
+            "key": "token",
+            "original_price": 12.5,
+            "after_discount": 10
+          },
+          {
+            "key": "token-input",
+            "original_price": 7.5,
+            "after_discount": 6
+          },
+          {
+            "key": "token-1080P",
+            "original_price": 9.9,
+            "after_discount": 7.92
+          },
+          {
+            "key": "token-1080P-input",
+            "original_price": 5.9143,
+            "after_discount": 4.73144
+          }
+        ]
+      }
+    },
+    {
+      "id": "sora-2-pro",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.75,
+            "after_discount": 0.6
+          },
+          {
+            "key": "official-1024P",
+            "original_price": 0.5,
+            "after_discount": 0.4
+          },
+          {
+            "key": "official-1080P",
+            "original_price": 0.7,
+            "after_discount": 0.56
+          },
+          {
+            "key": "official-720P",
+            "original_price": 0.3,
+            "after_discount": 0.24
+          }
+        ]
+      }
+    },
+    {
+      "id": "veo3.1-fast-official",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.1,
+            "after_discount": 0.08
+          },
+          {
+            "key": "1080P",
+            "original_price": 0.1,
+            "after_discount": 0.08
+          },
+          {
+            "key": "1080P-audio",
+            "original_price": 0.12,
+            "after_discount": 0.096
+          },
+          {
+            "key": "4K",
+            "original_price": 0.25,
+            "after_discount": 0.2
+          },
+          {
+            "key": "4K-audio",
+            "original_price": 0.3,
+            "after_discount": 0.24
+          },
+          {
+            "key": "720P",
+            "original_price": 0.08,
+            "after_discount": 0.064
+          },
+          {
+            "key": "720P-audio",
+            "original_price": 0.1,
+            "after_discount": 0.08
+          },
+          {
+            "key": "audio",
+            "original_price": 0.12,
+            "after_discount": 0.096
+          }
+        ]
+      }
+    },
+    {
+      "id": "veo3.1-lite",
+      "fixed_prices": {
+        "unit": "usd_per_call",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.0875,
+            "after_discount": 0.07
+          },
+          {
+            "key": "4K",
+            "original_price": 0.7125,
+            "after_discount": 0.57
+          },
+          {
+            "key": "EXTEND-4K",
+            "original_price": 0.7125,
+            "after_discount": 0.57
+          },
+          {
+            "key": "extend",
+            "original_price": 0.0875,
+            "after_discount": 0.07
+          }
+        ]
+      }
+    },
+    {
+      "id": "veo3.1-quality-official",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.2,
+            "after_discount": 0.16
+          },
+          {
+            "key": "1080P",
+            "original_price": 0.2,
+            "after_discount": 0.16
+          },
+          {
+            "key": "4K",
+            "original_price": 0.4,
+            "after_discount": 0.32
+          },
+          {
+            "key": "4K-audio",
+            "original_price": 0.6,
+            "after_discount": 0.48
+          },
+          {
+            "key": "720P",
+            "original_price": 0.2,
+            "after_discount": 0.16
+          },
+          {
+            "key": "audio",
+            "original_price": 0.4,
+            "after_discount": 0.32
+          }
+        ]
+      }
+    },
+    {
+      "id": "viduq3-pro",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "1080P",
+            "original_price": 0.16,
+            "after_discount": 0.128
+          },
+          {
+            "key": "540P",
+            "original_price": 0.07,
+            "after_discount": 0.056
+          },
+          {
+            "key": "720P",
+            "original_price": 0.15,
+            "after_discount": 0.12
+          }
+        ]
+      }
+    },
+    {
+      "id": "viduq3-turbo",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "1080P",
+            "original_price": 0.07,
+            "after_discount": 0.056
+          },
+          {
+            "key": "540P",
+            "original_price": 0.04,
+            "after_discount": 0.032
+          },
+          {
+            "key": "720P",
+            "original_price": 0.06,
+            "after_discount": 0.048
+          }
+        ]
+      }
+    },
+    {
+      "id": "wan2.6",
+      "billing_type": "per_second",
+      "fixed_prices": {
+        "unit": "usd_per_second",
+        "dimension": "resolution",
+        "items": [
+          {
+            "key": "default",
+            "original_price": 0.0625,
+            "after_discount": 0.05
+          },
+          {
+            "key": "1080P",
+            "original_price": 0.105,
+            "after_discount": 0.084
+          }
+        ]
+      }
+    }
+  ]
+}

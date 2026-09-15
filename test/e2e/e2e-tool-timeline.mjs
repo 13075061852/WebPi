@@ -94,7 +94,7 @@ try {
  const turn=document.querySelector('.turn');
  return {visible:turn.querySelectorAll(':scope > .tool').length, archived:turn.querySelectorAll('.tool-history .tool').length,statusAtTop:!!turn.querySelector('.tool-history > summary > .turn-status'),oldLabel:turn.textContent.includes('较早的过程'),open:turn.querySelector('.tool-history').open};
  })()`);
- if(live.visible!==3||live.archived!==4||live.open||!live.statusAtTop||live.oldLabel)throw Error(JSON.stringify(live));
+ if(live.visible!==1||live.archived!==6||live.open||!live.statusAtTop||live.oldLabel)throw Error(JSON.stringify(live));
  const ended=await evalJS(`(()=>{
  const d=window.__haloDispatch;
  d({type:'agent_settled'});
@@ -102,5 +102,5 @@ try {
  return {visible:turn.querySelectorAll(':scope > .tool').length,archived:turn.querySelectorAll('.process-group .tool').length,open:turn.querySelector('.process-group').open,nested:turn.querySelectorAll('.tool-history').length};
  })()`);
  if(ended.visible!==0||ended.archived!==7||ended.open||ended.nested)throw Error(JSON.stringify(ended));
- console.log('PASS latest three tools visible; older tools collapsed; completed process entirely collapsed');
+ console.log('PASS latest tool visible; older tools collapsed; completed process entirely collapsed');
 } finally {ws.close();electron.kill();}

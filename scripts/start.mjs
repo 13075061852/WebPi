@@ -1,18 +1,13 @@
 /**
  * Halo 启动器。
  *
- * Electron 内置的 Node 24 fetch（undici）默认无视 HTTP(S)_PROXY 环境变量，
- * 直连会被墙的供应商（openai-codex 等）会报 "fetch failed"；
- * NODE_USE_ENV_PROXY=1 让内置 fetch 走系统代理 —— 与 pi CLI 的行为保持一致。
- * 该变量在 Node 启动时读取，因此必须在 Electron 进程启动前由这里注入。
+ * 代理由主进程 env-proxy.mjs 统一初始化，开发版与安装版使用相同逻辑。
  */
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-
-process.env.NODE_USE_ENV_PROXY = "1";
 
 /* 取消监听器上限警告（本进程仅做转发，无泄漏风险） */
 process.setMaxListeners?.(0);

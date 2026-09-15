@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: halo-preview:; frame-src 'self' halo-preview: http://127.0.0.1:* https://127.0.0.1:*; connect-src 'self'; object-src 'none'; base-uri 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: halo-preview:; media-src 'self' halo-preview:; frame-src 'self' halo-preview: http://127.0.0.1:* https://127.0.0.1:*; connect-src 'self'; object-src 'none'; base-uri 'none'" />
 <title>Pi Halo · 星环</title>
 <script src="js/theme-catalog.js"></script>
 <script src="js/theme.js"></script>
@@ -205,15 +205,10 @@
         <div class="input-shell">
           <div id="mentionMenu" hidden><div class="mention-heading"></div><div id="mentionOptions" role="listbox" aria-label="项目文件与文件夹"></div><div class="mention-help">↑↓ 选择 · Enter 插入 · Esc 关闭</div></div>
           <textarea id="input" rows="1" placeholder="描述你要完成的任务…  Enter 发送 · Shift+Enter 换行"></textarea>
-        </div>
           <div class="composer-bar">
             <div class="cb-left">
               <button id="btnAttach" title="附加图片"><svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg></button>
               <button id="btnModel" class="chip"><svg viewBox="0 0 24 24" class="ic"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg><span id="modelChipName">模型</span></button>
-              <span id="ctxQuota" class="chip quota" title="当前模型上下文剩余额度（会话已用 / 模型窗口）">
-                <span class="q-track"><i id="ctxQuotaBar"></i></span>
-                <span id="ctxQuotaText">—</span>
-              </span>
             </div>
             <div class="cb-right">
               <button id="btnThink" class="chip"><span id="thinkChip">自动</span><svg viewBox="0 0 24 24" class="ic chev"><path d="m6 9 6 6 6-6"/></svg></button>
@@ -223,6 +218,11 @@
               </button>
             </div>
           </div>
+        </div>
+        <div class="composer-balances">
+          <span id="ctxQuota" class="chip quota"><span>大模型</span><span class="q-track"><i id="ctxQuotaBar"></i></span><span id="ctxQuotaText">—</span></span>
+          <button id="ctxVideoQuota" class="chip" type="button" title="默认视频平台账户余额，点击刷新">视频 —</button>
+        </div>
       </footer>
     </section>
   </div>
@@ -278,6 +278,10 @@
         <svg viewBox="0 0 24 24" class="ic"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="M12 12l8-4.5M12 12v9M12 12 4 7.5"/></svg>
         插件技能
       </button>
+      <button class="set-nav" data-pane="environment">
+        <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4M7 8l3 3-3 3M13 14h4"/></svg>
+        环境配置
+      </button>
       <button class="set-nav" data-pane="appearance">
         <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18Z"/></svg>
         主题搭配
@@ -285,6 +289,10 @@
       <button class="set-nav" data-pane="login">
         <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
         模型登录
+      </button>
+      <button class="set-nav" data-pane="video">
+        <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="5" width="12" height="14" rx="2"/><path d="m15 10 6-4v12l-6-4"/></svg>
+        视频模型
       </button>
       <button class="set-nav" data-pane="usage">
         <svg viewBox="0 0 24 24" class="ic"><path d="M4 20h16M7 20v-6M12 20V8M17 20v-9"/></svg>
@@ -327,6 +335,61 @@
       <div class="set-pending" id="pkgPendingBar" hidden>
         <span>更改将在新会话生效</span>
         <button id="pkgApply" class="mini-btn accent">立即重载</button>
+      </div>
+      <div class="set-pane" id="setPane-video">
+        <div class="settings-title"><h3>视频模型</h3></div>
+        <div class="set-body">
+          <div class="video-settings-layout">
+          <nav id="videoProviders" class="model-providers" aria-label="视频厂家"></nav>
+          <form id="videoSettingsForm" class="video-settings-form">
+            <div class="video-config-heading"><div class="video-config-title"><h4 id="videoProviderName"></h4><span id="videoKeyStatus" class="video-key-status">未配置</span></div><label class="video-enabled"><span>启用</span><input id="videoEnabled" type="checkbox" role="switch" checked /><span class="ext-switch" aria-hidden="true"></span></label></div>
+            <button id="videoBalance" type="button" title="平台账户余额，点击刷新"><span class="video-balance-label">账户余额</span><strong class="video-balance-value">—</strong><span class="video-balance-refresh" aria-hidden="true">↻</span></button>
+
+            <div class="video-fields">
+              <label class="video-model-field">模型<select id="videoModel"></select></label>
+              <div class="video-key-field"><div class="video-key-heading"><label for="videoApiKey">API Key</label><a id="videoKeyLink" class="video-key-link" hidden>获取 API Key ↗</a></div><input id="videoApiKey" type="password" autocomplete="new-password" spellcheck="false" placeholder="API Key" /></div>
+              <label>分辨率<select id="videoResolution"></select></label>
+              <label>时长<select id="videoDuration"></select></label>
+              <label>画面比例<select id="videoRatio"></select></label>
+              <label>网络<select id="videoNetwork"><option value="system">跟随全局</option><option value="direct">直连</option><option value="proxy">使用全局代理</option></select></label>
+            </div>
+            <div class="video-estimate" role="status" aria-live="polite"><div class="video-estimate-heading"><span>预估费用</span><strong id="videoEstimateValue">—</strong></div><div id="videoEstimateDetail" class="video-estimate-detail"></div></div>
+            <div class="video-config-actions"><button id="videoClearKey" type="button" class="mini-btn danger" hidden>移除密钥</button><button id="videoTest" type="button" class="mini-btn">测试连接</button><button id="videoSave" type="submit" class="mini-btn accent">保存</button></div>
+            <p id="videoSettingsResult" role="status" aria-live="polite" hidden></p>
+          </form>
+          </div>
+        </div>
+      </div>
+      <div class="set-pane" id="setPane-environment">
+        <div class="settings-title environment-title"><h3>环境配置</h3><button type="button" id="environmentRefresh" class="mini-btn">重新检测</button></div>
+        <div class="set-body environment-body">
+          <div id="environmentTools" class="environment-tools" aria-label="本地开发工具"></div>
+          <section id="githubSettings" class="github-settings">
+            <span class="environment-tool-icon" aria-hidden="true"><img src="assets/environment/github.png" alt="" draggable="false" /></span>
+            <div class="environment-tool-content"><div class="environment-tool-heading"><h4>GitHub</h4></div><div id="githubAccounts"></div><p id="githubAuthMessage" role="status"></p></div>
+            <div class="github-actions"><span id="githubAuthStatus" class="environment-status">未授权</span><button id="githubAuthorize" type="button" class="mini-btn">授权</button></div>
+          </section>
+          <section id="cloudflareSettings" class="github-settings">
+            <span class="environment-tool-icon" aria-hidden="true"><img src="assets/environment/cloudflare.svg" alt="" draggable="false" /></span>
+            <div class="environment-tool-content"><div class="environment-tool-heading"><h4>Cloudflare</h4></div><div class="github-account"><strong id="cloudflareAccount">Cloudflare Workers</strong><button id="cloudflareDashboard" type="button" class="mini-btn">控制台 ↗</button><button id="cloudflareLogout" type="button" class="mini-btn" hidden>退出授权</button></div><p id="cloudflareMessage" role="status"></p></div>
+            <div class="github-actions"><span id="cloudflareAuthStatus" class="environment-status">未授权</span><button id="cloudflareAuthorize" type="button" class="mini-btn">授权</button></div>
+          </section>
+          <div class="environment-install">
+            <!-- Environment actions stay below all tool and authorization cards. -->
+            <button type="button" id="environmentRepair" class="mini-btn">AI 修复</button>
+            <button id="environmentRepairStop" type="button" class="mini-btn" hidden>停止修复</button>
+            <button type="button" id="environmentInstall" class="mini-btn accent" disabled>一键配置环境</button>
+          </div>
+          <div id="environmentIssue" class="environment-issue" role="alert" hidden><p id="environmentError"></p><button type="button" id="environmentHelp" class="mini-btn" hidden>查看安装说明 ↗</button></div>
+          <section id="environmentProgressSection" class="environment-progress" aria-label="环境配置进度" hidden>
+            <h4>配置进度</h4>
+            <ol id="environmentProgress" role="log" aria-live="polite" aria-relevant="additions text"></ol>
+          </section>
+          <section id="environmentRepairPanel" class="environment-progress" hidden>
+            <p id="environmentRepairStatus" role="status"></p>
+            <div id="environmentRepairOutput"></div>
+          </section>
+        </div>
       </div>
       <div class="set-pane" id="setPane-appearance"><div class="settings-title"><h3>主题搭配</h3></div><div class="set-body"><div class="set-sec"><div class="wallpaper-transparency"><label for="wallpaperTransparency">背景透出程度<output id="wallpaperTransparencyValue" for="wallpaperTransparency">35%</output></label><input id="wallpaperTransparency" type="range" min="0" max="100" step="1" value="35" aria-describedby="wallpaperTransparencyHint"><p id="wallpaperTransparencyHint">数值越大，面板越透明、背景越清晰。仅对图片主题生效，自动保存。</p></div><div class="theme-base-modes"><button class="mini-btn" data-theme-choice="light">浅色</button><button class="mini-btn" data-theme-choice="dark">深色</button></div><div class="theme-tabs" role="tablist" aria-label="主题分类"><button type="button" role="tab" id="theme-tab-nature" aria-controls="theme-panel-nature" aria-selected="false" tabindex="-1" data-theme-tab="nature">山野自然</button><button type="button" role="tab" id="theme-tab-water" aria-controls="theme-panel-water" aria-selected="false" tabindex="-1" data-theme-tab="water">海岸水域</button><button type="button" role="tab" id="theme-tab-city" aria-controls="theme-panel-city" aria-selected="false" tabindex="-1" data-theme-tab="city">城市夜色</button><button type="button" role="tab" id="theme-tab-cosmos" aria-controls="theme-panel-cosmos" aria-selected="false" tabindex="-1" data-theme-tab="cosmos">宇宙幻想</button><button type="button" role="tab" id="theme-tab-oriental" aria-controls="theme-panel-oriental" aria-selected="false" tabindex="-1" data-theme-tab="oriental">东方意境</button></div><div role="tabpanel" id="theme-panel-nature" aria-labelledby="theme-tab-nature" data-theme-panel="nature" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-pine"><span class="theme-sample wallpaper-sample scene-pine"><i></i><i></i><i></i></span><span>松间晨光</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-alpine"><span class="theme-sample wallpaper-sample scene-alpine"><i></i><i></i><i></i></span><span>雪岭晴空</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-canyon"><span class="theme-sample wallpaper-sample scene-canyon"><i></i><i></i><i></i></span><span>赤岩峡谷</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-meadow"><span class="theme-sample wallpaper-sample scene-meadow"><i></i><i></i><i></i></span><span>旷野春风</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-autumn"><span class="theme-sample wallpaper-sample scene-autumn"><i></i><i></i><i></i></span><span>秋山远行</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-forest"><span class="theme-sample wallpaper-sample scene-forest"><i></i><i></i><i></i></span><span>幽林夜雨</span></button></div><div role="tabpanel" id="theme-panel-water" aria-labelledby="theme-tab-water" data-theme-panel="water" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-lagoon"><span class="theme-sample wallpaper-sample scene-lagoon"><i></i><i></i><i></i></span><span>碧湾浅滩</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-tide"><span class="theme-sample wallpaper-sample scene-tide"><i></i><i></i><i></i></span><span>暮色潮汐</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-island"><span class="theme-sample wallpaper-sample scene-island"><i></i><i></i><i></i></span><span>白沙群岛</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-lake"><span class="theme-sample wallpaper-sample scene-lake"><i></i><i></i><i></i></span><span>湖光镜影</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-polar"><span class="theme-sample wallpaper-sample scene-polar"><i></i><i></i><i></i></span><span>冰海极光</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-coast"><span class="theme-sample wallpaper-sample scene-coast"><i></i><i></i><i></i></span><span>灯塔长夜</span></button></div><div role="tabpanel" id="theme-panel-city" aria-labelledby="theme-tab-city" data-theme-panel="city" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-metro"><span class="theme-sample wallpaper-sample scene-metro"><i></i><i></i><i></i></span><span>霓虹街角</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-harbor"><span class="theme-sample wallpaper-sample scene-harbor"><i></i><i></i><i></i></span><span>港湾蓝调</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-rooftop"><span class="theme-sample wallpaper-sample scene-rooftop"><i></i><i></i><i></i></span><span>天台落日</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-raincity"><span class="theme-sample wallpaper-sample scene-raincity"><i></i><i></i><i></i></span><span>雨夜微光</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-skyline"><span class="theme-sample wallpaper-sample scene-skyline"><i></i><i></i><i></i></span><span>云端都会</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-midnight"><span class="theme-sample wallpaper-sample scene-midnight"><i></i><i></i><i></i></span><span>午夜车站</span></button></div><div role="tabpanel" id="theme-panel-cosmos" aria-labelledby="theme-tab-cosmos" data-theme-panel="cosmos" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-orbit"><span class="theme-sample wallpaper-sample scene-orbit"><i></i><i></i><i></i></span><span>环星漫游</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-nebularose"><span class="theme-sample wallpaper-sample scene-nebularose"><i></i><i></i><i></i></span><span>玫瑰星云</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-lunar"><span class="theme-sample wallpaper-sample scene-lunar"><i></i><i></i><i></i></span><span>月面静海</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-stardust"><span class="theme-sample wallpaper-sample scene-stardust"><i></i><i></i><i></i></span><span>金色星尘</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-eclipse"><span class="theme-sample wallpaper-sample scene-eclipse"><i></i><i></i><i></i></span><span>日蚀之环</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-comet"><span class="theme-sample wallpaper-sample scene-comet"><i></i><i></i><i></i></span><span>彗尾流光</span></button></div><div role="tabpanel" id="theme-panel-oriental" aria-labelledby="theme-tab-oriental" data-theme-panel="oriental" hidden class="theme-choices"><button class="theme-choice wallpaper-choice" data-theme-choice="scene-ink"><span class="theme-sample wallpaper-sample scene-ink"><i></i><i></i><i></i></span><span>水墨远山</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-bamboo"><span class="theme-sample wallpaper-sample scene-bamboo"><i></i><i></i><i></i></span><span>竹窗听雨</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-lotus"><span class="theme-sample wallpaper-sample scene-lotus"><i></i><i></i><i></i></span><span>荷塘清夏</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-plum"><span class="theme-sample wallpaper-sample scene-plum"><i></i><i></i><i></i></span><span>雪映红梅</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-moon"><span class="theme-sample wallpaper-sample scene-moon"><i></i><i></i><i></i></span><span>青山望月</span></button><button class="theme-choice wallpaper-choice" data-theme-choice="scene-sands"><span class="theme-sample wallpaper-sample scene-sands"><i></i><i></i><i></i></span><span>敦煌流沙</span></button></div></div></div></div>
       <div class="set-pane" id="setPane-usage"><div class="settings-title"><h3>用量统计</h3></div>
@@ -373,6 +436,7 @@
 </div>
 
 <div id="usageDetailModal" class="modal" hidden><div class="modal-panel usage-detail-panel"><div class="modal-head"><h3>用量明细</h3><button id="refreshUsageDetail" class="mini-btn">刷新</button><button class="modal-x" data-close aria-label="关闭">×</button></div><div id="usageDetailBody" class="modal-body"></div></div></div>
+<div id="videoUsageModal" class="modal" hidden><div class="modal-panel usage-detail-panel"><div class="modal-head"><h3>视频消耗记录</h3><button id="refreshVideoUsage" class="mini-btn">刷新</button><button class="modal-x" data-close aria-label="关闭">×</button></div><div id="videoUsageBody" class="modal-body"></div></div></div>
 <div id="serverModal" class="modal" hidden><div class="modal-panel"><div class="modal-head"><h3>添加服务器</h3><button class="modal-x" data-close>×</button></div><form id="serverForm" class="modal-body server-form"><label>名称<input name="name" required placeholder="例如：生产服务器" /></label><label>地址<input name="host" required placeholder="IP 或域名" /></label><div class="server-form-pair"><label>SSH 端口<input name="port" type="number" min="1" max="65535" value="22" required /></label><label>用户名<input name="username" required placeholder="root / ubuntu" /></label></div><label>认证方式<select name="auth"><option value="password">密码</option><option value="key">私钥文件</option></select></label><label><span id="serverSecretLabel">密码</span><input name="secret" type="password" required autocomplete="new-password" /></label><p class="settings-hint">凭据使用系统加密保存。首次连接记住主机指纹，指纹变化时拒绝连接。私钥需为无口令私钥。</p><div id="serverFormError" role="alert"></div><button type="submit" class="mini-btn accent">保存服务器</button></form></div></div><div id="toasts"></div>
 <script src="js/terminals.js"></script>
 <script type="module" src="js/app.js"></script>

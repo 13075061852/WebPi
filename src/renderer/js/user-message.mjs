@@ -5,3 +5,13 @@ export function userMessageText(value) {
   if (skill) text = `/skill:${skill[1]}${text.slice(skill[0].length).trim() ? ' ' + text.slice(skill[0].length).trim() : ''}`;
   return text;
 }
+
+/** Project SDK user content into the same shape for live events and history. */
+export function userMessageParts(message) {
+  const blocks = Array.isArray(message?.content) ? message.content : [{ type: 'text', text: message?.content || '' }];
+  return {
+    text: blocks.filter(c => c?.type === 'text').map(c => c.text || '').join('\n'),
+    images: blocks.filter(c => c?.type === 'image' && c.data && c.mimeType)
+      .map(c => ({ mediaType: c.mimeType, data: c.data, name: '附件' })),
+  };
+}
