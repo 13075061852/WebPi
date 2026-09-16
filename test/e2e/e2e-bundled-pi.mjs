@@ -67,10 +67,10 @@ try {
     const data = JSON.parse(event.data); const request = pending.get(data.id);
       if (request) { pending.delete(data.id); clearTimeout(request.timer); request.resolve(data); }
   });
-  async function evaluate(expression) {
+  async function evaluate(expression, deadline = 15000) {
     const reply = await new Promise((resolve, reject) => {
       const id = ++messageId;
-      const timer = setTimeout(() => { pending.delete(id); reject(Error(`Packaged app stopped responding: ${output}`)); }, 15000);
+      const timer = setTimeout(() => { pending.delete(id); reject(Error(`Packaged app stopped responding after ${deadline}ms: ${output}`)); }, deadline);
       pending.set(id, { resolve, timer });
       ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
     });
@@ -87,8 +87,13 @@ try {
   assert.equal(state.data.model?.provider, 'halo-fixture');
   const auth = await evaluate('window.halo.authProviders()');
   assert.equal(auth.ok, true, 'Bundled provider login implementation is available');
-  const result = await evaluate('window.halo.prompt("Run the offline engine verification")');
+  // This promise includes a real PowerShell launch with a fresh isolated HOME.
+  // Hosted Windows initialization took ~29s; ordinary IPC keeps its 15s deadline.
+  const promptDeadline = process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true' ? 60000 : 15000;
+  const promptStartedAt = performance.now();
+  const result = await evaluate('window.halo.prompt("Run the offline engine verification")', promptDeadline);
   assert.equal(result.ok, true, JSON.stringify(result));
+  console.log(`PASS packaged write/PowerShell turn in ${Math.round(performance.now() - promptStartedAt)}ms (deadline ${promptDeadline}ms)`);
   assert.equal(fs.readFileSync(path.join(workspace, 'engine-check.txt'), 'utf8'), 'bundled-pi-ok');
   assert.equal(calls.length, 3, 'Real SDK must execute both local tools before the final answer');
   assert.ok(calls[0].tools.some(t => t.function.name === 'powershell'));
