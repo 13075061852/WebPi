@@ -22,8 +22,10 @@ The actual NSIS wizard was tested with a separate application GUID, updater cach
 - Stage headers were visually checked after multiple updates. Finish text and launch checkbox fit without overlap.
 - A copy-path control install took 57 seconds: approximately 13 seconds decompressing and 40 seconds copying the extracted tree.
 - The optimized overwrite install took 38 seconds, including 18 seconds removing the old version. Its directory-move write stage completed within the same recorded second. These totals cover different old-version states and are not a matched total-install speed ratio.
+- A subsequent clean silent installation of the optimized installer completed in 17.23 seconds end to end. Its log confirmed the fast path, and isolated profile, model preference, agent data and workspace sentinels survived.
 - The fast path only runs for a current-user install into an empty destination on the same volume. Removing that empty directory is nonrecursive. A failed rename restores the destination and falls back to the existing copy/retry path. All-users installations retain copying so destination ACL inheritance is preserved.
 - Clicking Finish with launch enabled closed the installer and opened the installed app with the isolated workspace and fixture model ready.
+- Silent `--updated --force-run` completed and opened the real main window with the explicit QA profile. Its installation log recorded 32 seconds, including 16 seconds removing the old version. Profile/agent sentinels, workspace and model preferences survived uninstall, fresh install, update and final uninstall. QA application files, GUID registration, shortcuts and cache were cleaned up; production registration and the production updater-cache EXE hash remained unchanged.
 
 ## Package and functional checks
 

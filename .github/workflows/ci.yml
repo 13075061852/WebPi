@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y fonts-arphic-gbsn00lp
-          font="$(dpkg -L fonts-arphic-gbsn00lp | rg '/gbsn00lp\.ttf$' | head -n 1)"
+          font="$(dpkg -L fonts-arphic-gbsn00lp | grep '/gbsn00lp\.ttf$')"
           test -s "$font"
           printf 'HALO_DOCUMENT_FONT=%s\n' "$font" >> "$GITHUB_ENV"
       # 全量语法检查（ESM/CJS 混合，node --check 逐个验证）
