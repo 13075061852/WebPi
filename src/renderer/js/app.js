@@ -1,4 +1,5 @@
 import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
+import { initAppUpdates } from './app-updates.mjs';
 import { websiteURL, renderWebsiteCards, mountWebsiteBrowser } from './website-preview.mjs';
 import { userMessageText, userMessageParts } from "./user-message.mjs";
 import { initEnvironmentSettings } from "./environment-settings.mjs";
@@ -84,6 +85,7 @@ document.addEventListener("DOMContentLoaded", () => {
   videoSettings = initVideoSettings({ onSaved: () => void loadVideoBalance() });
   void loadVideoBalance();
   wireUI();
+  initAppUpdates();
   wirePi();
   initServerUI();
   refreshAll();

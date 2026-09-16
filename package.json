@@ -1,6 +1,6 @@
 {
   "name": "pi-halo",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Pi Halo — a celestial desktop console for the pi coding agent",
   "main": "src/main/main.mjs",
   "type": "commonjs",
@@ -33,7 +33,11 @@
     "files": [
       "src/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map",
+      "!**/*.d.ts",
+      "!**/*.d.mts",
+      "!**/*.d.cts"
     ],
     "directories": {
       "output": "dist"
@@ -47,7 +51,11 @@
           ]
         }
       ],
-      "icon": "assets/icon-rounded.png"
+      "icon": "assets/icon-rounded.png",
+      "files": [
+        "!node_modules/node-pty/prebuilds/win32-arm64/**/*",
+        "!node_modules/node-pty/third_party/conpty/*/win10-arm64/**/*"
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -55,7 +63,15 @@
       "perMachine": false,
       "shortcutName": "Pi Halo"
     },
-    "npmRebuild": false
+    "npmRebuild": false,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "13075061852",
+        "repo": "WebPi",
+        "releaseType": "draft"
+      }
+    ]
   },
   "author": "Pi Halo",
   "license": "MIT",
@@ -71,6 +87,7 @@
     "@napi-rs/canvas": "^1.0.9",
     "docx": "^9.7.1",
     "docx-preview": "^0.4.0",
+    "electron-updater": "6.8.9",
     "exceljs": "^4.4.0",
     "fast-xml-parser": "^5.11.1",
     "iconv-lite": "^0.7.3",

@@ -74,6 +74,20 @@ try {
     fs.writeFileSync(`test/results/environment-${name}${packaged ? '-packaged' : ''}.png`, Buffer.from(result.data, 'base64'));
   }
   await until('window.halo && document.querySelectorAll(".environment-tool").length === 3');
+  await evaluate(`(async () => {
+    const {initAppUpdates} = await import('./js/app-updates.mjs');
+    const root = document.createElement('div');
+    root.innerHTML = '<button id="appUpdateButton"></button><button id="checkAppUpdate"></button>';
+    window.updateFixture = {root,downloads:0};
+    initAppUpdates({root,api:{onAppUpdate:fn=>updateFixture.emit=fn,appUpdateState:async()=>({ok:true,data:{status:'idle'}}),checkAppUpdate:async()=>{},downloadAppUpdate:async()=>{updateFixture.downloads++;}}});
+  })()`);
+  await evaluate(`updateFixture.emit({status:'available',version:'1.0.2'}); updateFixture.root.querySelector('#appUpdateButton').click()`);
+  assert.equal(await evaluate(`updateFixture.downloads`), 1);
+  await evaluate(`updateFixture.emit({status:'downloading',percent:42})`);
+  assert.equal(await evaluate(`updateFixture.root.querySelector('#appUpdateButton').textContent`), '更新 42%');
+  assert.equal(await evaluate(`updateFixture.root.querySelector('#appUpdateButton').disabled`), true);
+  await evaluate(`updateFixture.emit({status:'error'})`);
+  assert.equal(await evaluate(`updateFixture.root.querySelector('#appUpdateButton').textContent`), '重试更新');
   const siteURL = `http://127.0.0.1:${website.address().port}/`;
   await evaluate(`(async () => {
     const {renderWebsiteCards} = await import('./js/website-preview.mjs');

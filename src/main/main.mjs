@@ -1,4 +1,6 @@
 import { isTrustedUIURL } from "./trusted-ui-url.mjs";
+import electronUpdater from 'electron-updater';
+import { createAppUpdates } from './app-updates.mjs';
 import { inspectPreview } from "./preview-inspection.mjs";
 import { previewDocument } from "./document-preview.mjs";
 /**
@@ -367,6 +369,17 @@ function bootstrap() {
     if (result.code !== 0) throw Error(result.output || "读取端口失败");
     return { items: parseListeningPorts(result.output), updated: Date.now() };
   });
+  const updates = createAppUpdates({updater:electronUpdater.autoUpdater, app, getWindow:() => mainWin,
+    emit:state => emit('halo:app-update', state)});
+  handle('halo:check-app-update', () => updates.check(true));
+  handle('halo:app-update-state', () => updates.getState());
+  handle('halo:download-app-update', () => updates.download());
+  if (app.isPackaged && process.env.PI_OFFLINE !== '1') {
+    const firstCheck = setTimeout(() => void updates.check(), 30000);
+    const nextChecks = setInterval(() => void updates.check(), 6 * 60 * 60 * 1000);
+    firstCheck.unref(); nextChecks.unref();
+    app.once('before-quit', () => { clearTimeout(firstCheck); clearInterval(nextChecks); });
+  }
   handle("halo:server-save", (input) => { if (input.id && bridge.isServerBusy(input.id)) throw Error("服务器任务正在运行，请结束后再编辑"); return servers.save(input); });
   handle("halo:server-select", (id) => switchSession(async () => {
     const session = bridge.session;

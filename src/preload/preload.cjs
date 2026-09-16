@@ -7,6 +7,10 @@ const listen = (channel) => (cb) => {
 };
 
 contextBridge.exposeInMainWorld("halo", {
+  checkAppUpdate: () => ipcRenderer.invoke('halo:check-app-update'),
+  appUpdateState: () => ipcRenderer.invoke('halo:app-update-state'),
+  downloadAppUpdate: () => ipcRenderer.invoke('halo:download-app-update'),
+  onAppUpdate: listen('halo:app-update'),
   onWebsiteZoom: listen('halo:website-zoom'),
   serverNewSession: (id) => ipcRenderer.invoke("halo:server-new-session", id),
   serverPreview: (id, item) => ipcRenderer.invoke("halo:server-preview", id, item),
