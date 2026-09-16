@@ -2324,7 +2324,7 @@ function wireCenter() {
       $$(".pvdev").forEach((x) => x.classList.toggle("active", x === b));
       body.classList.remove("dev-desktop", "dev-tablet", "dev-mobile");
       body.classList.add("dev-" + b.dataset.dev);
-    });
+    }, { maskPreview: true });
     window.halo.previewTouch?.(b.dataset.dev !== "desktop"); // 平板/手机模式：隐藏滚动条 + 触摸式拖动
     const size = $("#pvDevSize");
     if (size) size.textContent = devSize[b.dataset.dev] || "100%";
@@ -2643,7 +2643,7 @@ async function setPreview(p, force) {
       const nums = Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
       body.innerHTML = `<div class="file-view"><div class="fv-code"><div class="fvc-ln">${nums}</div><pre class="fvc-body">${hlFile(content, "html")}</pre></div></div>`;
     } else {
-      body.innerHTML = `<div class="dev-shell">${previewDeviceStatusbar()}<iframe src="${previewURL(p)}"></iframe></div>`;
+      body.innerHTML = `<div class="dev-shell dev-html-shell">${previewDeviceStatusbar()}<div class="dev-screen"><iframe src="${previewURL(p)}"></iframe></div></div>`;
       window.halo.previewTouch?.(currentPreviewDevice() !== "desktop");
     }
   } else {

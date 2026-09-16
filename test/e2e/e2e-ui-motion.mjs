@@ -87,6 +87,7 @@ try {
       const t=native(options);
       t.ready.then(()=>{
         record.ready=performance.now();
+        record.masks=[...document.querySelectorAll('.device-switch-mask')].map(mask=>{const r=mask.getBoundingClientRect(),screen=mask.parentElement.getBoundingClientRect(),style=getComputedStyle(mask);return {opacity:+style.opacity,background:style.backgroundColor,covers:r.width>=screen.width-1&&r.height>=screen.height-1};});
         queueMicrotask(()=>{
           const groups=document.getAnimations().filter(a=>a.effect?.pseudoElement?.startsWith('::view-transition-group(layout-'));
           record.groups=groups.map(a=>({pseudo:a.effect.pseudoElement,keyframes:a.effect.getKeyframes()}));
@@ -116,11 +117,16 @@ try {
         if (group.keyframes.length < 2 || !group.keyframes[0].width) continue;
         assert.equal(group.keyframes[0].width, group.keyframes.at(-1).width, 'Snapshot width must remain fixed during compositor motion');
       }
+      if (['tablet','phone','desktop'].includes(name)) {
+        assert.ok(sample.transitions[0].masks.length,'Device content must be covered before snapshot movement');
+        assert.ok(sample.transitions[0].masks.every(mask=>mask.opacity===1 && mask.covers && mask.background==='rgb(17, 19, 22)'), 'The device mask must be opaque and cover the whole screen: '+JSON.stringify(sample.transitions[0].masks));
+      } else assert.equal(sample.transitions[0].masks.length,0,'Sidebar transitions must keep their existing content behavior');
     } else {
       assert.ok(sample.modals[0]?.finished, `${name} must have a completed fade animation`);
       assert.ok(sample.modals[0].frames >= 8, `${name} must render intermediate fade frames`);
     }
     results.push({name, ...sample});
+    assert.equal(await evaluate('document.querySelectorAll(".device-switch-mask").length'),0,'Completed transitions must remove their masks');
   }
   // Capture real intermediate frames separately from the timing run.
   for (const [name, selector] of [['sidebar','#btnSidebar'],['phone','.pvdev[data-dev="mobile"]']]) {
@@ -128,11 +134,19 @@ try {
     await waitFor(() => evaluate('document.getAnimations().some(a=>a.effect?.pseudoElement?.startsWith("::view-transition-group(layout-"))'), 'No geometry animation');
     await evaluate('window.__pausedAnimations=document.getAnimations().filter(a=>a.effect?.pseudoElement);for(const a of __pausedAnimations){a.pause();a.currentTime=110;}');
     const computed = await evaluate('(()=>{const a=document.getAnimations().find(a=>a.effect?.pseudoElement==="::view-transition-group(layout-device)");return a?{scale:new DOMMatrix(getComputedStyle(document.querySelector("#layout"),a.effect.pseudoElement).transform).a,from:a.effect.getKeyframes()[0].transform}:null})()');
-    if (name === 'phone') assert.ok(computed.scale > 1.01, 'The compositor must actually scale the snapshot, not just report edited keyframes');
+    if (name === 'phone') {
+      assert.ok(computed.scale > 1.01, 'The device frame must keep its size animation');
+      assert.equal(await evaluate('getComputedStyle(document.querySelector(".device-switch-mask")).opacity'),'1','Content must stay covered at the animated midpoint');
+    }
     const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
     fs.writeFileSync(path.join(fixture, name+'-midpoint.png'),Buffer.from(shot.result.data,'base64'));
     await evaluate('for(const a of __pausedAnimations)a.play()');
     await waitFor(() => evaluate('!document.documentElement.classList.contains("layout-motion")'), 'Layout animation failed to clean up');
+    if (name === 'phone') {
+      assert.ok(Math.abs((await guest()).width-await evaluate('document.querySelector("#pvBody iframe").getBoundingClientRect().width'))<2,'Uncovered content must use the final viewport');
+      const ready=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      fs.writeFileSync(path.join(fixture,'phone-ready.png'),Buffer.from(ready.result.data,'base64'));
+    }
   }
   await evaluate('document.querySelector("#btnSidebar").click();document.querySelector(".pvdev[data-dev=desktop]").click()');
   await waitFor(() => evaluate('!document.documentElement.classList.contains("layout-motion") && document.querySelector("#pvBody").classList.contains("dev-desktop")'), 'Reset layout');
@@ -159,6 +173,11 @@ try {
   const final = await guest();assert.equal(final.id,initial.id,'Animations must not reload the preview');
   const viewport = await evaluate('(()=>{const f=document.querySelector("#pvBody iframe");return {width:f.getBoundingClientRect().width,style:f.getAttribute("style"),device:document.querySelector("#pvBody").classList.contains("dev-desktop")}})()');
   assert.ok(viewport.device);assert.ok(Math.abs(viewport.width-final.width)<2);assert.ok(!viewport.style?.includes('important'),'Temporary viewport size leaked');
+  const interruptedReveal=await evaluate(`(async()=>{document.querySelector('.pvdev[data-dev=mobile]').click();await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(Error('Mask reveal did not start')),3000);function tick(){if(document.querySelector('.device-switch-mask')?.getAnimations().some(a=>a.playState==='running')){clearTimeout(timeout);resolve();}else requestAnimationFrame(tick)}tick()});document.querySelector('.pvdev[data-dev=desktop]').click();return [...document.querySelectorAll('.device-switch-mask')].every(m=>+getComputedStyle(m).opacity===1);})()`);
+  assert.equal(interruptedReveal,true,'A new device choice must cover an in-flight reveal immediately');
+  await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")'),'Interrupted reveal did not finish');
+  assert.equal(await evaluate('document.querySelectorAll(".device-switch-mask").length'),0);
+  assert.equal((await guest()).id,initial.id,'Masked switching must preserve the page instance');
   await evaluate('document.querySelector("#btnSettings").click();document.querySelector("#settingsModal [data-close]").click()');
   await sleep(350);assert.equal(await evaluate('document.querySelector("#settingsModal").hidden'),true,'Closing before opening is ready must stay closed');
   await evaluate('document.querySelector(".pvdev[data-dev=mobile]").click()');await sleep(80);
@@ -183,6 +202,8 @@ try {
   assert.equal(await evaluate('document.querySelector("#thinkModal").getAnimations().length'),0);
   await evaluate('document.querySelector("#thinkModal [data-close]").click()');
   assert.equal(await evaluate('document.querySelector("#thinkModal").hidden'),true);
+  await evaluate('document.querySelector(".pvdev[data-dev=mobile]").click()');
+  await waitFor(()=>evaluate('document.querySelector("#pvBody").classList.contains("dev-mobile")&&!document.querySelector(".device-switch-mask")'),'Reduced motion must also clean up its mask');
   const report={fixture,previewFile:previewFile||'generated canvas',initial,final,results};
   fs.writeFileSync(path.join(fixture,'motion-report.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({ok:true,fixture,results:results.map(r=>({name:r.name,motion:r.transitions.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.slideEnd-t.motionStart)})),modal:r.modals.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.finished-t.motionStart)}))}))}));

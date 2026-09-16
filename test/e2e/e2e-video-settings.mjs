@@ -101,7 +101,13 @@ try {
       if (await evaluate(expression)) return;
       await sleep(150);
     }
-    assert.fail(`UI did not settle: ${expression}`);
+    const state = await evaluate(`({
+      visibility:document.visibilityState, focused:document.hasFocus(), active:document.activeElement?.id,
+      pickers:[...document.querySelectorAll('select:open')].map(node => node.id),
+      modals:[...document.querySelectorAll('.modal:not([hidden])')].map(node => ({id:node.id, show:node.classList.contains('show'), opacity:getComputedStyle(node).opacity})),
+      animations:document.getAnimations().map(animation => ({target:animation.effect?.target?.id, state:animation.playState, time:animation.currentTime}))
+    })`);
+    assert.fail(`UI did not settle: ${expression}\n${JSON.stringify(state)}`);
   }
   async function screenshot(name) {
     await sleep(400); // Let the existing theme/color transitions settle.

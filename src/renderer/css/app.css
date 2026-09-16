@@ -203,6 +203,8 @@ button:active { transform: scale(0.96); }
 
 html.layout-motion-global { view-transition-name: none; }
 html.layout-motion #pvBody :is(iframe, webview) { pointer-events: none; }
+.device-switch-mask { position: absolute; inset: 0; z-index: 10; border-radius: inherit; background: #111316; }
+.pv-body > .device-switch-mask { background: var(--bg1); }
 :is(html.layout-motion-global, html.layout-motion #layout)::view-transition { pointer-events: none; }
 :is(html.layout-motion-global, html.layout-motion #layout)::view-transition-group(*) { animation-duration: 280ms; animation-timing-function: cubic-bezier(.22,.68,0,1); }
 :is(html.layout-motion-global, html.layout-motion #layout)::view-transition-old(*), :is(html.layout-motion-global, html.layout-motion #layout)::view-transition-new(*) {
@@ -2434,7 +2436,7 @@ body:not(.focus-mode) #layout:has(#pvBody.dev-mobile) { grid-template-columns: v
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: contain;
 }
-.pv-body.dev-mobile .dev-media-shell .dev-screen {
+.pv-body.dev-mobile :is(.dev-media-shell, .dev-html-shell) .dev-screen {
   border-radius: 0 0 34px 34px;
   clip-path: inset(0 round 0 0 34px 34px);
 }

@@ -4,6 +4,8 @@ export function createLayoutMotion({ setPaused }) {
   const layout = document.querySelector('#layout');
   const host = typeof layout.startViewTransition === 'function' ? layout : root;
   const pending = [];
+  const masks = new Set();
+  let maskFades = [];
   let running = false;
   const selectors = { sidebar: '#sidebar', center: '#center', chat: '#chat', device: '#pvBody .dev-shell' };
   function measure() {
@@ -26,14 +28,42 @@ export function createLayoutMotion({ setPaused }) {
     });
     return () => held.forEach(restore => restore());
   }
+  function coverPreview() {
+    const screens = [...document.querySelectorAll('#pvBody .dev-screen')];
+    if (!screens.length) screens.push(document.querySelector('#pvBody'));
+    for (const screen of screens) {
+      if (!screen || [...masks].some(mask => mask.parentElement === screen)) continue;
+      const mask = document.createElement('div');
+      mask.className = 'device-switch-mask';
+      mask.setAttribute('aria-hidden', 'true');
+      screen.appendChild(mask);
+      masks.add(mask);
+    }
+  }
+  async function revealPreview() {
+    const fading = [...masks];
+    if (!fading.length) return;
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      maskFades = fading.map(mask => mask.animate({ opacity: [1, 0] }, { duration: 120, easing: 'ease-out', fill: 'both' }));
+      await Promise.allSettled(maskFades.map(animation => animation.finished));
+    }
+    // A new device choice reverses the reveal and keeps the intermediate page covered.
+    if (pending.some(item => item.maskPreview)) return;
+    maskFades.forEach(animation => animation.cancel());
+    maskFades = [];
+    for (const mask of fading) { mask.remove(); masks.delete(mask); }
+  }
   async function drain() {
     running = true;
     try {
       await setPaused(true);
       while (pending.length) {
         const changes = pending.splice(0);
+        if (masks.size || changes.some(item => item.maskPreview)) coverPreview();
         if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) {
-          changes.forEach(change => change());
+          changes.forEach(item => item.change());
+          await setPaused(true);
+          if (!pending.length) await revealPreview();
           continue;
         }
         root.classList.add('layout-motion');
@@ -44,7 +74,7 @@ export function createLayoutMotion({ setPaused }) {
         root.classList.toggle('layout-device-held', !!before.device);
         let after;
         const update = () => {
-          changes.forEach(change => change());
+          changes.forEach(item => item.change());
           after = measure();
           root.classList.toggle('layout-sidebar-enter', !before.sidebar && !!after.sidebar);
           root.classList.toggle('layout-sidebar-leave', !!before.sidebar && !after.sidebar);
@@ -85,9 +115,11 @@ export function createLayoutMotion({ setPaused }) {
             await Promise.allSettled(document.getAnimations().filter(animation => animation !== hold && animation.effect?.pseudoElement?.includes('(layout-')).map(animation => animation.finished));
             restoreViewports();
             await setPaused(true);
-            const reveal = host.animate({ opacity: [0, 1] }, { duration: 100, fill: 'forwards', pseudoElement: '::view-transition-new(layout-device)' });
-            temporary.push(reveal);
-            await reveal.finished.catch(() => {});
+            if (!masks.size) {
+              const reveal = host.animate({ opacity: [0, 1] }, { duration: 100, fill: 'forwards', pseudoElement: '::view-transition-new(layout-device)' });
+              temporary.push(reveal);
+              await reveal.finished.catch(() => {});
+            }
             hold.cancel();
           }
           await transition.finished;
@@ -100,16 +132,29 @@ export function createLayoutMotion({ setPaused }) {
           temporary.forEach(animation => animation.cancel());
           restoreViewports();
         }
+        if (!pending.length && masks.size) {
+          // The actual viewport and its first paint must settle before uncovering it.
+          await setPaused(true);
+          await revealPreview();
+        }
       }
     } finally {
+      maskFades.forEach(animation => animation.cancel());
+      maskFades = [];
+      for (const mask of masks) mask.remove();
+      masks.clear();
       root.classList.remove('layout-motion', 'layout-motion-global', 'layout-sidebar-enter', 'layout-sidebar-leave', 'layout-device-held');
       for (const selector of Object.values(selectors)) document.querySelector(selector)?.style.removeProperty('view-transition-name');
       running = false;
       void setPaused(false);
     }
   }
-  return change => {
-    pending.push(change);
+  return (change, { maskPreview = false } = {}) => {
+    if (maskPreview) {
+      maskFades.forEach(animation => animation.cancel());
+      maskFades = [];
+    }
+    pending.push({ change, maskPreview });
     if (!running) void drain();
   };
 }
