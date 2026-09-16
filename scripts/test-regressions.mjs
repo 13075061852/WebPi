@@ -10,7 +10,7 @@ const tests = [
   'verify-video-domestic', 'verify-video-international', 'verify-video-platforms', 'verify-video-apimart', 'verify-video-pricing', 'verify-video-workflow', 'verify-video-billing',
   'verify-session-integrity', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-server-delete',
   'verify-composer-events', 'verify-office-protocol', 'verify-ipc-sender',
-  'verify-session-queue', 'verify-preview-races', 'verify-preview-refresh',
+  'verify-session-queue', 'verify-preview-races', 'verify-preview-refresh', 'verify-preview-motion',
   'verify-preview-file', 'verify-preview-inspection', 'verify-workspace-path',
   'verify-trusted-ui-url', 'verify-thinking-batch', 'verify-user-message',
   'verify-office', 'verify-office-failures', 'verify-office-efficiency',

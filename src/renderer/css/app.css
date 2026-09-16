@@ -198,15 +198,14 @@ button:active { transform: scale(0.96); }
   --sidebar-size: 248px;
   grid-template-columns: var(--sidebar-size) minmax(0, calc(100% - var(--sidebar-size) - 480px)) minmax(480px, 1fr);
   min-height: 0;
-  /* 侧栏展开/收起：轨道宽度插值（两侧轨道类型一致才能平滑动画） */
-  transition: grid-template-columns .42s cubic-bezier(.22, .68, 0, 1);
+  /* Commit viewport dimensions once instead of resizing embedded pages every frame. */
 }
 
 /* focus mode：对话全屏（隐藏侧栏与工作区） */
 body.focus-mode #layout { grid-template-columns: 0px minmax(0, 0px) minmax(480px, 1fr); }
 body.focus-mode #sidebar,
-body.focus-mode #center { opacity:0; visibility:hidden; pointer-events:none; transition:opacity .18s ease, visibility 0s .42s; }
-body #sidebar, body #center { min-width:0; overflow:hidden; transition:opacity .22s ease, visibility 0s; }
+body.focus-mode #center { opacity:0; visibility:hidden; pointer-events:none; }
+body #sidebar, body #center { min-width:0; overflow:hidden; }
 @media (prefers-reduced-motion:reduce) {
   body #sidebar, body #center, body.focus-mode #sidebar, body.focus-mode #center { transition:none; }
 }
@@ -221,13 +220,13 @@ body #sidebar, body #center { min-width:0; overflow:hidden; transition:opacity .
   background: var(--bg1);
   min-height: 0;
   position: relative;
-  /* 收起时裁剪内容而非隐藏，宽度过渡才有滑动感；子元素固定宽避免重排闪动 */
+  /* Keep child widths stable so a narrow track clips instead of wrapping its content. */
   overflow: hidden;
   transition: border-color 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 #sidebar > * { min-width: 247px; }
 
-/* ---------- 侧栏展开/收起（宽度动画收起；入口在预览栏左端 #btnSidebar） ---------- */
+/* ---------- 侧栏展开/收起（入口在预览栏左端 #btnSidebar） ---------- */
 body.sb-collapsed:not(.focus-mode) #layout { --sidebar-size: 0px; }
 body.sb-collapsed #sidebar { border-right-color: transparent; }
 
@@ -1506,12 +1505,12 @@ body.focus-mode #btnFocus { color: var(--acc); }
   position: fixed; inset: 0;
   display: grid; place-items: center;
   background: rgba(var(--ink-rgb), 0.32);
-  backdrop-filter: blur(6px);
+  backdrop-filter: none;
   z-index: 100;
   opacity: 0;
-  transition: opacity 0.28s ease;
+  transition: opacity 0.14s ease-out;
 }
-.modal.show { opacity: 1; }
+.modal.show { opacity: 1; animation: modalIn 0.14s ease-out; }
 .modal-panel {
   width: min(560px, 86vw);
   max-height: 74vh;
@@ -1520,11 +1519,16 @@ body.focus-mode #btnFocus { color: var(--acc); }
   border-radius: var(--r-lg);
   background: var(--panel);
   box-shadow: var(--shadow-lg);
-  transform: translateY(14px) scale(0.97);
-  transition: transform 0.32s var(--ease);
+  transform: translateY(6px);
+  transition: transform 0.16s ease-out;
   overflow: hidden;
 }
-.modal.show .modal-panel { transform: none; }
+.modal.show .modal-panel { transform: none; animation: modalPanelIn 0.16s ease-out; }
+@keyframes modalIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modalPanelIn { from { transform: translateY(6px); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .modal, .modal .modal-panel { transition: none; animation: none !important; }
+}
 .modal-panel.small { width: min(340px, 80vw); }
 
 /* ============ settings panel（插件与技能） ============ */
@@ -2049,7 +2053,7 @@ body.focus-mode #btnFocus { color: var(--acc); }
 .msg .imgs img { cursor: zoom-in; }
 .image-viewer { width: min(1100px, 94vw); max-width: 94vw; height: 90vh; max-height: 90vh; margin: auto; padding: 0; border: 1px solid var(--hair-2); border-radius: 16px; background: var(--panel); color: var(--txt); box-shadow: 0 24px 80px #0006; }
 .image-viewer[open] { display: flex; flex-direction: column; }
-.image-viewer::backdrop { background: #0009; backdrop-filter: blur(6px); }
+.image-viewer::backdrop { background: #0009; }
 .image-viewer header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--hair); }
 .image-viewer header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .image-viewer header button { flex: none; width: 30px; height: 30px; border-radius: 8px; font-size: 22px; }
@@ -2407,18 +2411,13 @@ body.focus-mode #btnFocus { color: var(--acc); }
 body:not(.focus-mode) #layout:has(#pvBody.dev-tablet) { grid-template-columns: var(--sidebar-size) minmax(0, min(850px, calc(100% - var(--sidebar-size) - 480px))) minmax(480px, 1fr); }
 body:not(.focus-mode) #layout:has(#pvBody.dev-mobile) { grid-template-columns: var(--sidebar-size) minmax(0, min(454px, calc(100% - var(--sidebar-size) - 480px))) minmax(480px, 1fr); }
 
-.pv-body { transition: padding .42s cubic-bezier(.22, .68, 0, 1); }
-.pv-body .dev-shell { transition: flex-basis .42s cubic-bezier(.22, .68, 0, 1), padding .42s cubic-bezier(.22, .68, 0, 1), border-radius .42s ease; }
 .pv-body.dev-desktop .dev-shell { flex: 0 1 100%; }
-.dev-screen { transition: border-radius .42s ease, clip-path .42s ease; clip-path: inset(0 round 6px); }
+.dev-screen { clip-path: inset(0 round 6px); }
 @media (prefers-reduced-motion: reduce) { #layout, .pv-body, .pv-body .dev-shell, .dev-screen { transition: none; } }
 
 .dev-screen { position: relative; contain: layout paint; }
 
-.dev-screen webview { transition: opacity .12s ease; }
-.dev-screen webview.viewport-changing { opacity: 0; pointer-events: none; transition: none; }
-
-/* One animated screen mask; the guest must not jump to its own device radius. */
+/* The screen mask and guest viewport use the same final device dimensions. */
 .pv-body .dev-shell .dev-screen webview { border-radius: 0; }
 .dev-screen { background: #111316; }
 .pv-body .dev-media-shell .dev-screen > :is(.pv-img, .pv-video) {
@@ -2429,8 +2428,6 @@ body:not(.focus-mode) #layout:has(#pvBody.dev-mobile) { grid-template-columns: v
   border-radius: 0 0 34px 34px;
   clip-path: inset(0 round 0 0 34px 34px);
 }
-.pv-body .dev-shell::before { transition: border-radius .42s ease; }
-@media (prefers-reduced-motion: reduce) { .pv-body .dev-shell::before { transition: none; } }
 
 .chat-stats > * { flex: none; }
 .chat-actions { flex: none; }

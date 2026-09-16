@@ -225,7 +225,7 @@ try {
   }
   async function device(name) {
     await evaluate(`document.querySelector('.pvdev[data-dev="${name}"]').click()`);
-    await sleep(650); // The shared device layout and screen masks animate for 420 ms.
+    await sleep(650); // Allow the embedded page/media to paint its final viewport.
   }
   async function openFromTree(name) {
     await evaluate('document.querySelector("#treeRefresh").click()');

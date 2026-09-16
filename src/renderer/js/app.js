@@ -932,6 +932,7 @@ async function showTurnArtifacts(turn) {
     updateVideoArtifactCard(button, file, turn, cwd);
     button.onclick=async()=>{
       document.body.classList.remove('preview-collapsed','focus-mode');
+      syncPreviewMotion();
       $('#center').inert=false;
       document.querySelector('.term-open')?.classList.remove('term-open');
       $('#btnTerm')?.classList.remove('active');
@@ -1243,7 +1244,7 @@ function renderModelError(raw, meta = {}) {
     retryLast();
   });
   const mb = $(".ec-model", n);
-  if (mb) mb.addEventListener("click", () => { loadModels(); openModal("modelModal"); });
+  if (mb) mb.addEventListener("click", () => openModal("modelModal"));
   (S.turn || $("#messages")).appendChild(n);
   scrollDown();
 }
@@ -2091,16 +2092,17 @@ function wireUI() {
 
   // 侧栏展开/收起（彻底收起；状态记忆）
   try { if (localStorage.getItem("halo.sbCollapsed") === "1") document.body.classList.add("sb-collapsed"); } catch {}
-  $("#btnSidebar").addEventListener("click", () => {
+  $("#btnSidebar").addEventListener("click", () => applyPreviewLayout(() => {
     const collapsed = document.body.classList.toggle("sb-collapsed");
     try { localStorage.setItem("halo.sbCollapsed", collapsed ? "1" : "0"); } catch {}
-  });
+  }));
   $$("#settingsModal .set-nav").forEach((b) => b.addEventListener("click", () => {
     document.querySelectorAll("#settingsModal .set-nav").forEach((x) => x.classList.toggle("active", x === b));
     document.querySelectorAll("#settingsModal .set-pane").forEach((p) => p.classList.toggle("active", p.id === "setPane-" + b.dataset.pane));
     if (b.dataset.pane === "usage") loadUsage(); // 打开面板时刷新统计
     if (b.dataset.pane === "environment") void environmentSettings?.refresh();
     if (b.dataset.pane === "video") void videoSettings?.refresh();
+    if (b.dataset.pane === "login") void loadDefaultModels();
   }));
   $("#usageRange").addEventListener("click", (e) => {
     const b = e.target.closest("[data-d]");
@@ -2152,7 +2154,7 @@ function wireUI() {
   $("#projAdd").addEventListener("click", pickProject);
 
   // chat header
-  $("#btnPreviewToggle").addEventListener("click", () => {
+  $("#btnPreviewToggle").addEventListener("click", () => applyPreviewLayout(() => {
     document.body.classList.remove("focus-mode");
     const collapsed = document.body.classList.toggle("preview-collapsed");
     const button = $("#btnPreviewToggle");
@@ -2161,11 +2163,11 @@ function wireUI() {
     button.setAttribute("aria-expanded", String(!collapsed));
     $("#center").inert = collapsed;
     $("#btnFocus").title = "专注模式 · 对话全屏（隐藏侧栏与工作区）";
-  });
-  $("#btnFocus").addEventListener("click", () => {
+  }));
+  $("#btnFocus").addEventListener("click", () => applyPreviewLayout(() => {
     const on = document.body.classList.toggle("focus-mode");
     $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
-  });
+  }));
 
   window.initTerminals(() => S.state?.cwd || "", toast);
 
@@ -2220,7 +2222,7 @@ function wireUI() {
 
   // think chip button
   $("#btnThink").addEventListener("click", () => { renderThinkList(); openModal("thinkModal"); });
-  $("#btnModel").addEventListener("click", () => { loadModels(); openModal("modelModal"); });
+  $("#btnModel").addEventListener("click", () => openModal("modelModal"));
   $("#ctxQuota").addEventListener("click", openUsageDetails);
   $('#ctxVideoQuota').addEventListener('click', openVideoUsage);
   $('#refreshVideoUsage').addEventListener('click', () => { void loadVideoBalance(); void openVideoUsage(); });
@@ -2317,38 +2319,25 @@ function wireCenter() {
     $$(".pvdev").forEach((x) => x.classList.toggle("active", x === b));
     const body = $("#pvBody");
     if (body.classList.contains("dev-" + b.dataset.dev)) return;
-    animatePreviewViewport();
-    body.classList.remove("dev-desktop", "dev-tablet", "dev-mobile");
-    body.classList.add("dev-" + b.dataset.dev);
+    applyPreviewLayout(() => {
+      body.classList.remove("dev-desktop", "dev-tablet", "dev-mobile");
+      body.classList.add("dev-" + b.dataset.dev);
+    });
     window.halo.previewTouch?.(b.dataset.dev !== "desktop"); // 平板/手机模式：隐藏滚动条 + 触摸式拖动
     const size = $("#pvDevSize");
     if (size) size.textContent = devSize[b.dataset.dev] || "100%";
   }));
 }
 
-// Hide intermediate responsive layouts instead of stretching the page surface.
-let finishPreviewResize = null;
-function animatePreviewViewport() {
-  finishPreviewResize?.();
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const guest = document.querySelector('#pvBody .dev-screen webview');
-  if (!guest || !guest.offsetWidth || !guest.offsetHeight) return;
-  const original = guest.getAttribute('style');
-  const restore = () => { if (original === null) guest.removeAttribute('style'); else guest.setAttribute('style', original); };
-  const width = guest.offsetWidth, height = guest.offsetHeight;
-  guest.classList.add('viewport-changing');
-  Object.assign(guest.style, {position:'absolute', inset:'0', flex:'none', width:width+'px', height:height+'px'});
-  let revealTimer;
-  const cleanup = () => {
-    clearTimeout(timer); clearTimeout(revealTimer); restore();
-    guest.classList.remove('viewport-changing');
-    if (finishPreviewResize === cleanup) finishPreviewResize = null;
-  };
-  const timer = setTimeout(() => {
-    restore(); // Apply the target viewport once, then allow the guest to paint it.
-    revealTimer = setTimeout(cleanup, 100);
-  }, 430);
-  finishPreviewResize = cleanup;
+// Resize the real page once; never stretch or continuously relayout its canvas.
+function syncPreviewMotion() {
+  const paused = !!$('.modal:not([hidden]), .image-viewer[open]') ||
+    document.body.classList.contains('preview-collapsed') || document.body.classList.contains('focus-mode');
+  return window.halo.previewMotion?.(paused).catch(() => {});
+}
+function applyPreviewLayout(change) {
+  change();
+  syncPreviewMotion();
 }
 
 /* ---- file tree ---- */
@@ -2806,9 +2795,10 @@ function openImagePreview(src, name = "截图", gallery = [{ src, name }], initi
       show(index + (["ArrowUp", "ArrowLeft"].includes(e.key) ? -1 : 1));
     }
   });
-  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.addEventListener("close", () => { dialog.remove(); syncPreviewMotion(); }, { once: true });
   document.body.appendChild(dialog);
   dialog.showModal();
+  syncPreviewMotion();
 }
 
 function renderAttachments() {
@@ -3015,9 +3005,9 @@ function openModal(id) {
   const m = document.getElementById(id);
   clearTimeout(modalCloseTimers.get(m));
   m.hidden = false;
-  if (id === "usageDetailModal" || id === "videoUsageModal") void m.offsetWidth; // Commit the starting style before transitioning.
-  requestAnimationFrame(() => { if (!m.hidden && !modalCloseTimers.has(m)) m.classList.add("show"); });
   modalCloseTimers.delete(m);
+  syncPreviewMotion();
+  m.classList.add("show");
   if (id === "modelModal") { $("#modelSearch").value = ""; loadModels(); }
 }
 function closeModal(m) {
@@ -3028,7 +3018,8 @@ function closeModal(m) {
   modalCloseTimers.set(el, setTimeout(() => {
     el.hidden = true;
     modalCloseTimers.delete(el);
-  }, ["usageDetailModal", "videoUsageModal"].includes(el.id) ? 180 : 280));
+    syncPreviewMotion();
+  }, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180));
 }
 
 /* 提示气泡：错误/警告始终显示（静默失败 = 用户无感知，属缺陷）；
@@ -3431,7 +3422,7 @@ function openSettings() {
   openModal("settingsModal");
   if ($("#setPane-environment").classList.contains("active")) void environmentSettings?.refresh();
   if ($("#setPane-video").classList.contains("active")) void videoSettings?.refresh();
-  loadDefaultModels();
+  if ($("#setPane-login").classList.contains("active")) void loadDefaultModels();
   S.pkgLoaded = true;
   loadInstalled(); // 已安装数据每次打开都刷新
   syncPkgTab();    // 市场数据按需加载

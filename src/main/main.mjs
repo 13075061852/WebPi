@@ -72,6 +72,7 @@ const readInject = (name) => fs.readFileSync(path.join(HERE, "inject", name), "u
 const TOUCH_ON = readInject("touch-on.js");
 const TOUCH_OFF = readInject("touch-off.js");
 const SCROLL_STYLE = readInject("scroll-style.js");
+const PREVIEW_MOTION = readInject('preview-motion.js');
 
 /* pi SDK 会随会话运行时/扩展环境注册一组关闭钩子（SIGINT/SIGTERM/beforeExit），
  * 重建几次后数量超过 Node 默认上限 10，触发“内存泄漏”误报。
@@ -182,6 +183,18 @@ function bootstrap() {
   let startupWatchdog;
   let startupFailureShowing = false;
   let coreStartPromise;
+  let previewMotionPaused = false;
+  let previewMotionWork = Promise.resolve();
+  function syncPreviewMotion() {
+    previewMotionWork = previewMotionWork.catch(() => {}).then(async () => {
+      if (!mainWin || mainWin.isDestroyed()) return;
+      const frames = mainWin.webContents.mainFrame.frames.filter(frame => frame.url.startsWith('halo-preview://local/'));
+      const guests = [...previewGuests].filter(guest => !guest.isDestroyed());
+      const script = `(${PREVIEW_MOTION})(${previewMotionPaused})`;
+      await Promise.allSettled([...frames, ...guests].map(target => target.executeJavaScript(script)));
+    });
+    return previewMotionWork;
+  }
   const startup = createStartupLifecycle({
     onChange: state => {
       if (process.env.HALO_STARTUP_TRACE === '1') console.log('[halo:startup]', JSON.stringify({
@@ -340,8 +353,13 @@ function bootstrap() {
       });
       guest.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
       guest.on("will-navigate", (event, url) => { if (!/^https?:\/\//.test(url)) event.preventDefault(); });
-      guest.on("dom-ready", () => { guest.executeJavaScript(SCROLL_STYLE).catch(() => {}); guest.executeJavaScript(previewTouch ? TOUCH_ON : TOUCH_OFF).catch(() => {}); });
+      guest.on("dom-ready", () => {
+        guest.executeJavaScript(SCROLL_STYLE).catch(() => {});
+        guest.executeJavaScript(previewTouch ? TOUCH_ON : TOUCH_OFF).catch(() => {});
+        if (previewMotionPaused) void syncPreviewMotion();
+      });
     });
+    mainWin.webContents.on('did-frame-finish-load', () => { if (previewMotionPaused) void syncPreviewMotion(); });
     mainWin.webContents.on("render-process-gone", (_event, details) => {
       terminals.dispose();
       if (!quitting) void showStartupFailure(`界面进程意外退出：${details.reason}`);
@@ -420,6 +438,10 @@ function bootstrap() {
 
   handle('halo:splash-done', () => startup.snapshot());
   handle('halo:startup-state', () => startup.snapshot());
+  handle('halo:preview-motion', paused => {
+    previewMotionPaused = paused === true;
+    return syncPreviewMotion();
+  });
   handle('halo:renderer-ready', () => {
     if (startupFailureShowing || quitting) return startup.snapshot();
     rendererReady = true;
