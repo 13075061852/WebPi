@@ -212,7 +212,8 @@ html.layout-motion #pvBody :is(iframe, webview) { pointer-events: none; }
 .device-morph-layer .dev-screen { clip-path: none !important; background: #111316; }
 #pvBody.device-morph-hidden .dev-shell, #pvBody.device-morph-hidden::before, #pvBody.device-morph-hidden::after { visibility: hidden; }
 :is(html.layout-motion-global, html.layout-motion #layout)::view-transition { pointer-events: none; }
-:is(html.layout-motion-global, html.layout-motion #layout)::view-transition-group(*) { animation-duration: 280ms; animation-timing-function: cubic-bezier(.22,.68,0,1); }
+/* Snapshot translations use measured top-left bounds, not the default center origin. */
+:is(html.layout-motion-global, html.layout-motion #layout)::view-transition-group(*) { transform-origin: 0 0; animation-duration: 280ms; animation-timing-function: cubic-bezier(.22,.68,0,1); }
 :is(html.layout-motion-global, html.layout-motion #layout)::view-transition-old(*), :is(html.layout-motion-global, html.layout-motion #layout)::view-transition-new(*) {
   width: 100%; height: 100%; object-fit: fill;
   animation-duration: 280ms; animation-timing-function: cubic-bezier(.22,.68,0,1);

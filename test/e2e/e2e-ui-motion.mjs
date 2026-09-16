@@ -157,9 +157,17 @@ try {
   await evaluate('document.querySelector("#btnSidebar").click();document.querySelector(".pvdev[data-dev=desktop]").click()');
   await waitFor(() => evaluate('!document.documentElement.classList.contains("layout-motion") && document.querySelector("#pvBody").classList.contains("dev-desktop")'), 'Reset layout');
   // Check both directions for all three device pairs, including the handoff frame.
+  await evaluate(`window.__paneRects=()=>Object.fromEntries(['sidebar','center','chat'].map(name=>{const r=document.querySelector('#'+name).getBoundingClientRect();return [name,{x:r.x,y:r.y,width:r.width,height:r.height}]}));
+    window.__snapshotRects=()=>Object.fromEntries(['sidebar','center','chat'].map(name=>{
+      const host=document.querySelector('#layout'),bounds=host.getBoundingClientRect(),style=getComputedStyle(host,'::view-transition-group(layout-'+name+')');
+      const matrix=new DOMMatrix(style.transform),width=parseFloat(style.width),height=parseFloat(style.height);
+      const origins=style.transformOrigin.split(' ').map((value,index)=>parseFloat(value)*(value.endsWith('%')?[width,height][index]/100:1));
+      return [name,{x:bounds.x+matrix.e+origins[0]*(1-matrix.a)-origins[1]*matrix.c,y:bounds.y+matrix.f+origins[1]*(1-matrix.d)-origins[0]*matrix.b,width:width*matrix.a,height:height*matrix.d,origin:style.transformOrigin}];
+    }));`);
   const chromeSamples=[];
   for(const mode of ['mobile','tablet','desktop','tablet','mobile','desktop']) {
     const before=await evaluate('(()=>{const n=document.querySelector("#pvBody .dev-shell"),r=n.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,radius:parseFloat(getComputedStyle(n).borderRadius)}})()');
+    const panesBefore=await evaluate('__paneRects()');
     await evaluate(`document.querySelector('.pvdev[data-dev="${mode}"]').click()`);
     await waitFor(()=>evaluate('document.querySelector(".device-morph-shell")?.getAnimations().some(a=>a.playState==="running"&&!a.effect.pseudoElement)'),'Chrome animation did not start');
     const samples=await evaluate(`(()=>{
@@ -167,18 +175,23 @@ try {
       animations.forEach(a=>a.pause());window.__pausedAnimations=animations;
       const rect=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {x:r.x,y:r.y,width:r.width,height:r.height,radius:parseFloat(s.borderRadius),border:parseFloat(s.borderTopWidth),transform:s.transform}};
       const final=rect(document.querySelector('#pvBody .dev-shell'));
-      const frames=[0,140,280].map(time=>{animations.forEach(a=>a.currentTime=time);return {time,skins:[...document.querySelectorAll('.device-morph-shell')].map(rect)}});
-      return {final,frames,guests:document.querySelectorAll('.device-morph-overlay iframe,.device-morph-overlay webview').length};
+      const frames=[0,40,80,140,210,280].map(time=>{animations.forEach(a=>a.currentTime=time);return {time,panes:__snapshotRects(),skins:[...document.querySelectorAll('.device-morph-shell')].map(rect)}});
+      return {final,frames,panesFinal:__paneRects(),guests:document.querySelectorAll('.device-morph-overlay iframe,.device-morph-overlay webview').length};
     })()`);
     assert.equal(samples.guests,0,'Chrome copies must never create another embedded page');
-    for(const [index,expected] of [[0,before],[2,samples.final]]) for(const skin of samples.frames[index].skins) {
+    for(const [index,expected] of [[0,before],[samples.frames.length-1,samples.final]]) for(const skin of samples.frames[index].skins) {
       for(const property of ['x','y','width','height','radius']) assert.ok(Math.abs(skin[property]-expected[property])<.6,`${mode}: ${property} jumped at ${index===0?'start':'handoff'}: ${JSON.stringify({skin,expected})}`);
     }
     for(const frame of samples.frames) for(const skin of frame.skins) {
       assert.equal(skin.transform,'none');assert.equal(skin.border,samples.final.border,'Border thickness must stay constant');
       assert.ok(skin.width>=Math.min(before.width,samples.final.width)-.6&&skin.width<=Math.max(before.width,samples.final.width)+.6,'Chrome must not overshoot its bounds');
+      assert.ok(skin.x>=frame.panes.center.x-.6&&skin.x+skin.width<=frame.panes.center.x+frame.panes.center.width+.6,`${mode} at ${frame.time}ms: device escapes the painted preview column: ${JSON.stringify({skin,panes:frame.panes})}`);
+      assert.ok(Math.abs(frame.panes.center.x+frame.panes.center.width-frame.panes.chat.x)<.6,`${mode}: preview and chat snapshots must share a continuous boundary`);
     }
-    chromeSamples.push({mode,before,...samples});
+    for(const [frame,expected] of [[samples.frames[0],panesBefore],[samples.frames.at(-1),samples.panesFinal]]) for(const name of ['sidebar','center','chat']) {
+      for(const property of ['x','y','width','height']) assert.ok(Math.abs(frame.panes[name][property]-expected[name][property])<.6,`${mode}: ${name} ${property} shifted at ${frame.time}ms: ${JSON.stringify({actual:frame.panes[name],expected:expected[name]})}`);
+    }
+    chromeSamples.push({mode,before,panesBefore,...samples});
     if(mode==='mobile'&&chromeSamples.length===1) for(const time of [0,140,280]) {
       await evaluate(`__pausedAnimations.forEach(a=>a.currentTime=${time})`);
       const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
