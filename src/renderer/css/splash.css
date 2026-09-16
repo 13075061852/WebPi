@@ -8,11 +8,10 @@ body { display: grid; place-items: center; font-family: "Segoe UI", "Microsoft Y
  position: relative; overflow: hidden; border-radius: 24px;
  background: var(--surface); color: var(--ink); border: 1px solid var(--line);
  box-shadow: 0 3px 12px #00000018;
- transition: width 850ms cubic-bezier(.22,1,.36,1), height 850ms cubic-bezier(.22,1,.36,1), border-radius 850ms ease;
- animation: arrive 600ms cubic-bezier(.22,1,.36,1) both;
+ animation: arrive 180ms ease-out both;
 }
 .brand { position: absolute; left: 28px; right: 28px; top: 25px; display: flex; justify-content: space-between; font-size: 10px; letter-spacing: .2em; color: var(--muted); }
-.identity { position: absolute; inset: 54px 0 55px; display: flex; align-items: center; justify-content: center; flex-direction: column; transition: opacity 400ms ease, transform 700ms ease; }
+.identity { position: absolute; inset: 45px 0 86px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
 .emblem { width: 108px; height: 108px; fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-linecap: round; }
 .track { opacity: .09; }
 .inner { opacity: .1; stroke-dasharray: 1 7; }
@@ -21,14 +20,15 @@ body { display: grid; place-items: center; font-family: "Segoe UI", "Microsoft Y
 .mark { stroke-width: 3; stroke-linejoin: round; stroke-dasharray: 120; animation: draw 1.2s ease both; }
 h1 { margin-top: 15px; font-size: 21px; font-weight: 500; letter-spacing: .06em; }
 p { margin-top: 10px; font-size: 12px; color: var(--muted); letter-spacing: .12em; }
-footer { position: absolute; bottom: 24px; left: 28px; right: 28px; display: flex; align-items: center; justify-content: space-between; padding-top: 16px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+footer { position: absolute; bottom: 24px; left: 28px; right: 28px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+footer > div { flex: 1; min-width: 0; }
+.status-line { display: flex; justify-content: space-between; gap: 12px; color: var(--ink); }
+#elapsed { color: var(--muted); font-variant-numeric: tabular-nums; }
+#startupDetail { font-size: 10px; letter-spacing: 0; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .loading { display: flex; gap: 5px; }
 .loading i { width: 3px; height: 3px; border-radius: 50%; background: var(--ink); animation: pulse 1.2s ease-in-out infinite; }
 .loading i:nth-child(2) { animation-delay: .15s; }
 .loading i:nth-child(3) { animation-delay: .3s; }
-#stage.expand { width: 100vw; height: 100vh; border-radius: 0; }
-.expand .identity { opacity: 0; transform: scale(1.06); }
-.expand .brand, .expand footer { opacity: 0; transition: opacity 350ms ease; }
 @keyframes arrive { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: scale(1); } }
 @keyframes orbit { to { transform: rotate(360deg); } }
 @keyframes draw { from { stroke-dashoffset: 120; } to { stroke-dashoffset: 0; } }

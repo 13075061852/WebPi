@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tests = [
   'verify-env-proxy', 'verify-pi-command', 'verify-bundled-pi', 'verify-environment-detection', 'verify-environment-manager', 'verify-video-generation',
   'verify-video-domestic', 'verify-video-international', 'verify-video-platforms', 'verify-video-apimart', 'verify-video-pricing', 'verify-video-workflow', 'verify-video-billing',
-  'verify-session-integrity', 'verify-project-selection', 'verify-account-integrity', 'verify-server-delete',
+  'verify-session-integrity', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-server-delete',
   'verify-composer-events', 'verify-office-protocol', 'verify-ipc-sender',
   'verify-session-queue', 'verify-preview-races', 'verify-preview-refresh',
   'verify-preview-file', 'verify-preview-inspection', 'verify-workspace-path',

@@ -284,6 +284,11 @@ export class PiBridge {
   #pool = new Map();   // key: normPath(sessionFile) -> SessionCtx
   #focusedKey = null;  // 焦点会话 key
   #focusSeq = 0;
+  #startingCwd = null;
+  #modelRefreshTimer = null;
+  #modelRefreshController = null;
+  #modelRefreshScheduled = false;
+  #disposed = false;
 
   constructor(store, crypto = {}, opts = {}) {
     this.store = store;
@@ -355,29 +360,46 @@ export class PiBridge {
   /* ---------------- lifecycle ---------------- */
 
   async start(cwd) {
-    if (this.startingPromise) { try { await this.startingPromise; } catch {} }
-    if (cwd) this.cwd = String(cwd).replace(/\\/g, "/");
-    if (!this.cwd) this.cwd = path.join(os.homedir(), "Desktop").replace(/\\/g, "/");
-    this.store.set("cwd", this.cwd);
-
-    this.startingPromise = this._doStart();
-    try {
-      await this.startingPromise;
-    } finally {
-      this.startingPromise = null;
+    const target = String(cwd || this.cwd || path.join(os.homedir(), "Desktop")).replace(/\\/g, "/");
+    // Splash warmup and renderer initialization can ask for the same workspace
+    // together. Share that operation instead of disposing its freshly ready session.
+    while (this.startingPromise) {
+      if (PiBridge.normPath(target) === this.#startingCwd) return this.startingPromise;
+      try { await this.startingPromise; } catch {}
     }
-    this.pushState();
-    return this.publicState();
+    if ([...this.#pool.values()].some(ctx => ctx.busy || ctx.runtime.session.isStreaming)) {
+      throw new Error("任务进行中，无法重新初始化；请等待任务完成");
+    }
+    this.#disposed = false;
+    this.cwd = target;
+    this.store.set("cwd", this.cwd);
+    this.#startingCwd = PiBridge.normPath(target);
+    const operation = this._doStart().then(() => {
+      this.pushState();
+      this.#scheduleModelRefresh();
+      return this.publicState();
+    });
+    this.startingPromise = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.startingPromise === operation) {
+        this.startingPromise = null;
+        this.#startingCwd = null;
+      }
+    }
   }
 
 async _doStart() {
     const { ModelRuntime } = await loadPi();
 
-    // 重建前清空旧池（重启/项目切换慢路径）：后台任务随旧 runtime 取消
+    // Explicit restarts rebuild idle runtimes; start() protects running tasks.
     await this.#resetPool();
 
     if (!this.modelRuntime) {
-      this.modelRuntime = await ModelRuntime.create({ allowModelNetwork: true, modelRefreshTimeoutMs: 12000 });
+      // The SDK restores built-in, custom and persisted remote models offline.
+      // Catalog requests and expired-token refreshes must not gate first use.
+      this.modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
     }
 
     // 初始会话：恢复本项目 lastSession（若有），否则全新会话
@@ -403,6 +425,32 @@ async _doStart() {
         this.session.setThinkingLevel(saved.thinkingLevel);
       }
     } catch {}
+  }
+
+  #scheduleModelRefresh() {
+    if (this.#disposed || this.#modelRefreshScheduled || process.env.PI_OFFLINE !== undefined || !this.modelRuntime?.refresh) return;
+    this.#modelRefreshScheduled = true;
+    const runtime = this.modelRuntime;
+    // Let the ready state paint before catalog/auth work begins. Keep the same
+    // runtime so custom providers, credentials and selected sessions survive.
+    this.#modelRefreshTimer = setTimeout(() => {
+      this.#modelRefreshTimer = null;
+      if (this.#disposed || runtime !== this.modelRuntime) return;
+      const controller = new AbortController();
+      this.#modelRefreshController = controller;
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      timeout.unref?.();
+      void Promise.resolve().then(() => runtime.refresh({ allowNetwork: true, signal: controller.signal }))
+        .then(() => {
+          if (!controller.signal.aborted && !this.#disposed && runtime === this.modelRuntime) this.pushState();
+        })
+        .catch(() => { /* Cached models remain usable when the network is unavailable. */ })
+        .finally(() => {
+          clearTimeout(timeout);
+          if (this.#modelRefreshController === controller) this.#modelRefreshController = null;
+        });
+    }, 1500);
+    this.#modelRefreshTimer.unref?.();
   }
 
   /* 已有会话保留自己的模型；默认模型仅用于新建会话或没有模型的会话。 */
@@ -1218,6 +1266,9 @@ async _doStart() {
   /* ---------------- prompting ---------------- */
 
   async prompt(text, opts = {}) {
+    // A prompt arriving in the restart/import gap must use the ready runtime,
+    // never the idle session that initialization is about to dispose.
+    if (this.startingPromise) await this.startingPromise;
     const ctx = this.#focusedCtx();
     if (!ctx) throw new Error("Session not ready");
     ctx.busy = (ctx.busy || 0) + 1;
@@ -1864,6 +1915,12 @@ async _doStart() {
   }
 
   async dispose() {
+    this.#disposed = true;
+    clearTimeout(this.#modelRefreshTimer);
+    this.#modelRefreshTimer = null;
+    this.#modelRefreshController?.abort();
+    this.#modelRefreshScheduled = false;
+    try { await this.startingPromise; } catch {}
     await this.#resetPool();
   }
 }

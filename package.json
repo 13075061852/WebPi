@@ -1,6 +1,6 @@
 {
   "name": "pi-halo",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Pi Halo — a celestial desktop console for the pi coding agent",
   "main": "src/main/main.mjs",
   "type": "commonjs",
@@ -30,10 +30,18 @@
     "asarUnpack": [
       "node_modules/**"
     ],
+    "beforePack": "./build/prepare-package.cjs",
     "files": [
       "src/**/*",
       "assets/**/*",
       "package.json",
+      "!tmp/**/*",
+      "!test/**/*",
+      "!docs/**/*",
+      "!scripts/**/*",
+      "!build/**/*",
+      "!node_modules/node-pty/prebuilds/win32-arm64/**/*",
+      "!node_modules/node-pty/third_party/conpty/*/win10-arm64/**/*",
       "!**/*.map",
       "!**/*.d.ts",
       "!**/*.d.mts",
@@ -51,17 +59,15 @@
           ]
         }
       ],
-      "icon": "assets/icon-rounded.png",
-      "files": [
-        "!node_modules/node-pty/prebuilds/win32-arm64/**/*",
-        "!node_modules/node-pty/third_party/conpty/*/win10-arm64/**/*"
-      ]
+      "icon": "assets/icon-rounded.png"
     },
     "nsis": {
+      "include": "build/installer.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Pi Halo"
+      "shortcutName": "Pi Halo",
+      "artifactName": "Pi-Halo-Setup-${version}.${ext}"
     },
     "npmRebuild": false,
     "publish": [

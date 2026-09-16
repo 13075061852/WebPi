@@ -133,5 +133,10 @@ contextBridge.exposeInMainWorld("halo", {
 
   // splash -> main
   splashDone: () => ipcRenderer.invoke("halo:splash-done"),
-  onSplashExpand: listen("halo:splash-expand"),
+  startupState: () => ipcRenderer.invoke('halo:startup-state'),
+  onStartupProgress: listen('halo:startup-progress'),
+  rendererReady: () => ipcRenderer.invoke('halo:renderer-ready'),
+  rendererFailed: error => ipcRenderer.invoke('halo:renderer-failed', error),
+  startupRetry: () => ipcRenderer.invoke('halo:startup-retry'),
+  workspaceReady: error => ipcRenderer.invoke('halo:workspace-ready', error),
 });

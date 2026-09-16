@@ -1,5 +1,6 @@
 import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
 import { initAppUpdates } from './app-updates.mjs';
+import { initStartupProgress } from './startup.mjs';
 import { websiteURL, renderWebsiteCards, mountWebsiteBrowser } from './website-preview.mjs';
 import { userMessageText, userMessageParts } from "./user-message.mjs";
 import { initEnvironmentSettings } from "./environment-settings.mjs";
@@ -80,17 +81,31 @@ function applyTheme(t, { persist = true } = {}) {
    boot
    ============================================================ */
 document.addEventListener("DOMContentLoaded", () => {
-  requestAnimationFrame(() => document.body.classList.add("enter"));
-  environmentSettings = initEnvironmentSettings();
-  videoSettings = initVideoSettings({ onSaved: () => void loadVideoBalance() });
-  void loadVideoBalance();
+  try {
+  document.body.classList.add("enter");
   wireUI();
   initAppUpdates();
   wirePi();
+  initStartupProgress({ onRetry: restoreInitialWorkspace });
+  // Install listeners before notifying main. Core loading starts after the shell is shown.
+  S.pendingRestore = true;
+  requestAnimationFrame(() => {
+    void window.halo.rendererReady?.().catch(() => {});
+    // Settings/account/network work can wait until the first interactive frame.
+    const background = () => {
+      environmentSettings = initEnvironmentSettings();
+      videoSettings = initVideoSettings({ onSaved: () => void loadVideoBalance() });
+      void loadVideoBalance();
+      updateAuthSummary();
+    };
+    if (window.requestIdleCallback) window.requestIdleCallback(background, { timeout: 2000 });
+    else setTimeout(background, 0);
+  });
   initServerUI();
-  refreshAll();
-  updateAuthSummary();
-  loadTree();
+  void window.halo.getState().then(reply => {
+    if (!reply?.ok) throw Error(reply?.error || '无法读取启动状态');
+    if (!S.state?.ready || reply.data?.ready) applyState(reply.data);
+  }).catch(reportWorkspaceFailure);
   // 对齐分割线：sidebar 登录区顶线与预览区下方设备切换条顶线在同一水平线
   const devicesBar = document.querySelector(".pv-devices"), modelCard = $("#modelCard");
   if (devicesBar && modelCard && window.ResizeObserver) {
@@ -98,7 +113,35 @@ document.addEventListener("DOMContentLoaded", () => {
     new ResizeObserver(syncFoot).observe(devicesBar);
     syncFoot();
   }
+  } catch (error) {
+    console.error('[halo] renderer initialization failed:', error);
+    void window.halo.rendererFailed?.(String(error?.message || error));
+  }
 });
+
+let initialWorkspacePromise;
+function reportWorkspaceFailure(error) {
+  const message = String(error?.message || error);
+  void window.halo.workspaceReady?.(message).catch(() => {});
+  toast(message, 'err');
+}
+function restoreInitialWorkspace() {
+  if (initialWorkspacePromise) return initialWorkspacePromise;
+  S.pendingRestore = false;
+  initialWorkspacePromise = (async () => {
+    const reply = await window.halo.getState();
+    if (!reply?.ok) throw Error(reply?.error || '无法读取会话状态');
+    const state = S.state?.ready ? S.state : reply.data;
+    if (!state?.ready) { S.pendingRestore = true; return; }
+    // Restore once even if a ready event races the initial state request.
+    applyState(state);
+    await Promise.all([loadSessions(), loadResources()]);
+    await restoreWorkspace();
+    await Promise.all([loadTree(true), loadProjects()]);
+    await window.halo.workspaceReady?.();
+  })().catch(reportWorkspaceFailure).finally(() => { initialWorkspacePromise = null; });
+  return initialWorkspacePromise;
+}
 
 async function refreshAll() {
   const st = await window.halo.getState();
@@ -399,10 +442,9 @@ function initServerUI() {
       form.reset(); portCache.clear(); portServerId = null; closeModal($("#serverModal")); await refreshServers();
     } finally { button.disabled = false; }
   });
-  document.addEventListener("projectstatechange", refreshServers);
+  document.addEventListener("projectstatechange", () => { if (S.state?.ready) void refreshServers(); });
   document.querySelectorAll('.nav-item').forEach(button => button.addEventListener("click", refreshServers));
   $("#treeRefresh").addEventListener("click", (e) => { if (portServerId) { e.stopImmediatePropagation(); loadServerPorts(true); } }, true);
-  refreshServers();
 }
 
 function applyState(st) {
@@ -439,7 +481,7 @@ function applyState(st) {
 
   if (st.ready && S.pendingRestore) {
     S.pendingRestore = false;
-    restoreWorkspace();
+    void restoreInitialWorkspace();
   }
 }
 

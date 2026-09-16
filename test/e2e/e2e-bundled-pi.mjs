@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { spawnPi } from '../../src/main/pi-command.mjs';
 
-const exe = path.resolve('dist/win-unpacked/Pi Halo.exe');
+const exe = path.resolve(process.env.HALO_PACKAGED_EXE || 'dist/win-unpacked/Pi Halo.exe');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-bundled-pi-'));
 const workspace = path.join(dir, 'workspace'), agentDir = path.join(dir, 'agent'), userData = path.join(dir, 'user-data');
 for (const p of [workspace, agentDir, userData]) fs.mkdirSync(p, { recursive: true });
@@ -55,7 +55,7 @@ try {
   let page;
   for (let n = 0; n < 120 && !page; n++) {
     try {
-      const pages = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+      const pages = await (await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(2000) })).json();
       page = pages.find(p => p.type === 'page' && p.url.endsWith('index.html'));
     } catch {}
     if (!page) await sleep(250);
@@ -65,11 +65,13 @@ try {
   let messageId = 0; const pending = new Map();
   ws.addEventListener('message', event => {
     const data = JSON.parse(event.data); const request = pending.get(data.id);
-    if (request) { pending.delete(data.id); request(data); }
+      if (request) { pending.delete(data.id); clearTimeout(request.timer); request.resolve(data); }
   });
   async function evaluate(expression) {
-    const reply = await new Promise(resolve => {
-      const id = ++messageId; pending.set(id, resolve);
+    const reply = await new Promise((resolve, reject) => {
+      const id = ++messageId;
+      const timer = setTimeout(() => { pending.delete(id); reject(Error(`Packaged app stopped responding: ${output}`)); }, 15000);
+      pending.set(id, { resolve, timer });
       ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
     });
     assert.equal(reply.result?.exceptionDetails, undefined, JSON.stringify(reply));
@@ -110,5 +112,5 @@ try {
   const target = path.resolve(dir);
   assert.equal(path.dirname(target), path.resolve(os.tmpdir()));
   assert.ok(path.basename(target).startsWith('halo-bundled-pi-'));
-  fs.rmSync(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  await fs.promises.rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 }

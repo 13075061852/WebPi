@@ -1,6 +1,7 @@
 import { isTrustedUIURL } from "./trusted-ui-url.mjs";
 import electronUpdater from 'electron-updater';
 import { createAppUpdates } from './app-updates.mjs';
+import { createStartupLifecycle } from './startup-lifecycle.mjs';
 import { inspectPreview } from "./preview-inspection.mjs";
 import { previewDocument } from "./document-preview.mjs";
 /**
@@ -149,16 +150,21 @@ function bootstrap() {
   // 生成默认智能体注入扩展（每次启动重写，路径/配置指向最新）
   writeAgentExt(store.file);
 
-  /* 主窗口创建前（splash 预热期）的 pi:event 先入环形缓冲，窗口就绪后重放，避免事件丢失 */
+  /* A created window is not yet a listening renderer. Retain startup errors as well as events. */
   const pendingEvents = [];
+  let rendererReady = false;
+  let pendingState = null;
   const emit = (channel, payload) => {
-    if (mainWin && !mainWin.isDestroyed()) { mainWin.webContents.send(channel, payload); return; }
-    if (channel === "pi:event") {
+    if (rendererReady && mainWin && !mainWin.isDestroyed()) { mainWin.webContents.send(channel, payload); return; }
+    if (channel === 'halo:state') pendingState = payload;
+    if (channel === "pi:event" || channel === 'halo:error') {
       pendingEvents.push({ channel, payload });
       if (pendingEvents.length > LIMITS.EARLY_EVENTS) pendingEvents.shift();
     }
   };
   const flushPendingEvents = () => {
+    if (!rendererReady || !mainWin || mainWin.isDestroyed()) return;
+    if (pendingState) { mainWin.webContents.send('halo:state', pendingState); pendingState = null; }
     while (pendingEvents.length) {
       const { channel, payload } = pendingEvents.shift();
       mainWin?.webContents.send(channel, payload);
@@ -173,6 +179,70 @@ function bootstrap() {
   bridge.cloudflare = cloudflare;
 
   /* ---------------- splash ---------------- */
+  let startupWatchdog;
+  let startupFailureShowing = false;
+  let coreStartPromise;
+  const startup = createStartupLifecycle({
+    onChange: state => {
+      if (process.env.HALO_STARTUP_TRACE === '1') console.log('[halo:startup]', JSON.stringify({
+        timings: state.timings, steps: state.steps.map(({ id, status }) => ({ id, status })), elapsedMs: state.elapsedMs,
+      }));
+      if (splashWin && !splashWin.isDestroyed()) splashWin.webContents.send('halo:startup-progress', state);
+      emit('halo:startup-progress', state);
+    },
+    reveal: () => {
+      if (quitting || !mainWin || mainWin.isDestroyed()) return;
+      clearTimeout(startupWatchdog);
+      mainWin.show();
+      mainWin.focus();
+      if (splashWin && !splashWin.isDestroyed()) splashWin.close();
+      splashWin = null;
+      emit('halo:window-shown', {});
+      flushPendingEvents();
+      // Let the first interactive frame reach the screen before loading the agent SDK.
+      setImmediate(() => { if (!quitting) void startCore().catch(() => {}); });
+    },
+  });
+  function startCore() {
+    if (coreStartPromise) return coreStartPromise;
+    if (bridge.publicState().ready) return Promise.resolve(bridge.publicState());
+    startup.begin('core', '正在加载本地模型配置、扩展和上次会话');
+    const startCwd = store.data.cwd || path.join(app.getPath('home'), 'Desktop');
+    coreStartPromise = bridge.start(startCwd).then(state => {
+      startup.complete('core');
+      startup.begin('workspace', '正在恢复聊天记录、项目和文件列表');
+      return state;
+    }).catch(error => {
+      console.error('[halo] bridge start failed:', error);
+      startup.fail('core', error);
+      emit('halo:error', { message: String(error?.message || error) });
+      throw error;
+    }).finally(() => { coreStartPromise = null; });
+    return coreStartPromise;
+  }
+  async function showStartupFailure(error) {
+    if (startupFailureShowing || quitting) return;
+    startupFailureShowing = true;
+    clearTimeout(startupWatchdog);
+    startup.fail('interface', error);
+    const owner = splashWin && !splashWin.isDestroyed() ? splashWin : mainWin;
+    const options = { type: 'error', title: 'Pi Halo 启动未完成', message: '主界面未能正常加载',
+      detail: `${String(error?.message || error)}\n\n可以重试启动。项目、聊天记录和账户配置会保留。`,
+      buttons: ['重试启动', '退出'], defaultId: 0, cancelId: 1, noLink: true };
+    const { response } = owner && !owner.isDestroyed() ? await dialog.showMessageBox(owner, options) : await dialog.showMessageBox(options);
+    if (quitting) return;
+    if (response === 0) app.relaunch();
+    app.quit();
+  }
+  app.once('before-quit', () => {
+    if (!quitting) {
+      quitting = true;
+      disarmTreeWatcher();
+      bridge.dispose();
+    }
+    startup.dispose();
+    clearTimeout(startupWatchdog);
+  });
 
   function createSplash() {
     splashWin = new BrowserWindow({
@@ -194,29 +264,19 @@ function bootstrap() {
         sandbox: true,
       },
     });
-    splashWin.loadFile(path.join(DIST, "src", "renderer", "splash.html"));
-    splashWin.once("ready-to-show", () => {
-      splashWin.center();
-      splashWin.show();
-      splashWin.focus();
+    const window = splashWin;
+    window.once("ready-to-show", () => {
+      if (quitting || window.isDestroyed() || mainWin?.isVisible()) return;
+      window.center();
+      window.show();
+      window.focus();
     });
-
-    // start warming the agent core while the animation plays
-    const startCwd = store.data.cwd || path.join(app.getPath("home"), "Desktop");
-    bridge.start(startCwd).catch((e) => {
-      console.error("[halo] bridge start failed:", e);
-      emit("halo:error", { message: String(e?.message || e) });
+    window.loadFile(path.join(DIST, "src", "renderer", "splash.html")).catch(error => {
+      console.error('[halo] splash load failed:', error);
+      // The decorative launch card must not prevent the main window from opening.
+      if (!window.isDestroyed()) window.close();
+      if (splashWin === window) splashWin = null;
     });
-
-    // safety: never let splash block the app
-    setTimeout(() => finishSplash(), 7000);
-  }
-
-  let splashFinishing = false;
-  function finishSplash() {
-    if (splashFinishing || !splashWin || splashWin.isDestroyed()) return;
-    splashFinishing = true;
-    createMainWindow();
   }
 
   /* ---------------- main window ---------------- */
@@ -273,30 +333,26 @@ function bootstrap() {
       guest.on("will-navigate", (event, url) => { if (!/^https?:\/\//.test(url)) event.preventDefault(); });
       guest.on("dom-ready", () => { guest.executeJavaScript(SCROLL_STYLE).catch(() => {}); guest.executeJavaScript(previewTouch ? TOUCH_ON : TOUCH_OFF).catch(() => {}); });
     });
-    mainWin.loadFile(path.join(DIST, "src", "renderer", "index.html"));
-    mainWin.webContents.on("render-process-gone", () => terminals.dispose());
-    mainWin.once("ready-to-show", () => {
-      const reveal = () => {
-        if (!mainWin || mainWin.isDestroyed()) return;
-        mainWin.show();
-        mainWin.focus();
-        if (splashWin && !splashWin.isDestroyed()) splashWin.close();
-        splashWin = null;
-        emit("halo:window-shown", {});
-        flushPendingEvents();
-      };
-      if (splashWin && !splashWin.isDestroyed()) {
-        splashWin.setBounds(mainWin.getBounds());
-        splashWin.webContents.send("halo:splash-expand");
-        setTimeout(reveal, 950);
-      } else reveal();
+    mainWin.webContents.on("render-process-gone", (_event, details) => {
+      terminals.dispose();
+      if (!quitting) void showStartupFailure(`界面进程意外退出：${details.reason}`);
+    });
+    mainWin.once("ready-to-show", () => startup.painted());
+    mainWin.loadFile(path.join(DIST, "src", "renderer", "index.html")).catch(error => {
+      if (!quitting) void showStartupFailure(error);
     });
     mainWin.on("maximize", () => emit("halo:winstate", { maximized: true }));
     mainWin.on("unmaximize", () => emit("halo:winstate", { maximized: false }));
-    mainWin.on("closed", () => (mainWin = null));
+    mainWin.on("closed", () => {
+      mainWin = null;
+      if (splashWin && !splashWin.isDestroyed()) splashWin.close();
+      splashWin = null;
+    });
     mainWin.on("close", () => {
       if (!quitting) {
         quitting = true;
+        startup.dispose();
+        clearTimeout(startupWatchdog);
         disarmTreeWatcher();
         bridge.dispose();
       }
@@ -342,7 +398,10 @@ function bootstrap() {
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, ...args) => {
       try {
-        if (!trustedSender(e, channel === 'halo:splash-done')) throw Error('不可信的界面请求');
+        const trusted = channel === 'halo:startup-state'
+          ? trustedSender(e) || trustedSender(e, true)
+          : trustedSender(e, channel === 'halo:splash-done');
+        if (!trusted) throw Error('不可信的界面请求');
         return { ok: true, data: await fn(...args) };
       } catch (err) {
         return { ok: false, error: String(err?.message || err) };
@@ -350,10 +409,25 @@ function bootstrap() {
     });
   };
 
-  handle("halo:splash-done", async () => {
-    // give the main window a beat to paint before splash fades
-    setTimeout(() => finishSplash(), 350);
-    return true;
+  handle('halo:splash-done', () => startup.snapshot());
+  handle('halo:startup-state', () => startup.snapshot());
+  handle('halo:renderer-ready', () => {
+    if (startupFailureShowing || quitting) return startup.snapshot();
+    rendererReady = true;
+    flushPendingEvents();
+    startup.wired();
+    return startup.snapshot();
+  });
+  handle('halo:renderer-failed', error => { void showStartupFailure(String(error || '界面初始化失败')); });
+  handle('halo:startup-retry', async () => {
+    const state = await startCore();
+    startup.begin('workspace', '正在重新恢复聊天记录、项目和文件列表');
+    return state;
+  });
+  handle('halo:workspace-ready', error => {
+    if (error) startup.fail('workspace', String(error));
+    else startup.complete('workspace');
+    return startup.snapshot();
   });
 
   handle("halo:server-latencies", (force) => servers.latencies(force === true));
@@ -876,9 +950,10 @@ function bootstrap() {
   /* ---------------- app lifecycle ---------------- */
 
   app.on("second-instance", () => {
-    if (mainWin) {
-      if (mainWin.isMinimized()) mainWin.restore();
-      mainWin.focus();
+    const window = mainWin?.isVisible() ? mainWin : splashWin;
+    if (window && !window.isDestroyed()) {
+      if (window.isMinimized()) window.restore();
+      window.focus();
     }
   });
 
@@ -916,6 +991,13 @@ function bootstrap() {
     });
 
     createSplash();
+    createMainWindow();
+    startupWatchdog = setTimeout(() => {
+      if (!quitting) void showStartupFailure('界面初始化超过 15 秒，请重试。');
+    }, 15000);
+  }).catch(error => {
+    console.error('[halo] startup failed:', error);
+    void showStartupFailure(error);
   });
 
   app.on("window-all-closed", () => {

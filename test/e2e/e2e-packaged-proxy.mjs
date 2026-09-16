@@ -12,7 +12,7 @@ import { gzipSync } from 'node:zlib';
 
 const expectDirect = process.argv.includes('--expect-direct');
 const useElectron = process.argv.includes('--electron');
-const exe = path.resolve(useElectron ? 'node_modules/electron/dist/electron.exe' : 'dist/win-unpacked/Pi Halo.exe');
+const exe = path.resolve(useElectron ? 'node_modules/electron/dist/electron.exe' : process.env.HALO_PACKAGED_EXE || 'dist/win-unpacked/Pi Halo.exe');
 assert.ok(fs.existsSync(exe), 'Build the Windows app first');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-exe-proxy-'));
 const sockets = new Set(), servers = [], seen = [];
@@ -102,5 +102,5 @@ exports.initTheme = () => {
   const resolved = path.resolve(dir);
   assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()));
   assert.ok(path.basename(resolved).startsWith('halo-exe-proxy-'));
-  fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  await fs.promises.rm(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 }

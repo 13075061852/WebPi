@@ -1,17 +1,20 @@
-/* Centered rounded launch card, expanded only after the main window has painted. */
+/* Report actual startup work. The main window controls completion after its first paint. */
 (() => {
-  const stage = document.getElementById("stage");
-  let requested = false;
-  const finish = () => {
-    if (requested) return;
-    requested = true;
-    document.getElementById("status").textContent = "正在打开工作空间";
-    window.halo.splashDone().catch(() => {});
+  const status = document.getElementById('status');
+  const detail = document.getElementById('startupDetail');
+  const elapsed = document.getElementById('elapsed');
+  let state, receivedAt = performance.now();
+  const render = next => {
+    if (!next?.steps) return;
+    if (Number.isFinite(state?.revision) && next.revision < state.revision) return;
+    state = next; receivedAt = performance.now();
+    const current = state.steps.find(step => step.status === 'error') || state.steps.find(step => step.status === 'active');
+    status.textContent = current?.label || '正在打开工作空间';
+    detail.textContent = current?.detail || '窗口就绪后立即打开';
   };
-  window.halo.onSplashExpand(() => {
-    requestAnimationFrame(() => requestAnimationFrame(() => stage.classList.add("expand")));
-  });
-  setTimeout(finish, 1800);
-  addEventListener("click", finish);
-  addEventListener("keydown", finish);
+  window.halo.onStartupProgress(render);
+  window.halo.splashDone().then(reply => { if (reply?.ok) render(reply.data); }).catch(() => {});
+  setInterval(() => {
+    if (state) elapsed.textContent = `${Math.floor((state.elapsedMs + performance.now() - receivedAt) / 1000)} 秒`;
+  }, 1000);
 })();

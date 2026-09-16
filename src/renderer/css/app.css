@@ -95,12 +95,8 @@ button:active { transform: scale(0.96); }
 
 /* ---------- entrance choreography ---------- */
 .fx { opacity: 0; }
-.enter .fx { animation: fxIn 0.9s var(--ease) forwards; }
-.enter .t-d { animation-delay: 0.05s; }
-.enter .t-l { animation-delay: 0.18s; }
-.enter .t-c { animation-delay: 0.28s; }
-.enter .t-r { animation-delay: 0.38s; }
-.enter .t-b { animation-delay: 0.55s; }
+.enter .fx { animation: fxIn 0.18s var(--ease) forwards; }
+.enter .t-d, .enter .t-l, .enter .t-c, .enter .t-r, .enter .t-b { animation-delay: 0s; }
 @keyframes fxIn {
   from { opacity: 0; transform: translateY(14px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -114,6 +110,17 @@ button:active { transform: scale(0.96); }
 @keyframes fxLeft  { from { opacity: 0; transform: translateX(-46px); } to { opacity: 1; transform: none; } }
 @keyframes fxRight { from { opacity: 0; transform: translateX(46px); }  to { opacity: 1; transform: none; } }
 @keyframes fxUp    { from { opacity: 0; transform: translateY(46px); }  to { opacity: 1; transform: none; } }
+
+/* Visible only while startup work is pending or needs a retry. */
+#startupProgress { flex: none; margin: 12px 16px 0; padding: 14px 16px; border: 1px solid var(--hair-2); border-radius: 12px; background: var(--panel); color: var(--txt); }
+.startup-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; font-size: 12px; }
+#startupElapsed { color: var(--txt-dim); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 11px; }
+#startupDetail { margin-top: 7px; color: var(--txt-dim); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; max-height: 100px; overflow: auto; user-select: text; }
+#startupSteps { display: flex; flex-wrap: wrap; gap: 7px 14px; list-style: none; margin-top: 12px; font-size: 10px; color: var(--txt-dim); }
+#startupSteps [data-status="complete"] { color: var(--ok); }
+#startupSteps [data-status="active"] { color: var(--txt); }
+#startupSteps [data-status="error"], #startupProgress[data-failed="true"] #startupTitle { color: var(--err); }
+#startupRetry { margin-top: 10px; padding: 5px 12px; border: 1px solid var(--hair-2); border-radius: 6px; }
 
 #app {
   height: 100%;
