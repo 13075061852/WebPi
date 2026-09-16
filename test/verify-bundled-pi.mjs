@@ -16,6 +16,9 @@ const agentDir = path.join(fixture, '.pi', 'agent');
 const project = path.join(fixture, 'project');
 const windowsRoot = originalEnv.SystemRoot || originalEnv.WINDIR || 'C:\\Windows';
 const allowedEnv = new Set(['SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'OS', 'PROCESSOR_ARCHITECTURE']);
+// Hosted Windows runners take ~29s to initialize PowerShell with a fresh HOME.
+// Keep the desktop deadline strict; only this integration fixture gets CI headroom.
+const shellTimeoutSeconds = process.platform === 'win32' && originalEnv.GITHUB_ACTIONS === 'true' ? 60 : 15;
 let bridge;
 let networkRequests = 0;
 
@@ -79,11 +82,13 @@ try {
   assert.match(read.content.map(part => part.text || '').join('\n'), /bundled SDK works/);
   assert.equal(fs.readFileSync(path.join(project, 'fixture.txt'), 'utf8'), 'bundled SDK works\n');
   if (process.platform === 'win32') {
+    const shellStartedAt = performance.now();
     const result = await tools.get('powershell').execute('shell-fixture', {
       command: "[IO.File]::ReadAllText((Join-Path (Get-Location) 'fixture.txt'))",
-      timeout: 15,
+      timeout: shellTimeoutSeconds,
     });
     assert.match(result.content.map(part => part.text || '').join('\n'), /bundled SDK works/);
+    console.log(`PASS isolated PowerShell read in ${Math.round(performance.now() - shellStartedAt)}ms (deadline ${shellTimeoutSeconds}s)`);
   }
 
   // Explicit choices, including a read-only configuration, survive restart.

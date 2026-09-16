@@ -22,13 +22,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.ref }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
       - name: Validate release version
-        run: node -e "if(process.env.RELEASE_TAG !== 'v'+require('./package.json').version) throw Error('Tag must match package.json version')"
+        run: |
+          node -e "if(process.env.RELEASE_TAG !== 'v'+require('./package.json').version) throw Error('Tag must match package.json version')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # A manual retry may use newer CI/tests, but every shipped input must
+          # remain identical to the existing tag. Never move a release tag.
+          git diff --exit-code $env:RELEASE_TAG HEAD -- src assets package.json package-lock.json build
+          if ($LASTEXITCODE -ne 0) { throw 'Shipped inputs differ from the release tag' }
       - run: npm ci
       - name: Provide a verified Chinese TrueType font
         run: |
