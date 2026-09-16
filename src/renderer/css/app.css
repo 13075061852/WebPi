@@ -205,6 +205,12 @@ html.layout-motion-global { view-transition-name: none; }
 html.layout-motion #pvBody :is(iframe, webview) { pointer-events: none; }
 .device-switch-mask { position: absolute; inset: 0; z-index: 10; border-radius: inherit; background: #111316; }
 .pv-body > .device-switch-mask { background: var(--bg1); }
+/* Device changes morph lightweight chrome, keeping borders and corners unscaled. */
+.device-morph-overlay { position: fixed; inset: 0; z-index: 15; pointer-events: none; isolation: isolate; }
+.pv-body.device-morph-layer { position: absolute; display: block; flex: none; padding: 0; margin: 0; background: transparent; overflow: visible; contain: layout style; mix-blend-mode: plus-lighter; }
+.pv-body.device-morph-layer .device-morph-shell { position: absolute; flex: none; max-width: none; margin: 0; box-sizing: border-box; }
+.device-morph-layer .dev-screen { clip-path: none !important; background: #111316; }
+#pvBody.device-morph-hidden .dev-shell, #pvBody.device-morph-hidden::before, #pvBody.device-morph-hidden::after { visibility: hidden; }
 :is(html.layout-motion-global, html.layout-motion #layout)::view-transition { pointer-events: none; }
 :is(html.layout-motion-global, html.layout-motion #layout)::view-transition-group(*) { animation-duration: 280ms; animation-timing-function: cubic-bezier(.22,.68,0,1); }
 :is(html.layout-motion-global, html.layout-motion #layout)::view-transition-old(*), :is(html.layout-motion-global, html.layout-motion #layout)::view-transition-new(*) {

@@ -91,6 +91,7 @@ try {
         queueMicrotask(()=>{
           const groups=document.getAnimations().filter(a=>a.effect?.pseudoElement?.startsWith('::view-transition-group(layout-'));
           record.groups=groups.map(a=>({pseudo:a.effect.pseudoElement,keyframes:a.effect.getKeyframes()}));
+          record.chrome=[...document.querySelectorAll('.device-morph-shell')].map(node=>({transform:getComputedStyle(node).transform,keyframes:node.getAnimations().find(a=>!a.effect.pseudoElement)?.effect.getKeyframes()}));
           Promise.allSettled(groups.map(a=>a.finished)).then(()=>{record.slideEnd=performance.now();record.motionStart=Math.min(...groups.map(a=>a.startTime).filter(t=>typeof t==='number'));});
         });
       }).catch(()=>{});
@@ -120,6 +121,9 @@ try {
       if (['tablet','phone','desktop'].includes(name)) {
         assert.ok(sample.transitions[0].masks.length,'Device content must be covered before snapshot movement');
         assert.ok(sample.transitions[0].masks.every(mask=>mask.opacity===1 && mask.covers && mask.background==='rgb(17, 19, 22)'), 'The device mask must be opaque and cover the whole screen: '+JSON.stringify(sample.transitions[0].masks));
+        assert.equal(sample.transitions[0].chrome.length,2,'Device changes must morph chrome without stretching a page snapshot');
+        assert.ok(sample.transitions[0].chrome.every(skin=>skin.transform==='none'&&skin.keyframes.length===2));
+        assert.ok(!sample.transitions[0].groups.some(group=>group.pseudo.includes('layout-device')),'Device chrome must not be raster-scaled');
       } else assert.equal(sample.transitions[0].masks.length,0,'Sidebar transitions must keep their existing content behavior');
     } else {
       assert.ok(sample.modals[0]?.finished, `${name} must have a completed fade animation`);
@@ -127,15 +131,17 @@ try {
     }
     results.push({name, ...sample});
     assert.equal(await evaluate('document.querySelectorAll(".device-switch-mask").length'),0,'Completed transitions must remove their masks');
+    assert.equal(await evaluate('document.querySelectorAll(".device-morph-overlay,.device-morph-hidden").length'),0,'Completed transitions must restore the live chrome');
   }
   // Capture real intermediate frames separately from the timing run.
   for (const [name, selector] of [['sidebar','#btnSidebar'],['phone','.pvdev[data-dev="mobile"]']]) {
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-    await waitFor(() => evaluate('document.getAnimations().some(a=>a.effect?.pseudoElement?.startsWith("::view-transition-group(layout-"))'), 'No geometry animation');
-    await evaluate('window.__pausedAnimations=document.getAnimations().filter(a=>a.effect?.pseudoElement);for(const a of __pausedAnimations){a.pause();a.currentTime=110;}');
-    const computed = await evaluate('(()=>{const a=document.getAnimations().find(a=>a.effect?.pseudoElement==="::view-transition-group(layout-device)");return a?{scale:new DOMMatrix(getComputedStyle(document.querySelector("#layout"),a.effect.pseudoElement).transform).a,from:a.effect.getKeyframes()[0].transform}:null})()');
+    await waitFor(() => evaluate('document.getAnimations().some(a=>a.playState==="running"&&a.effect?.pseudoElement?.startsWith("::view-transition-group(layout-"))'), 'No running geometry animation');
+    await evaluate('window.__pausedAnimations=document.getAnimations().filter(a=>a.effect?.pseudoElement||a.effect?.target?.closest(".device-morph-overlay"));for(const a of __pausedAnimations){a.pause();a.currentTime=110;}');
     if (name === 'phone') {
-      assert.ok(computed.scale > 1.01, 'The device frame must keep its size animation');
+      const chrome=await evaluate('(()=>{const n=document.querySelector(".device-morph-shell"),s=getComputedStyle(n);return {transform:s.transform,radius:parseFloat(s.borderRadius),width:n.getBoundingClientRect().width,finalWidth:document.querySelector("#pvBody .dev-shell").getBoundingClientRect().width}})()');
+      assert.equal(chrome.transform,'none','Shell edges must never be squeezed by scale');
+      assert.ok(chrome.radius>18&&chrome.radius<43&&chrome.width>chrome.finalWidth,'Width and roundness must change in the same intermediate frame');
       assert.equal(await evaluate('getComputedStyle(document.querySelector(".device-switch-mask")).opacity'),'1','Content must stay covered at the animated midpoint');
     }
     const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
@@ -150,6 +156,38 @@ try {
   }
   await evaluate('document.querySelector("#btnSidebar").click();document.querySelector(".pvdev[data-dev=desktop]").click()');
   await waitFor(() => evaluate('!document.documentElement.classList.contains("layout-motion") && document.querySelector("#pvBody").classList.contains("dev-desktop")'), 'Reset layout');
+  // Check both directions for all three device pairs, including the handoff frame.
+  const chromeSamples=[];
+  for(const mode of ['mobile','tablet','desktop','tablet','mobile','desktop']) {
+    const before=await evaluate('(()=>{const n=document.querySelector("#pvBody .dev-shell"),r=n.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,radius:parseFloat(getComputedStyle(n).borderRadius)}})()');
+    await evaluate(`document.querySelector('.pvdev[data-dev="${mode}"]').click()`);
+    await waitFor(()=>evaluate('document.querySelector(".device-morph-shell")?.getAnimations().some(a=>a.playState==="running"&&!a.effect.pseudoElement)'),'Chrome animation did not start');
+    const samples=await evaluate(`(()=>{
+      const animations=document.getAnimations().filter(a=>a.effect?.pseudoElement||a.effect?.target?.closest('.device-morph-overlay'));
+      animations.forEach(a=>a.pause());window.__pausedAnimations=animations;
+      const rect=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {x:r.x,y:r.y,width:r.width,height:r.height,radius:parseFloat(s.borderRadius),border:parseFloat(s.borderTopWidth),transform:s.transform}};
+      const final=rect(document.querySelector('#pvBody .dev-shell'));
+      const frames=[0,140,280].map(time=>{animations.forEach(a=>a.currentTime=time);return {time,skins:[...document.querySelectorAll('.device-morph-shell')].map(rect)}});
+      return {final,frames,guests:document.querySelectorAll('.device-morph-overlay iframe,.device-morph-overlay webview').length};
+    })()`);
+    assert.equal(samples.guests,0,'Chrome copies must never create another embedded page');
+    for(const [index,expected] of [[0,before],[2,samples.final]]) for(const skin of samples.frames[index].skins) {
+      for(const property of ['x','y','width','height','radius']) assert.ok(Math.abs(skin[property]-expected[property])<.6,`${mode}: ${property} jumped at ${index===0?'start':'handoff'}: ${JSON.stringify({skin,expected})}`);
+    }
+    for(const frame of samples.frames) for(const skin of frame.skins) {
+      assert.equal(skin.transform,'none');assert.equal(skin.border,samples.final.border,'Border thickness must stay constant');
+      assert.ok(skin.width>=Math.min(before.width,samples.final.width)-.6&&skin.width<=Math.max(before.width,samples.final.width)+.6,'Chrome must not overshoot its bounds');
+    }
+    chromeSamples.push({mode,before,...samples});
+    if(mode==='mobile'&&chromeSamples.length===1) for(const time of [0,140,280]) {
+      await evaluate(`__pausedAnimations.forEach(a=>a.currentTime=${time})`);
+      const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      fs.writeFileSync(path.join(fixture,`chrome-${time}.png`),Buffer.from(shot.result.data,'base64'));
+    }
+    await evaluate('__pausedAnimations.forEach(a=>a.play())');
+    await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")'),'Chrome handoff did not finish');
+    assert.equal(await evaluate('document.querySelectorAll(".device-morph-overlay,.device-morph-hidden").length'),0);
+  }
   // Open and close really animate; reversing a close preserves its current opacity.
   await evaluate('document.querySelector("#btnSettings").click()');
   await waitFor(() => evaluate('document.querySelector("#settingsModal").getAnimations().some(a=>a.playState==="running")'), 'Modal opening did not animate');
@@ -188,7 +226,18 @@ try {
   await evaluate('document.querySelector(".pvdev[data-dev=desktop]").click()');await sleep(80);
   await send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:1,mobile:false});
   await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")'),'Window resize must not leave a frozen overlay');
+  assert.equal(await evaluate('document.querySelectorAll(".device-morph-overlay,.device-morph-hidden").length'),0,'Window resize must restore live device chrome');
   await send('Emulation.clearDeviceMetricsOverride');
+  // Exercise losing visibility both during geometry motion and during uncovering.
+  for(const [mode,phase] of [['mobile','chrome'],['desktop','reveal']]) {
+    await evaluate(`document.querySelector('.pvdev[data-dev="${mode}"]').click()`);
+    const selector=phase==='chrome'?'.device-morph-shell':'.device-switch-mask';
+    await waitFor(()=>evaluate(`document.querySelector('${selector}')?.getAnimations().some(a=>a.playState==='running')`),`Missing ${phase} animation`);
+    await evaluate('Object.defineProperty(document,"hidden",{value:true,configurable:true});document.dispatchEvent(new Event("visibilitychange"))');
+    await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")&&!document.querySelector(".device-morph-overlay,.device-morph-hidden,.device-switch-mask")'),`Hidden window must clean up ${phase}`);
+    await evaluate('delete document.hidden;document.dispatchEvent(new Event("visibilitychange"))');
+    assert.equal((await guest()).id,initial.id,'Returning to the window must preserve the preview');
+  }
   await evaluate(`(async()=>{const canvas=document.createElement('canvas');canvas.width=canvas.height=48;const context=canvas.getContext('2d');context.fillStyle='#387ac7';context.fillRect(0,0,48,48);const blob=await new Promise(r=>canvas.toBlob(r));const data=new DataTransfer();data.items.add(new File([blob],'motion-preview.png',{type:'image/png'}));document.querySelector('#input').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));})()`);
   await waitFor(()=>evaluate('!!document.querySelector(".attach-preview")'),'Image fixture did not attach');
   await evaluate('document.querySelector(".attach-preview").click()');
@@ -204,7 +253,7 @@ try {
   assert.equal(await evaluate('document.querySelector("#thinkModal").hidden'),true);
   await evaluate('document.querySelector(".pvdev[data-dev=mobile]").click()');
   await waitFor(()=>evaluate('document.querySelector("#pvBody").classList.contains("dev-mobile")&&!document.querySelector(".device-switch-mask")'),'Reduced motion must also clean up its mask');
-  const report={fixture,previewFile:previewFile||'generated canvas',initial,final,results};
+  const report={fixture,previewFile:previewFile||'generated canvas',initial,final,results,chromeSamples};
   fs.writeFileSync(path.join(fixture,'motion-report.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({ok:true,fixture,results:results.map(r=>({name:r.name,motion:r.transitions.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.slideEnd-t.motionStart)})),modal:r.modals.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.finished-t.motionStart)}))}))}));
   await evaluate('setTimeout(()=>window.halo.close(),30);true');await waitFor(()=>exitCode!==undefined,'App did not close');

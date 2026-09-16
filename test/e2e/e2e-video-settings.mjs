@@ -105,6 +105,7 @@ try {
       visibility:document.visibilityState, focused:document.hasFocus(), active:document.activeElement?.id,
       pickers:[...document.querySelectorAll('select:open')].map(node => node.id),
       modals:[...document.querySelectorAll('.modal:not([hidden])')].map(node => ({id:node.id, show:node.classList.contains('show'), opacity:getComputedStyle(node).opacity})),
+      preview:{mode:document.querySelector('#pvBody')?.className, motion:document.documentElement.classList.contains('layout-motion'), chrome:!!document.querySelector('.device-morph-overlay'), frameWidth:document.querySelector('#pvBody iframe')?.getBoundingClientRect().width, guestWidth:window.__htmlDeviceState?.width},
       animations:document.getAnimations().map(animation => ({target:animation.effect?.target?.id, state:animation.playState, time:animation.currentTime}))
     })`);
     assert.fail(`UI did not settle: ${expression}\n${JSON.stringify(state)}`);
@@ -230,8 +231,10 @@ try {
     }
   }
   async function device(name) {
+    await command('Page.bringToFront');
+    await until('document.visibilityState === "visible"');
     await evaluate(`document.querySelector('.pvdev[data-dev="${name}"]').click()`);
-    await sleep(650); // Allow the embedded page/media to paint its final viewport.
+    await until(`document.querySelector('#pvBody').classList.contains('dev-${name}') && !document.documentElement.classList.contains('layout-motion') && !document.querySelector('.device-switch-mask,.device-morph-overlay')`);
   }
   async function openFromTree(name) {
     await evaluate('document.querySelector("#treeRefresh").click()');
@@ -275,6 +278,9 @@ try {
   }
 
   await until('window.halo && document.querySelectorAll(".environment-tool").length === 3');
+  await until('window.halo.startupState().then(result => result.data.ready)');
+  await command('Page.bringToFront');
+  await until('document.visibilityState === "visible"');
   await evaluate('document.querySelector("#btnSettings").click(); document.querySelector(".set-nav[data-pane=video]").click()');
   await until('document.querySelector("#videoModel").value === "MiniMax-H3"');
   assert.equal(await evaluate('document.querySelector("#videoTest").disabled'), true);
