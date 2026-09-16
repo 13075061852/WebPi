@@ -3,31 +3,46 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { createStartupLifecycle } from '../src/main/startup-lifecycle.mjs';
 
-// Cold core/network startup must never keep a painted, wired main window hidden.
+// A painted shell warms the core, but the small window stays until work completes.
 for (const order of [['painted', 'wired'], ['wired', 'painted']]) {
-  let time = 120, reveals = 0;
+  let time = 120, reveals = 0, starts = 0;
   const updates = [];
-  const lifecycle = createStartupLifecycle({ now: () => time, onChange: state => updates.push(state), reveal: () => reveals++ });
+  const lifecycle = createStartupLifecycle({ now: () => time, onChange: state => updates.push(state), onInterfaceReady: () => starts++, reveal: () => reveals++ });
   lifecycle[order[0]]();
   assert.equal(reveals, 0, 'A blank or unwired window must not be shown');
   time = 200; lifecycle[order[1]]();
-  assert.equal(reveals, 1, 'Reveal immediately when the shell is both painted and wired');
-  assert.equal(lifecycle.snapshot().ready, false, 'Visible shell is not falsely reported as ready AI');
+  assert.equal(starts, 1, 'Start core preparation as soon as the hidden shell is ready');
+  assert.equal(reveals, 0, 'Do not show the large window over the launch animation');
+  assert.equal(lifecycle.snapshot().ready, false);
   lifecycle.painted(); lifecycle.wired();
-  assert.equal(reveals, 1, 'Duplicate Electron/IPC readiness cannot reveal twice');
-  time = 450; lifecycle.begin('core'); lifecycle.fail('core', new Error('模型配置损坏'));
-  const failure = lifecycle.snapshot();
-  assert.equal(failure.steps[1].status, 'error');
-  assert.equal(failure.steps[1].detail, '模型配置损坏');
-  time = 750; lifecycle.begin('core', '正在重试'); lifecycle.complete('core'); lifecycle.begin('workspace');
+  assert.equal(starts, 1, 'Duplicate paint/wiring must not start the core twice');
+  time = 450; lifecycle.begin('core');
+  time = 750; lifecycle.complete('core'); lifecycle.begin('workspace');
   assert.equal(lifecycle.snapshot().ready, false, 'Session ready must not imply history restoration complete');
+  assert.equal(reveals, 0, 'History restoration must finish before the handoff');
   time = 950; lifecycle.complete('workspace');
   const ready = lifecycle.snapshot();
   assert.equal(ready.ready, true);
-  assert.equal(ready.timings.windowShown, 200);
+  assert.equal(ready.timings.windowShown, 950);
   assert.equal(ready.timings.workspaceReady, 950);
-  assert.equal(failure.steps[1].status, 'error', 'Snapshots remain stable for diagnostics');
+  lifecycle.complete('workspace');
+  assert.equal(reveals, 1, 'Repeated completion cannot reveal twice');
   assert.ok(updates.length > 4);
+}
+
+for (const stage of ['core', 'workspace']) {
+  let reveals = 0;
+  const lifecycle = createStartupLifecycle({ reveal: () => reveals++ });
+  lifecycle.painted(); lifecycle.wired();
+  if (stage === 'workspace') lifecycle.complete('core');
+  lifecycle.fail(stage, new Error('加载失败'));
+  const failure = lifecycle.snapshot();
+  assert.equal(reveals, 1, 'Failures must expose the main retry controls instead of trapping the splash');
+  assert.equal(failure.ready, false);
+  lifecycle.begin(stage); lifecycle.complete('core'); lifecycle.complete('workspace');
+  assert.equal(lifecycle.snapshot().ready, true);
+  assert.equal(reveals, 1);
+  assert.equal(failure.steps.find(step => step.id === stage).status, 'error');
 }
 
 // Closing/quitting while startup tasks are pending must never resurrect a window.
@@ -66,4 +81,4 @@ context.listen();
 assert.equal(events.length, 3, 'Buffered events must not replay twice');
 context.send('pi:event', { seq: 2 });
 assert.equal(events.length, 4);
-console.log('PASS startup real paint/wiring gate, independent core readiness, retry, timings, close race and early error/event retention');
+console.log('PASS small-window startup gate, hidden core preparation, workspace handoff, failure recovery, close race and early event retention');

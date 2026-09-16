@@ -190,17 +190,21 @@ function bootstrap() {
       if (splashWin && !splashWin.isDestroyed()) splashWin.webContents.send('halo:startup-progress', state);
       emit('halo:startup-progress', state);
     },
+    onInterfaceReady: () => {
+      clearTimeout(startupWatchdog);
+      // Warm the core while the small launch window stays visible.
+      setImmediate(() => { if (!quitting) void startCore().catch(() => {}); });
+    },
     reveal: () => {
       if (quitting || !mainWin || mainWin.isDestroyed()) return;
       clearTimeout(startupWatchdog);
       mainWin.show();
+      mainWin.webContents.setBackgroundThrottling(true);
       mainWin.focus();
       if (splashWin && !splashWin.isDestroyed()) splashWin.close();
       splashWin = null;
       emit('halo:window-shown', {});
       flushPendingEvents();
-      // Let the first interactive frame reach the screen before loading the agent SDK.
-      setImmediate(() => { if (!quitting) void startCore().catch(() => {}); });
     },
   });
   function startCore() {
@@ -265,6 +269,9 @@ function bootstrap() {
       },
     });
     const window = splashWin;
+    window.on('close', () => {
+      if (!quitting && startup.snapshot().timings.windowShown === undefined) app.quit();
+    });
     window.once("ready-to-show", () => {
       if (quitting || window.isDestroyed() || mainWin?.isVisible()) return;
       window.center();
@@ -274,7 +281,7 @@ function bootstrap() {
     window.loadFile(path.join(DIST, "src", "renderer", "splash.html")).catch(error => {
       console.error('[halo] splash load failed:', error);
       // The decorative launch card must not prevent the main window from opening.
-      if (!window.isDestroyed()) window.close();
+      if (!window.isDestroyed()) window.destroy();
       if (splashWin === window) splashWin = null;
     });
   }
@@ -298,6 +305,8 @@ function bootstrap() {
         nodeIntegration: false,
         sandbox: true,
         spellcheck: false,
+        // Allow the hidden workspace to finish painting before the handoff.
+        backgroundThrottling: false,
         webviewTag: true,
       },
     });

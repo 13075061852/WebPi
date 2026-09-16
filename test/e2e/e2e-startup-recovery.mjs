@@ -67,7 +67,7 @@ try {
   } else {
   await waitFor(async () => (await evaluate('window.halo?.startupState().then(r => r.data)'))?.ready, 'Startup did not finish');
   const state = await evaluate('window.halo.startupState().then(r => r.data)');
-  assert.ok(state.timings.windowShown <= state.timings.coreReady, 'The shell must open before the core finishes');
+  assert.ok(state.timings.windowShown >= state.timings.workspaceReady, 'The large window must wait for workspace restoration');
   assert.ok(state.timings.firstPaint <= state.timings.windowShown);
   assert.equal(await evaluate('document.querySelector("#startupProgress").hidden'), true);
   assert.equal(await evaluate('document.querySelector("#btnSend").disabled'), false);

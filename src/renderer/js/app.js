@@ -87,7 +87,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initAppUpdates();
   wirePi();
   initStartupProgress({ onRetry: restoreInitialWorkspace });
-  // Install listeners before notifying main. Core loading starts after the shell is shown.
+  // Install listeners before notifying main. Core loading runs behind the launch window.
   S.pendingRestore = true;
   requestAnimationFrame(() => {
     void window.halo.rendererReady?.().catch(() => {});
@@ -138,6 +138,8 @@ function restoreInitialWorkspace() {
     await Promise.all([loadSessions(), loadResources()]);
     await restoreWorkspace();
     await Promise.all([loadTree(true), loadProjects()]);
+    // Commit the restored layout before main replaces the small launch window.
+    await new Promise(resolve => requestAnimationFrame(resolve));
     await window.halo.workspaceReady?.();
   })().catch(reportWorkspaceFailure).finally(() => { initialWorkspacePromise = null; });
   return initialWorkspacePromise;

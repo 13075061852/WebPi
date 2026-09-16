@@ -1,4 +1,4 @@
-/* Report actual startup work. The main window controls completion after its first paint. */
+/* Keep the small launch window visible while the main workspace loads behind it. */
 (() => {
   const status = document.getElementById('status');
   const detail = document.getElementById('startupDetail');
@@ -8,7 +8,7 @@
     if (!next?.steps) return;
     if (Number.isFinite(state?.revision) && next.revision < state.revision) return;
     state = next; receivedAt = performance.now();
-    const current = state.steps.find(step => step.status === 'error') || state.steps.find(step => step.status === 'active');
+    const current = state.steps.find(step => step.status === 'error') || state.steps.find(step => step.status === 'active') || state.steps.find(step => step.status === 'pending');
     status.textContent = current?.label || '正在打开工作空间';
     detail.textContent = current?.detail || '窗口就绪后立即打开';
   };
