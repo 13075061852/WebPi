@@ -198,8 +198,27 @@ button:active { transform: scale(0.96); }
   --sidebar-size: 248px;
   grid-template-columns: var(--sidebar-size) minmax(0, calc(100% - var(--sidebar-size) - 480px)) minmax(480px, 1fr);
   min-height: 0;
-  /* Commit viewport dimensions once instead of resizing embedded pages every frame. */
+  /* Snapshot motion handles the visual transition; layout commits only once. */
 }
+
+html.layout-motion-global { view-transition-name: none; }
+html.layout-motion #pvBody :is(iframe, webview) { pointer-events: none; }
+:is(html.layout-motion-global, html.layout-motion #layout)::view-transition { pointer-events: none; }
+:is(html.layout-motion-global, html.layout-motion #layout)::view-transition-group(*) { animation-duration: 280ms; animation-timing-function: cubic-bezier(.22,.68,0,1); }
+:is(html.layout-motion-global, html.layout-motion #layout)::view-transition-old(*), :is(html.layout-motion-global, html.layout-motion #layout)::view-transition-new(*) {
+  width: 100%; height: 100%; object-fit: fill;
+  animation-duration: 280ms; animation-timing-function: cubic-bezier(.22,.68,0,1);
+}
+:is(html.layout-sidebar-enter.layout-motion-global, html.layout-sidebar-enter #layout)::view-transition-new(layout-sidebar) { animation-name: sidebarSlideIn; }
+:is(html.layout-sidebar-leave.layout-motion-global, html.layout-sidebar-leave #layout)::view-transition-old(layout-sidebar) { animation-name: sidebarSlideOut; }
+:is(html.layout-device-held.layout-motion-global, html.layout-device-held #layout)::view-transition-old(layout-device) { animation: none; opacity: 1; mix-blend-mode: normal; }
+:is(html.layout-device-held.layout-motion-global, html.layout-device-held #layout)::view-transition-new(layout-device) { animation: none; opacity: 0; mix-blend-mode: normal; }
+:is(html.layout-motion-global, html.layout-motion #layout)::view-transition-old(layout-chat),
+:is(html.layout-motion-global, html.layout-motion #layout)::view-transition-old(layout-center) { animation: none; opacity: 0; }
+:is(html.layout-motion-global, html.layout-motion #layout)::view-transition-new(layout-chat),
+:is(html.layout-motion-global, html.layout-motion #layout)::view-transition-new(layout-center) { animation: none; opacity: 1; mix-blend-mode: normal; }
+@keyframes sidebarSlideIn { from { transform: translateX(-100%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes sidebarSlideOut { from { transform: none; opacity: 1; } to { transform: translateX(-100%); opacity: 0; } }
 
 /* focus mode：对话全屏（隐藏侧栏与工作区） */
 body.focus-mode #layout { grid-template-columns: 0px minmax(0, 0px) minmax(480px, 1fr); }
@@ -1508,9 +1527,9 @@ body.focus-mode #btnFocus { color: var(--acc); }
   backdrop-filter: none;
   z-index: 100;
   opacity: 0;
-  transition: opacity 0.14s ease-out;
+  /* The motion controller can reverse an in-flight animation without jumping. */
 }
-.modal.show { opacity: 1; animation: modalIn 0.14s ease-out; }
+.modal.show { opacity: 1; }
 .modal-panel {
   width: min(560px, 86vw);
   max-height: 74vh;
@@ -1519,13 +1538,10 @@ body.focus-mode #btnFocus { color: var(--acc); }
   border-radius: var(--r-lg);
   background: var(--panel);
   box-shadow: var(--shadow-lg);
-  transform: translateY(6px);
-  transition: transform 0.16s ease-out;
+  transform: translateY(10px) scale(.985);
   overflow: hidden;
 }
-.modal.show .modal-panel { transform: none; animation: modalPanelIn 0.16s ease-out; }
-@keyframes modalIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes modalPanelIn { from { transform: translateY(6px); } to { transform: none; } }
+.modal.show .modal-panel { transform: none; }
 @media (prefers-reduced-motion: reduce) {
   .modal, .modal .modal-panel { transition: none; animation: none !important; }
 }
@@ -2053,7 +2069,10 @@ body.focus-mode #btnFocus { color: var(--acc); }
 .msg .imgs img { cursor: zoom-in; }
 .image-viewer { width: min(1100px, 94vw); max-width: 94vw; height: 90vh; max-height: 90vh; margin: auto; padding: 0; border: 1px solid var(--hair-2); border-radius: 16px; background: var(--panel); color: var(--txt); box-shadow: 0 24px 80px #0006; }
 .image-viewer[open] { display: flex; flex-direction: column; }
-.image-viewer::backdrop { background: #0009; }
+.image-viewer::backdrop { background: #0009; opacity: 0; transition: opacity 160ms ease; }
+.image-viewer.show::backdrop { opacity: 1; transition-duration: 200ms; }
+@starting-style { .image-viewer.show::backdrop { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .image-viewer::backdrop { transition: none; } }
 .image-viewer header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--hair); }
 .image-viewer header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .image-viewer header button { flex: none; width: 30px; height: 30px; border-radius: 8px; font-size: 22px; }
@@ -2191,15 +2210,6 @@ body.focus-mode #btnFocus { color: var(--acc); }
 .usage-detail-panel .modal-head { flex-shrink: 0; }
 :is(#usageDetailBody, #videoUsageBody) { padding: 20px 24px; flex: 1; min-height: 0; scrollbar-gutter: stable; }
 :is(#usageDetailBody, #videoUsageBody) > .model-empty { height: 100%; display: grid; place-items: center; }
-:is(#usageDetailModal, #videoUsageModal) { backdrop-filter: none; transition: opacity 180ms ease-out; }
-:is(#usageDetailModal, #videoUsageModal) .usage-detail-panel {
-  transform: translateY(8px);
-  transition: transform 180ms ease-out;
-}
-:is(#usageDetailModal, #videoUsageModal).show .usage-detail-panel { transform: translateY(0); }
-@media (prefers-reduced-motion: reduce) {
-  :is(#usageDetailModal, #videoUsageModal), :is(#usageDetailModal, #videoUsageModal) .usage-detail-panel { transition: none; animation: none; }
-}
 .usage-detail-date { font-size: 12px; color: var(--txt-dim); margin-bottom: 12px; }
 .usage-summary-heading, .usage-history-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; }
 .usage-summary-heading { margin-bottom:14px; }

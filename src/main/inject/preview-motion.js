@@ -1,4 +1,4 @@
-(function setPreviewMotion(paused) {
+(function setPreviewMotion(paused, settle = false) {
   const key = Symbol.for('pi-halo.preview-motion');
   if (!paused && !window[key]) return;
   if (!window[key]) {
@@ -41,7 +41,7 @@
         }
       });
     });
-    window[key] = next => {
+    window[key] = (next, waitForPaint) => {
       stopped = next;
       if (stopped) {
         for (const frame of frames.values()) {
@@ -59,7 +59,15 @@
         for (const animation of animations) if (animation.playState === 'paused') animation.play();
         animations.clear();
       }
+      if (stopped && waitForPaint) return new Promise(resolve => {
+        // Let a pending native callback and one resize paint reach the compositor.
+        // Hidden guests need a timeout because Chromium may suspend their frames.
+        let firstFrame, secondFrame;
+        const finish = () => { clearTimeout(timeout); cancel(firstFrame); cancel(secondFrame); resolve(); };
+        const timeout = setTimeout(finish, 160);
+        firstFrame = raf(() => { secondFrame = raf(finish); });
+      });
     };
   }
-  window[key](paused);
+  return window[key](paused, settle);
 })

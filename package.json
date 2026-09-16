@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node scripts/start.mjs",
     "test:render": "node test/e2e/e2e-render.mjs",
+    "test:ui-motion": "node test/e2e/e2e-ui-motion.mjs",
     "test:terminals": "node test/e2e/e2e-terminals.mjs",
     "test:reallink": "node test/e2e/e2e-reallink.mjs",
     "test:workspace": "node test/e2e/e2e-workspace.mjs",

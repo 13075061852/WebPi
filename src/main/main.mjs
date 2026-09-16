@@ -185,12 +185,12 @@ function bootstrap() {
   let coreStartPromise;
   let previewMotionPaused = false;
   let previewMotionWork = Promise.resolve();
-  function syncPreviewMotion() {
+  function syncPreviewMotion(settle = false) {
     previewMotionWork = previewMotionWork.catch(() => {}).then(async () => {
       if (!mainWin || mainWin.isDestroyed()) return;
       const frames = mainWin.webContents.mainFrame.frames.filter(frame => frame.url.startsWith('halo-preview://local/'));
       const guests = [...previewGuests].filter(guest => !guest.isDestroyed());
-      const script = `(${PREVIEW_MOTION})(${previewMotionPaused})`;
+      const script = `(${PREVIEW_MOTION})(${previewMotionPaused}, ${settle === true})`;
       await Promise.allSettled([...frames, ...guests].map(target => target.executeJavaScript(script)));
     });
     return previewMotionWork;
@@ -438,9 +438,9 @@ function bootstrap() {
 
   handle('halo:splash-done', () => startup.snapshot());
   handle('halo:startup-state', () => startup.snapshot());
-  handle('halo:preview-motion', paused => {
+  handle('halo:preview-motion', (paused, settle) => {
     previewMotionPaused = paused === true;
-    return syncPreviewMotion();
+    return syncPreviewMotion(settle);
   });
   handle('halo:renderer-ready', () => {
     if (startupFailureShowing || quitting) return startup.snapshot();

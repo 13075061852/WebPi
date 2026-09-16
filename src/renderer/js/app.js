@@ -1,6 +1,8 @@
 import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
 import { initAppUpdates } from './app-updates.mjs';
 import { initStartupProgress } from './startup.mjs';
+import { createLayoutMotion } from './layout-motion.mjs';
+import { createModalMotion } from './modal-motion.mjs';
 import { websiteURL, renderWebsiteCards, mountWebsiteBrowser } from './website-preview.mjs';
 import { userMessageText, userMessageParts } from "./user-message.mjs";
 import { initEnvironmentSettings } from "./environment-settings.mjs";
@@ -2316,10 +2318,10 @@ function wireCenter() {
   // 预览设备切换：电脑 / 平板 / 手机
   const devSize = { desktop: "100%", tablet: "768px", mobile: "390px" };
   $$(".pvdev").forEach((b) => b.addEventListener("click", () => {
-    $$(".pvdev").forEach((x) => x.classList.toggle("active", x === b));
     const body = $("#pvBody");
-    if (body.classList.contains("dev-" + b.dataset.dev)) return;
+    if (!layoutMotionPaused && body.classList.contains('dev-' + b.dataset.dev)) return;
     applyPreviewLayout(() => {
+      $$(".pvdev").forEach((x) => x.classList.toggle("active", x === b));
       body.classList.remove("dev-desktop", "dev-tablet", "dev-mobile");
       body.classList.add("dev-" + b.dataset.dev);
     });
@@ -2329,16 +2331,13 @@ function wireCenter() {
   }));
 }
 
-// Resize the real page once; never stretch or continuously relayout its canvas.
-function syncPreviewMotion() {
-  const paused = !!$('.modal:not([hidden]), .image-viewer[open]') ||
+let layoutMotionPaused = false;
+function syncPreviewMotion(settle = false) {
+  const paused = layoutMotionPaused || !!$('.modal:not([hidden]), .image-viewer[open]') ||
     document.body.classList.contains('preview-collapsed') || document.body.classList.contains('focus-mode');
-  return window.halo.previewMotion?.(paused).catch(() => {});
+  return window.halo.previewMotion?.(paused, settle).catch(() => {});
 }
-function applyPreviewLayout(change) {
-  change();
-  syncPreviewMotion();
-}
+const applyPreviewLayout = createLayoutMotion({ setPaused: paused => { layoutMotionPaused = paused; return syncPreviewMotion(paused); } });
 
 /* ---- file tree ---- */
 async function loadTree(force) {
@@ -2786,10 +2785,12 @@ function openImagePreview(src, name = "截图", gallery = [{ src, name }], initi
   $(".image-prev", dialog).disabled = $(".image-next", dialog).disabled = gallery.length < 2;
   show(index);
   image.addEventListener("click", () => dialog.classList.toggle("actual-size"));
-  $("button", dialog).addEventListener("click", () => dialog.close());
-  dialog.addEventListener("click", (e) => { if (e.target === dialog || e.target.classList.contains("image-viewer-stage")) dialog.close(); });
+  const closeImagePreview = () => modalMotion.close(dialog);
+  $("button", dialog).addEventListener("click", closeImagePreview);
+  dialog.addEventListener("click", (e) => { if (e.target === dialog || e.target.classList.contains("image-viewer-stage")) closeImagePreview(); });
+  dialog.addEventListener('cancel', e => { e.preventDefault(); closeImagePreview(); });
   dialog.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dialog.close(); }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeImagePreview(); }
     if (["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"].includes(e.key)) {
       e.preventDefault(); e.stopPropagation();
       show(index + (["ArrowUp", "ArrowLeft"].includes(e.key) ? -1 : 1));
@@ -2797,8 +2798,7 @@ function openImagePreview(src, name = "截图", gallery = [{ src, name }], initi
   });
   dialog.addEventListener("close", () => { dialog.remove(); syncPreviewMotion(); }, { once: true });
   document.body.appendChild(dialog);
-  dialog.showModal();
-  syncPreviewMotion();
+  modalMotion.open(dialog);
 }
 
 function renderAttachments() {
@@ -3000,26 +3000,16 @@ async function switchProject(cwd) {
 /* ============================================================
    modals / toast / misc
    ============================================================ */
-const modalCloseTimers = new WeakMap();
+const modalMotion = createModalMotion({ syncPreview: syncPreviewMotion });
 function openModal(id) {
   const m = document.getElementById(id);
-  clearTimeout(modalCloseTimers.get(m));
-  m.hidden = false;
-  modalCloseTimers.delete(m);
-  syncPreviewMotion();
-  m.classList.add("show");
+  modalMotion.open(m);
   if (id === "modelModal") { $("#modelSearch").value = ""; loadModels(); }
 }
 function closeModal(m) {
   const el = m || $(".modal.show");
   if (!el) return;
-  el.classList.remove("show");
-  clearTimeout(modalCloseTimers.get(el));
-  modalCloseTimers.set(el, setTimeout(() => {
-    el.hidden = true;
-    modalCloseTimers.delete(el);
-    syncPreviewMotion();
-  }, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180));
+  modalMotion.close(el);
 }
 
 /* 提示气泡：错误/警告始终显示（静默失败 = 用户无感知，属缺陷）；

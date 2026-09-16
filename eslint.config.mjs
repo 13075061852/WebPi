@@ -44,7 +44,7 @@ export default [
   },
   // 渲染层模块（app.js）：引用经典脚本的全局
   {
-    files: ["src/renderer/js/app.js"],
+    files: ["src/renderer/js/app.js", "src/renderer/js/layout-motion.mjs", "src/renderer/js/modal-motion.mjs"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",

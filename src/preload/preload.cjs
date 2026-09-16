@@ -133,7 +133,7 @@ contextBridge.exposeInMainWorld("halo", {
 
   // splash -> main
   splashDone: () => ipcRenderer.invoke("halo:splash-done"),
-  previewMotion: paused => ipcRenderer.invoke('halo:preview-motion', paused === true),
+  previewMotion: (paused, settle = false) => ipcRenderer.invoke('halo:preview-motion', paused === true, settle === true),
   startupState: () => ipcRenderer.invoke('halo:startup-state'),
   onStartupProgress: listen('halo:startup-progress'),
   rendererReady: () => ipcRenderer.invoke('halo:renderer-ready'),

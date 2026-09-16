@@ -1,0 +1,195 @@
+// Real Electron motion checks. Optional --preview-file=... uses an untouched copy in an isolated profile.
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+
+const executableArgument = undefined;
+const executable = path.resolve(executableArgument || 'node_modules/electron/dist/electron.exe');
+const packaged = Boolean(executableArgument);
+const base = path.resolve('tmp/startup-recovery');
+fs.mkdirSync(base, { recursive: true });
+const fixture = fs.mkdtempSync(path.join(base, 'run-'));
+const agent = path.join(fixture, 'agent'), profile = path.join(fixture, 'profile'), workspace = path.join(fixture, 'workspace');
+for (const dir of [agent, profile, workspace]) fs.mkdirSync(dir);
+fs.writeFileSync(path.join(agent, 'models.json'), JSON.stringify({ providers: {
+  'startup-fixture': { baseUrl: 'http://127.0.0.1:1/v1', api: 'openai-completions', apiKey: 'offline-fixture', models: [{ id: 'fixture', name: 'Startup fixture', contextWindow: 32000, maxTokens: 2048 }] },
+} }));
+fs.writeFileSync(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'startup-fixture', defaultModel: 'fixture' }));
+fs.writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({ cwd: workspace, modelKey: 'startup-fixture/fixture', projects: [{ cwd: workspace }] }));
+fs.writeFileSync(path.join(workspace, 'readme.txt'), 'Isolated startup verification');
+const probe = net.createServer(); probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
+const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
+const system = process.env.SystemRoot || 'C:/Windows';
+const env = { SystemRoot: system, WINDIR: system, ComSpec: path.join(system, 'System32/cmd.exe'),
+  PATH: [path.join(system, 'System32'), path.join(system, 'System32/WindowsPowerShell/v1.0')].join(path.delimiter),
+  USERPROFILE: fixture, HOME: fixture, APPDATA: path.join(fixture, 'roaming'), LOCALAPPDATA: path.join(fixture, 'local'),
+  TEMP: fixture, TMP: fixture, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', NO_PROXY: '*', HALO_STARTUP_TRACE: '1' };
+const args = [...(packaged ? [] : ['.']), `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`];
+const child = spawn(executable, args, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+let output = '', ws, sequence = 0, exitCode;
+for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { output = (output + data).slice(-30000); });
+child.on('error', error => { output += error.message; });
+child.on('exit', code => { exitCode = code; });
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const pending = new Map();
+async function waitFor(fn, message, timeout = 30000) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) { const result = await fn(); if (result) return result; await sleep(60); }
+  throw Error(`${message}\n${output}`);
+}
+try {
+  const page = await waitFor(async () => {
+    if (exitCode !== undefined) throw Error(`Electron exited ${exitCode}: ${output}`);
+    try { return (await (await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(700) })).json()).find(p => p.type === 'page' && p.url.endsWith('index.html')); } catch { return null; }
+  }, 'Main page did not load');
+  ws = new WebSocket(page.webSocketDebuggerUrl); await once(ws, 'open');
+  ws.addEventListener('message', event => { const response = JSON.parse(event.data); pending.get(response.id)?.(response); pending.delete(response.id); });
+  const send = async (method, params = {}) => {
+    const id = ++sequence;
+    let timer;
+    try { return await Promise.race([new Promise(resolve => { pending.set(id, resolve); ws.send(JSON.stringify({ id, method, params })); }), new Promise((_, reject) => { timer = setTimeout(() => reject(Error(`CDP timeout: ${method}`)), 8000); })]); }
+    finally { clearTimeout(timer); pending.delete(id); }
+  };
+  const evaluate = async expression => {
+    const response = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    assert.equal(response.result?.exceptionDetails, undefined, JSON.stringify(response.result?.exceptionDetails));
+    return response.result?.result?.value;
+  };
+  await waitFor(async () => (await evaluate('window.halo?.startupState().then(r=>r.data)'))?.ready, 'Startup did not finish');
+  const previewFile = process.argv.find(value => value.startsWith('--preview-file='))?.slice('--preview-file='.length);
+  const html = previewFile ? fs.readFileSync(previewFile, 'utf8') : '<!doctype html><style>body{margin:0;background:#17242e;color:white}canvas{width:100%;height:100%}</style><canvas></canvas><script>const c=document.querySelector("canvas"),ctx=c.getContext("2d");let frame=0;function resize(){c.width=innerWidth;c.height=innerHeight}onresize=resize;resize();function draw(){frame++;ctx.fillStyle="#17242e";ctx.fillRect(0,0,c.width,c.height);for(let i=0;i<3500;i++){ctx.fillStyle="hsl("+(i+frame)%360+" 70% 50%)";ctx.fillRect((i*17+frame)%c.width,(i*31)%c.height,7,7)}requestAnimationFrame(draw)}draw();</script>';
+  const probeScript = '<script>window.__motionProbe={id:Math.random(),resizes:0,frames:0};addEventListener("resize",()=>__motionProbe.resizes++);function probeFrame(){__motionProbe.frames++;requestAnimationFrame(probeFrame)}requestAnimationFrame(probeFrame);addEventListener("message",e=>{if(e.data==="motion-probe")parent.postMessage({type:"motion-probe",...__motionProbe,width:innerWidth,height:innerHeight},"*")});</script>';
+  fs.writeFileSync(path.join(workspace, 'motion.html'), html + probeScript);
+  await evaluate('document.documentElement.dataset.theme="light";document.querySelector("#treeRefresh").click();addEventListener("message",e=>{if(e.data?.type==="motion-probe")window.__guestMotion=e.data;})');
+  await waitFor(() => evaluate('[...document.querySelectorAll("#wsTree .fname")].some(n=>n.textContent==="motion.html")'), 'Preview fixture missing');
+  await evaluate('[...document.querySelectorAll("#wsTree .fname")].find(n=>n.textContent==="motion.html").closest(".trow").click()');
+  await sleep(1200);
+  const guest = async () => { await evaluate('window.__guestMotion=null;document.querySelector("#pvBody iframe").contentWindow.postMessage("motion-probe","*")'); return waitFor(() => evaluate('window.__guestMotion'), 'Preview did not respond'); };
+  const initial = await guest();
+  await evaluate(`(() => {
+    window.__motionRecords=[];
+    window.__modalRecords=[];
+    const nativeAnimate=Element.prototype.animate;
+    Element.prototype.animate=function(...args){
+      const animation=nativeAnimate.apply(this,args);
+      if(this.matches('.modal')){
+        const record={created:performance.now()};window.__modalRecords.push(record);
+        animation.finished.then(()=>{record.finished=performance.now();record.motionStart=animation.startTime}).catch(()=>{});
+      }
+      return animation;
+    };
+    const host=document.querySelector('#layout'),native=host.startViewTransition.bind(host);
+    host.startViewTransition=options=>{
+      const record={created:performance.now()};window.__motionRecords.push(record);
+      const t=native(options);
+      t.ready.then(()=>{
+        record.ready=performance.now();
+        queueMicrotask(()=>{
+          const groups=document.getAnimations().filter(a=>a.effect?.pseudoElement?.startsWith('::view-transition-group(layout-'));
+          record.groups=groups.map(a=>({pseudo:a.effect.pseudoElement,keyframes:a.effect.getKeyframes()}));
+          Promise.allSettled(groups.map(a=>a.finished)).then(()=>{record.slideEnd=performance.now();record.motionStart=Math.min(...groups.map(a=>a.startTime).filter(t=>typeof t==='number'));});
+        });
+      }).catch(()=>{});
+      t.finished.then(()=>record.finished=performance.now()).catch(()=>{});
+      return t;
+    };
+  })()`);
+  const results = [];
+  for (const [name, selector] of [['sidebar-close','#btnSidebar'],['sidebar-open','#btnSidebar'],['tablet','.pvdev[data-dev="tablet"]'],['phone','.pvdev[data-dev="mobile"]'],['desktop','.pvdev[data-dev="desktop"]'],['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['settings-open','#btnSettings'],['settings-close','#settingsModal [data-close]'],['model-open','#btnModel'],['model-close','#modelModal [data-close]'],['think-open','#btnThink'],['think-close','#thinkModal [data-close]']]) {
+    const sample = await evaluate(`(async()=>{
+      const frames=[];window.__motionRecords=[];window.__modalRecords=[];let last=performance.now(),running=true;
+      const tick=now=>{frames.push({at:now,previous:last,gap:now-last});last=now;if(running)requestAnimationFrame(tick)};requestAnimationFrame(tick);
+      document.querySelector(${JSON.stringify(selector)}).click();
+      await new Promise(r=>setTimeout(r,1000));running=false;
+      const transitions=window.__motionRecords.map(t=>{const motion=frames.filter(f=>f.previous>=t.motionStart&&f.at<=t.slideEnd);return {...t,frames:motion.length,maxGap:Math.round(Math.max(0,...motion.map(f=>f.gap)))};});
+      const modals=window.__modalRecords.map(t=>{const motion=frames.filter(f=>f.previous>=t.motionStart&&f.at<=t.finished);return {...t,frames:motion.length,maxGap:Math.round(Math.max(0,...motion.map(f=>f.gap)))};});
+      return {transitions,modals,frames:frames.length};
+    })()`);
+    if (!name.includes('settings') && !name.includes('model') && !name.includes('think')) {
+      assert.ok(sample.transitions[0]?.finished, `${name} must contain an actual completed transition`);
+      assert.ok(sample.transitions[0].slideEnd - sample.transitions[0].ready >= 200, `${name} must not jump directly to the final layout`);
+      assert.ok(sample.transitions[0].frames >= 8, `${name} must present intermediate animation frames`);
+      for (const group of sample.transitions[0].groups) {
+        if (group.keyframes.length < 2 || !group.keyframes[0].width) continue;
+        assert.equal(group.keyframes[0].width, group.keyframes.at(-1).width, 'Snapshot width must remain fixed during compositor motion');
+      }
+    } else {
+      assert.ok(sample.modals[0]?.finished, `${name} must have a completed fade animation`);
+      assert.ok(sample.modals[0].frames >= 8, `${name} must render intermediate fade frames`);
+    }
+    results.push({name, ...sample});
+  }
+  // Capture real intermediate frames separately from the timing run.
+  for (const [name, selector] of [['sidebar','#btnSidebar'],['phone','.pvdev[data-dev="mobile"]']]) {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await waitFor(() => evaluate('document.getAnimations().some(a=>a.effect?.pseudoElement?.startsWith("::view-transition-group(layout-"))'), 'No geometry animation');
+    await evaluate('window.__pausedAnimations=document.getAnimations().filter(a=>a.effect?.pseudoElement);for(const a of __pausedAnimations){a.pause();a.currentTime=110;}');
+    const computed = await evaluate('(()=>{const a=document.getAnimations().find(a=>a.effect?.pseudoElement==="::view-transition-group(layout-device)");return a?{scale:new DOMMatrix(getComputedStyle(document.querySelector("#layout"),a.effect.pseudoElement).transform).a,from:a.effect.getKeyframes()[0].transform}:null})()');
+    if (name === 'phone') assert.ok(computed.scale > 1.01, 'The compositor must actually scale the snapshot, not just report edited keyframes');
+    const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+    fs.writeFileSync(path.join(fixture, name+'-midpoint.png'),Buffer.from(shot.result.data,'base64'));
+    await evaluate('for(const a of __pausedAnimations)a.play()');
+    await waitFor(() => evaluate('!document.documentElement.classList.contains("layout-motion")'), 'Layout animation failed to clean up');
+  }
+  await evaluate('document.querySelector("#btnSidebar").click();document.querySelector(".pvdev[data-dev=desktop]").click()');
+  await waitFor(() => evaluate('!document.documentElement.classList.contains("layout-motion") && document.querySelector("#pvBody").classList.contains("dev-desktop")'), 'Reset layout');
+  // Open and close really animate; reversing a close preserves its current opacity.
+  await evaluate('document.querySelector("#btnSettings").click()');
+  await waitFor(() => evaluate('document.querySelector("#settingsModal").getAnimations().some(a=>a.playState==="running")'), 'Modal opening did not animate');
+  const opening = await evaluate('(()=>{const m=document.querySelector("#settingsModal");m.getAnimations()[0].pause();m.getAnimations()[0].currentTime=80;return +getComputedStyle(m).opacity})()');
+  assert.ok(opening > 0 && opening < 1, 'Modal opening needs a visible intermediate opacity');
+  await evaluate('document.querySelector("#settingsModal").getAnimations().forEach(a=>a.finish())');await sleep(250);
+  const frozen = await guest();await sleep(250);assert.equal((await guest()).frames,frozen.frames,'Preview stays still under a dialog');
+  for (const theme of ['light','dark']) {
+    await evaluate('document.documentElement.dataset.theme='+JSON.stringify(theme));
+    const shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(fixture,'settings-'+theme+'.png'),Buffer.from(shot.result.data,'base64'));
+  }
+  const reversed = await evaluate(`(()=>{const m=document.querySelector('#settingsModal');m.querySelector('[data-close]').click();const a=m.getAnimations()[0];a.pause();a.currentTime=70;const before=+getComputedStyle(m).opacity;document.querySelector('#btnSettings').click();return {before,after:+getComputedStyle(m).opacity}})()`);
+  assert.ok(reversed.before > 0 && reversed.before < 1, 'Modal close needs an intermediate opacity');
+  assert.ok(Math.abs(reversed.before-reversed.after)<0.01,'Reopening must reverse without flashing');
+  await sleep(350);assert.equal(await evaluate('document.querySelector("#settingsModal").hidden'),false);
+  await evaluate('document.querySelector("#settingsModal [data-close]").click()');await sleep(350);
+  assert.ok((await guest()).frames > frozen.frames, 'Closing the dialog resumes the same page');
+  await evaluate('document.querySelector(".pvdev[data-dev=tablet]").click()');await sleep(80);
+  await evaluate('document.querySelector(".pvdev[data-dev=mobile]").click();document.querySelector(".pvdev[data-dev=desktop]").click()');
+  await waitFor(() => evaluate('!document.documentElement.classList.contains("layout-motion")'), 'Rapid toggles must settle');
+  const final = await guest();assert.equal(final.id,initial.id,'Animations must not reload the preview');
+  const viewport = await evaluate('(()=>{const f=document.querySelector("#pvBody iframe");return {width:f.getBoundingClientRect().width,style:f.getAttribute("style"),device:document.querySelector("#pvBody").classList.contains("dev-desktop")}})()');
+  assert.ok(viewport.device);assert.ok(Math.abs(viewport.width-final.width)<2);assert.ok(!viewport.style?.includes('important'),'Temporary viewport size leaked');
+  await evaluate('document.querySelector("#btnSettings").click();document.querySelector("#settingsModal [data-close]").click()');
+  await sleep(350);assert.equal(await evaluate('document.querySelector("#settingsModal").hidden'),true,'Closing before opening is ready must stay closed');
+  await evaluate('document.querySelector(".pvdev[data-dev=mobile]").click()');await sleep(80);
+  await evaluate('document.querySelector("#btnSettings").click()');await sleep(250);
+  assert.equal(await evaluate('!!document.elementFromPoint(innerWidth/2,innerHeight/2).closest("#settingsModal")'),true,'A popup must stay above a concurrent workspace transition');
+  await evaluate('document.querySelector("#settingsModal [data-close]").click()');
+  await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")'),'Concurrent motion did not finish');await sleep(250);
+  await evaluate('document.querySelector(".pvdev[data-dev=desktop]").click()');await sleep(80);
+  await send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:1,mobile:false});
+  await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")'),'Window resize must not leave a frozen overlay');
+  await send('Emulation.clearDeviceMetricsOverride');
+  await evaluate(`(async()=>{const canvas=document.createElement('canvas');canvas.width=canvas.height=48;const context=canvas.getContext('2d');context.fillStyle='#387ac7';context.fillRect(0,0,48,48);const blob=await new Promise(r=>canvas.toBlob(r));const data=new DataTransfer();data.items.add(new File([blob],'motion-preview.png',{type:'image/png'}));document.querySelector('#input').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));})()`);
+  await waitFor(()=>evaluate('!!document.querySelector(".attach-preview")'),'Image fixture did not attach');
+  await evaluate('document.querySelector(".attach-preview").click()');
+  await waitFor(()=>evaluate('document.querySelector(".image-viewer")?.getAnimations().some(a=>a.playState==="running")'),'Image viewer must animate when opening');
+  await sleep(250);
+  await evaluate('document.querySelector(".image-viewer").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))');
+  assert.equal(await evaluate('document.querySelector(".image-viewer")?.open'),true,'Escape must play the close animation before removing the dialog');
+  await waitFor(()=>evaluate('!document.querySelector(".image-viewer")'),'Image viewer failed to close');
+  await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+  await evaluate('document.querySelector("#btnThink").click()');
+  assert.equal(await evaluate('document.querySelector("#thinkModal").getAnimations().length'),0);
+  await evaluate('document.querySelector("#thinkModal [data-close]").click()');
+  assert.equal(await evaluate('document.querySelector("#thinkModal").hidden'),true);
+  const report={fixture,previewFile:previewFile||'generated canvas',initial,final,results};
+  fs.writeFileSync(path.join(fixture,'motion-report.json'),JSON.stringify(report,null,2));
+  console.log(JSON.stringify({ok:true,fixture,results:results.map(r=>({name:r.name,motion:r.transitions.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.slideEnd-t.motionStart)})),modal:r.modals.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.finished-t.motionStart)}))}))}));
+  await evaluate('setTimeout(()=>window.halo.close(),30);true');await waitFor(()=>exitCode!==undefined,'App did not close');
+
+} finally {
+  fs.writeFileSync(path.join(fixture, 'process.log'), output);
+  ws?.close();
+  if (exitCode === undefined) child.kill();
+}

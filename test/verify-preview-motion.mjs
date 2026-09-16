@@ -12,7 +12,7 @@ const window = {
   addEventListener(name, callback) { listeners.set(name, callback); },
 };
 const originalRAF = window.requestAnimationFrame;
-const context = vm.createContext({ window, document: { getAnimations: () => [running, alreadyPaused] }, setTimeout });
+const context = vm.createContext({ window, document: { getAnimations: () => [running, alreadyPaused] }, setTimeout, clearTimeout });
 const code = fs.readFileSync('src/main/inject/preview-motion.js', 'utf8');
 const pause = value => vm.runInContext(`(${code})(${value})`, context);
 const tick = () => { const frames = [...nativeFrames]; nativeFrames.clear(); time += 16; for (const [, callback] of frames) callback(time); };
@@ -45,4 +45,13 @@ listeners.get('resize')(); tick();
 pause(false); tick();
 assert.equal(nativeFrames.size, 0);
 assert.throws(() => window.requestAnimationFrame(null), TypeError);
-console.log('PASS preview pause/resume, one resize paint, callback identity, cancellation and existing paused animations');
+let settled = false;
+const settle = vm.runInContext(`(${code})(true, true)`, context).then(() => { settled = true; });
+assert.equal(settled, false);
+tick(); await Promise.resolve(); assert.equal(settled, false, 'Preparing motion must allow a frame to paint');
+tick(); await settle; assert.equal(settled, true); assert.equal(nativeFrames.size, 0);
+// Hidden windows may stop producing frames; the bounded fence must still clean up.
+await vm.runInContext(`(${code})(true, true)`, context);
+assert.equal(nativeFrames.size, 0, 'Timed-out frame callbacks must be cancelled');
+pause(false);
+console.log('PASS preview pause/resume, resize paint, cancellation, existing paused animations and bounded paint fence');
