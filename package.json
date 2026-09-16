@@ -1,6 +1,6 @@
 {
   "name": "pi-halo",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Pi Halo — a celestial desktop console for the pi coding agent",
   "main": "src/main/main.mjs",
   "type": "commonjs",

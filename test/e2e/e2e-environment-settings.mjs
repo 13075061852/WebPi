@@ -77,10 +77,12 @@ try {
   await evaluate(`(async () => {
     const {initAppUpdates} = await import('./js/app-updates.mjs');
     const root = document.createElement('div');
-    root.innerHTML = '<button id="appUpdateButton"></button><button id="checkAppUpdate"></button>';
+    root.innerHTML = '<button id="appUpdateButton"></button>';
     window.updateFixture = {root,downloads:0};
     initAppUpdates({root,api:{onAppUpdate:fn=>updateFixture.emit=fn,appUpdateState:async()=>({ok:true,data:{status:'idle'}}),checkAppUpdate:async()=>{},downloadAppUpdate:async()=>{updateFixture.downloads++;}}});
   })()`);
+  assert.equal(await evaluate(`document.querySelector('#modelCard #appUpdateButton').hidden`), false);
+  assert.equal(await evaluate(`document.querySelector('#checkAppUpdate') === null`), true);
   await evaluate(`updateFixture.emit({status:'available',version:'1.0.2'}); updateFixture.root.querySelector('#appUpdateButton').click()`);
   assert.equal(await evaluate(`updateFixture.downloads`), 1);
   await evaluate(`updateFixture.emit({status:'downloading',percent:42})`);
