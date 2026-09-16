@@ -6,7 +6,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 
-const executableArgument = undefined;
+const executableArgument = process.env.HALO_PACKAGED_EXE;
 const executable = path.resolve(executableArgument || 'node_modules/electron/dist/electron.exe');
 const packaged = Boolean(executableArgument);
 const base = path.resolve('tmp/startup-recovery');
