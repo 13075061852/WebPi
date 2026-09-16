@@ -2,10 +2,18 @@ name: Windows release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to rebuild and verify
+        required: true
+        type: string
 permissions:
   contents: write
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 concurrency:
-  group: windows-release-${{ github.ref }}
+  group: windows-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 jobs:
   release:
@@ -13,13 +21,55 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
       - name: Validate release version
-        run: node -e "if(process.env.GITHUB_REF_NAME !== 'v'+require('./package.json').version) throw Error('Tag must match package.json version')"
+        run: node -e "if(process.env.RELEASE_TAG !== 'v'+require('./package.json').version) throw Error('Tag must match package.json version')"
       - run: npm ci
+      - name: Provide a verified Chinese TrueType font
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fontPath = Join-Path $env:RUNNER_TEMP 'NotoSansSC.ttf'
+          # Official Google Fonts file pinned to an immutable commit and content hash.
+          $fontUrl = 'https://raw.githubusercontent.com/google/fonts/2894aab31764f10f29c421bdfd2340d3b382d384/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf'
+          Invoke-WebRequest -Uri $fontUrl -OutFile $fontPath
+          if ((Get-FileHash -LiteralPath $fontPath -Algorithm SHA256).Hash -ne 'a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da') { throw 'Chinese font checksum mismatch' }
+          $env:HALO_DOCUMENT_FONT = $fontPath
+          node -e "const font=require('fontkit').openSync(process.env.HALO_DOCUMENT_FONT); for(const c of '项目报告数据准确版式清晰文件可编辑') if(!font.hasGlyphForCodePoint(c.codePointAt(0))) throw Error('Chinese font glyph missing'); console.log('Verified Chinese TrueType font')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "HALO_DOCUMENT_FONT=$fontPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Warm the isolated Windows PowerShell runtime
+        run: |
+          @'
+          const fs = require('node:fs');
+          const os = require('node:os');
+          const path = require('node:path');
+          const { spawnSync } = require('node:child_process');
+          const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-ci-powershell-'));
+          const windowsRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+          const allowed = new Set(['SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'OS', 'PROCESSOR_ARCHITECTURE']);
+          const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())));
+          Object.assign(env, { USERPROFILE: fixture, HOME: fixture, APPDATA: path.join(fixture, 'Roaming'), LOCALAPPDATA: path.join(fixture, 'Local'), TEMP: fixture, TMP: fixture, PI_OFFLINE: '1', PATH: [path.join(windowsRoot, 'System32'), path.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0')].join(path.delimiter) });
+          for (const directory of [env.APPDATA, env.LOCALAPPDATA]) fs.mkdirSync(directory, { recursive: true });
+          fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'PowerShell ready');
+          try {
+            const shell = path.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+            const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', "[IO.File]::ReadAllText((Join-Path (Get-Location) 'fixture.txt'))"];
+            const started = Date.now();
+            const result = spawnSync(shell, args, { cwd: fixture, env, encoding: 'utf8', windowsHide: true, timeout: 90000 });
+            if (result.error) throw result.error;
+            if (result.status !== 0 || !result.stdout.includes('PowerShell ready')) throw Error('PowerShell warmup failed: ' + result.stderr);
+            console.log('Isolated Windows PowerShell warmup completed in ' + (Date.now() - started) + 'ms; regression retains its 15s limit');
+          } finally {
+            if (path.dirname(path.resolve(fixture)) !== path.resolve(os.tmpdir()) || !path.basename(fixture).startsWith('halo-ci-powershell-')) throw Error('Unexpected warmup directory');
+            fs.rmSync(fixture, { recursive: true, force: true });
+          }
+          '@ | node
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: npm run check
       - run: npm run lint
       - run: npm run test:regressions
@@ -46,7 +96,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = $env:GITHUB_REF_NAME
+          $tag = $env:RELEASE_TAG
           $report = Get-Content -LiteralPath 'test/results/release-artifacts.json' -Raw | ConvertFrom-Json
           if ($tag -ne "v$($report.version)") { throw 'Verified source version differs from the release tag' }
           $pagesJson = gh api --paginate --slurp "repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
