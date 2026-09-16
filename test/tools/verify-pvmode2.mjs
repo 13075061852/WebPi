@@ -20,11 +20,11 @@ await sleep(3200);
 console.log("open:", await ev('(() => { const row = [...document.querySelectorAll("#wsTree .trow.file")].find((e) => e.querySelector(".fname") && /^(index|tetris)[.]html$/.test(e.querySelector(".fname").textContent)); if (!row) return "NOT FOUND"; row.click(); return "ok"; })()'));
 await sleep(1200);
 // 点「源码」
-console.log("click source:", await ev('document.querySelector("#pvMode [data-m=source]").click(), "ok"'));
+console.log("click source:", await ev('document.querySelector("#pvMode").click(), "ok"'));
 await sleep(1000);
 console.log("source mode:", JSON.stringify(await ev('JSON.stringify({ iframe: !!document.querySelector("#pvBody iframe"), fvCode: !!document.querySelector("#pvBody .fv-code"), hlSpans: document.querySelectorAll("#pvBody .fvc-body span[class^=c-]").length, lnRows: (document.querySelector("#pvBody .fvc-ln") ? document.querySelector("#pvBody .fvc-ln").textContent.split(String.fromCharCode(10)).length : 0), strColored: !!document.querySelector("#pvBody .fvc-body .c-str"), kwColored: !!document.querySelector("#pvBody .fvc-body .c-kw"), head: (document.querySelector("#pvBody .fvc-body") ? document.querySelector("#pvBody .fvc-body").textContent.slice(0, 60) : "").split(String.fromCharCode(10))[0] })')));
 // 切回渲染
-console.log("click render:", await ev('document.querySelector("#pvMode [data-m=render]").click(), "ok"'));
+console.log("click render:", await ev('document.querySelector("#pvMode").click(), "ok"'));
 await sleep(1000);
 console.log("render back:", JSON.stringify(await ev('JSON.stringify({ iframe: !!document.querySelector("#pvBody iframe"), fvCode: !!document.querySelector("#pvBody .fv-code") })')));
 process.exit(0);

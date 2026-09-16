@@ -2303,12 +2303,10 @@ function wireCenter() {
   $("#btnNewFile").addEventListener("click", () => startCreate("file"));
   $("#btnNewDir").addEventListener("click", () => startCreate("dir"));
   // 预览模式切换：渲染 / 源码
-  $("#pvMode").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-m]");
-    if (!b || b.dataset.m === S.previewMode) return;
-    S.previewMode = b.dataset.m;
-    $$("#pvMode [data-m]").forEach((x) => x.classList.toggle("active", x === b));
-    if (S.previewFile) setPreview(S.previewFile, true);
+  $("#pvMode").addEventListener("click", () => {
+    if (!S.previewFile || $("#pvMode").hidden) return;
+    S.previewMode = S.previewMode === "render" ? "source" : "render";
+    setPreview(S.previewFile, true);
   });
 
   // 预览设备切换：电脑 / 平板 / 手机
@@ -2508,7 +2506,7 @@ function renderTree() {
         if (r?.error) { del.disabled = false; toast(r.error, "err"); return; }
         toast("已删除 ✓", "ok");
         const d = normSlashes(n.path);
-        if (S.previewFile && normSlashes(S.previewFile).startsWith(d)) { S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvName").textContent = "未选择文件"; $("#pvBody").innerHTML = PV_EMPTY; }
+        if (S.previewFile && normSlashes(S.previewFile).startsWith(d)) { S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true; $("#pvName").textContent = "未选择文件"; $("#pvBody").innerHTML = PV_EMPTY; }
         if (S.selectedFile && normSlashes(S.selectedFile).startsWith(d)) S.selectedFile = null;
         if (S.creating?.parent && normSlashes(S.creating.parent).startsWith(d)) S.creating = null;
         await loadTree(true);
@@ -2591,7 +2589,12 @@ async function setPreview(p, force) {
   const body = $("#pvBody");
   const isHtml = ext === "html" || ext === "htm";
   const modeCtl = $("#pvMode");
-  if (modeCtl) modeCtl.hidden = !isHtml;
+  if (modeCtl) {
+    modeCtl.hidden = !isHtml;
+    modeCtl.textContent = S.previewMode === "source" ? "渲染" : "源码";
+    modeCtl.title = S.previewMode === "source" ? "渲染页面" : "查看源代码";
+    modeCtl.ariaLabel = modeCtl.title;
+  }
   if (["pdf", "docx", "xlsx", "pptx", "doc", "xls", "ppt"].includes(ext)) {
     body.innerHTML = '<div class="fv-note">正在加载文档…</div>';
     let page = 1, pages = 1;
@@ -2825,7 +2828,7 @@ function renderAttachments() {
 async function applyProjectReset() {
   portPreviewRequest++; previewService = null; selectedPortKey = null; updatePortSelection();
   clearChat();
-  S.previewFile = null; $("#btnOpenFile").hidden = true;
+  S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true;
   $("#pvBody").innerHTML = PV_EMPTY;
   $("#pvName").textContent = "未选择文件";
   S.expanded.clear();

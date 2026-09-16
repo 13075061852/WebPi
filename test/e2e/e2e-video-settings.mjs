@@ -581,9 +581,9 @@ try {
     assert.ok(frame.width > 0 && frame.height > 0 && Math.abs(frame.width - html.width) <= 2, `${mode}: HTML viewport no longer follows device width`);
     assert.equal(frame.mediaShell, false, 'Media-specific styling leaked into HTML preview');
   }
-  await evaluate('document.querySelector("#pvMode [data-m=source]").click()');
+  await evaluate('document.querySelector("#pvMode").click()');
   await until('document.querySelector("#pvBody .file-view")?.textContent.includes("HTML DEVICE FIXTURE")');
-  await evaluate('document.querySelector("#pvMode [data-m=render]").click()');
+  await evaluate('document.querySelector("#pvMode").click()');
   await until('document.querySelector("#pvBody .dev-shell iframe")?.src.includes("device-layout.html")');
   await command('Page.reload');
   await until('document.querySelector(".artifact-video .artifact-video-metrics")?.textContent.includes("实际消耗 1.144 积分")');
