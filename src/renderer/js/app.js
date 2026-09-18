@@ -213,6 +213,30 @@ function currentPreviewContext() {
   } catch { /* Navigation may still be loading. */ }
   return context;
 }
+// Host-owned bridge: preview pages cannot provide targets or execute host code.
+window.__haloPreviewTarget = () => {
+  const element = document.querySelector('#pvBody webview, #pvBody iframe');
+  if (!element) return null;
+  const r = element.getBoundingClientRect();
+  const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+  const visible = r.width > 5 && r.height > 5 && r.x >= 0 && r.y >= 0
+    && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1 && top === element;
+  let guestId = null, url = element.src;
+  if (element.tagName === 'WEBVIEW') {
+    try { guestId = element.getWebContentsId(); url = element.getURL(); } catch { return null; }
+  }
+  return {sessionId:S.state?.sessionId, visible, guestId, url,
+    rect:{x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}};
+};
+window.__haloPreviewActivity = value => {
+  document.getElementById('previewAgentPointer')?.remove();
+  if (!value) return;
+  const pointer = document.createElement('div');
+  pointer.id = 'previewAgentPointer';
+  pointer.style.cssText = `position:fixed;left:${value.x}px;top:${value.y}px;z-index:9999;pointer-events:none;color:#6366f1;filter:drop-shadow(0 2px 4px #0005)`;
+  pointer.innerHTML = '<svg width="28" height="32" viewBox="0 0 28 32" fill="currentColor" stroke="white" stroke-width="1.5"><path d="M3 2v24l7-6 5 10 5-3-5-9h10z"/></svg><span style="position:absolute;left:24px;top:20px;white-space:nowrap;background:#3730a3;color:white;padding:4px 8px;border-radius:6px;font-size:11px">AI 操作中 · 可点击聊天停止</span>';
+  document.body.append(pointer);
+};
 // Run once after the retry loop settles, including background sessions on this server.
 function refreshCompletedPreview({event, sessionId, serverId, cwd}) {
   if (event?.type !== "agent_settled") return;
@@ -3908,6 +3932,9 @@ async function loadMarket(page) {
   const request = ++marketRequest, query = S.pkgQuery, type = S.pkgType;
   const box = $("#pkgMarket");
   box.innerHTML = `<div class="pkg-empty">加载中…</div>`;
+  S.pkgItems = [];
+  S.pkgTotal = 0;
+  renderPager();
   const typeParam = ["extension", "skill", "theme", "prompt"].includes(S.pkgType) ? S.pkgType : "";
   const r = await window.halo.pkgSearch({ query: S.pkgQuery || "", from: (S.pkgPage - 1) * PAGE_SIZE, size: PAGE_SIZE, type: typeParam });
   if (request !== marketRequest || query !== S.pkgQuery || type !== S.pkgType) return;
@@ -3922,7 +3949,7 @@ async function loadMarket(page) {
   const installedNorm = new Set((S.pkgInstalledList || []).map((p) => normPkgSource(p.raw)));
   const list = items.filter((p) => !installedNorm.has(normPkgSource("npm:" + p.name)));
   if (!list.length) {
-    box.innerHTML = `<div class="pkg-empty">${items.length ? "本页的包都已安装，可翻下一页" : "没有找到匹配的包"}</div>`;
+    box.innerHTML = `<div class="pkg-empty">${items.length ? "本页的包都已安装，可翻下一页" : "当前分类下没有匹配的搜索结果"}</div>`;
   } else {
     box.innerHTML = list.map((p) => {
       const badges = (p.types || []).map((t) => `<span class="pkg-type t-${t}">${PKG_TYPE_CN[t] || t}</span>`).join("");

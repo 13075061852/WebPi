@@ -17,6 +17,8 @@ import { imageTool, resolveImageCredential } from "./image-generation.mjs";
 import { videoTool } from "./video-generation.mjs";
 import { cloudflareTool } from './cloudflare.mjs';
 import { officeSkillsRoot, officeTool } from "./office/tools.mjs";
+import { iconLibraryTool } from './icon-library.mjs';
+import { previewControlTool } from './preview-control.mjs';
 import { createInterface } from "node:readline";
 import { resolvePiEntry } from "./pi-runtime.mjs";
 
@@ -868,7 +870,10 @@ async _doStart() {
       if (!background) this.services = services;
       return {
         ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
-          customTools: [...extraTools, {name:'preview_inspect',label:'查看实时预览',description:'读取此会话服务器当前已登录预览的正文、视口和滚动区域。需要视觉验证时 screenshot=true 返回当前页面截图；不导出登录凭据。',parameters:{type:'object',properties:{screenshot:{type:'boolean'}}},execute:async (_id,args,signal)=>{
+          customTools: [...extraTools, iconLibraryTool(), previewControlTool((args, signal) => {
+            if (!this.controlPreview) throw Error("预览操作接口不可用");
+            return this.controlPreview(sessionManager.getSessionId(), args, signal);
+          }), {name:'preview_inspect',label:'查看实时预览',description:'读取此会话服务器当前已登录预览的正文、视口和滚动区域。需要视觉验证时 screenshot=true 返回当前页面截图；不导出登录凭据。',parameters:{type:'object',properties:{screenshot:{type:'boolean'}}},execute:async (_id,args,signal)=>{
             if(signal?.aborted)throw Error('已取消');
             if(!this.inspectPreview)throw Error('当前环境没有页面预览，请在应用内打开服务');
             const sessionId=sessionManager.getSessionId();
@@ -1299,6 +1304,15 @@ async _doStart() {
           context = {kind:'service', serverId:server.id, guestId:Number(preview.guestId), server:server.name, host:server.host, port:Number(preview.port), address:String(preview.address || '').slice(0,100), process:String(preview.process || '').slice(0,100), title:String(preview.title || '').slice(0,300), url, device:preview.device, status:preview.status, matchesSessionServer:server.id === this.serverTargets.get(ctx.runtime.session.sessionId)};
         }
       } else if (preview?.kind === 'file') context = {kind:'file', file:String(preview.file || '').slice(0,2000)};
+      else if (preview?.kind === 'website') {
+        try {
+          const url = new URL(preview.url);
+          if (/^https?:$/.test(url.protocol)) {
+            url.username='';url.password='';url.search='';url.hash='';
+            context = {kind:'website',url:url.href,title:String(preview.title||'').slice(0,300),guestId:Number(preview.guestId)};
+          }
+        } catch { /* Invalid preview metadata is not an instruction. */ }
+      }
       this.previewContexts.set(ctx.runtime.session.sessionId, context);
       await ctx.runtime.session.prompt(text, promptOptions);
       return this.publicState();

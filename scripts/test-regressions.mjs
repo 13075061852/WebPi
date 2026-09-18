@@ -12,6 +12,7 @@ const tests = [
   'verify-turn-cost',
   'verify-context-rate', 'verify-compaction-feedback',
   'verify-package-search',
+  'verify-icon-library',
   'verify-project-fast-start',
   'verify-env-proxy', 'verify-pi-command', 'verify-bundled-pi', 'verify-environment-detection', 'verify-environment-manager', 'verify-video-generation',
   'verify-video-domestic', 'verify-video-international', 'verify-video-platforms', 'verify-video-apimart', 'verify-video-pricing', 'verify-video-workflow', 'verify-video-billing', 'verify-video-confirmations',

@@ -22,7 +22,7 @@ const names = {
   grep: 'search', glob: 'find', find: 'find', ls: 'folder', web_search: 'web',
   browser: 'browser', task: 'task', image_generate: 'image', video_generate: 'video',
   office_document: 'document', cloudflare_deploy: 'cloud', service_start: 'service',
-  service_status: 'service', preview_ready: 'browser',
+  service_status: 'service', preview_ready: 'browser', preview_control: 'browser', icon_library: 'image',
 };
 export function toolIcon(name) {
   const shape = shapes[names[name]] || shapes.fallback;

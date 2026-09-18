@@ -8,7 +8,11 @@ const text = html => decode(String(html || '').replace(/<[^>]*>/g, '')).trim();
 export function parsePackagePage(html) {
   if (!/class="packages-count"/.test(html)) throw Error('官网目录格式发生变化，请稍后重试');
   const countText = text(html.match(/class="packages-count"[^>]*>([\s\S]*?)<\/span>/)?.[1]);
-  const total = Number(countText.match(/\/\s*(\d+)/)?.[1] || 0);
+  // Empty filters use "0 / <catalog size>"; populated pages use
+  // "1-50 / <matching total> (of <catalog size>)".
+  const count = countText.match(/^(0|\d+\s*-\s*\d+)\s*\/\s*(\d+)(?:\s*\(of\s+\d+\))?$/);
+  if (!count) throw Error('官网目录格式发生变化，请稍后重试');
+  const total = count[1] === '0' ? 0 : Number(count[2]);
   const objects = [];
   for (const [, attrs, body] of html.matchAll(/<article\b([^>]*data-package-card="true"[^>]*)>([\s\S]*?)<\/article>/g)) {
     const attr = key => decode(attrs.match(new RegExp(key + '="([^"]*)"'))?.[1]);
