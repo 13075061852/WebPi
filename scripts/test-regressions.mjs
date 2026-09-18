@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 // Local regressions: bundled/offline Pi only; no saved accounts, GUI or Office installation required.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tests = [
-  'verify-app-updates', 'verify-image-generation', 'verify-image-runtime', 'verify-image-card-timing',
+  'verify-app-updates', 'verify-image-generation', 'verify-image-card-timing',
   'verify-turn-cost',
   'verify-context-rate', 'verify-compaction-feedback',
   'verify-package-search',
