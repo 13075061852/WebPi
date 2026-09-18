@@ -69,6 +69,7 @@ export function imageTool(cwd, getCredential) {
     description:'使用 Pi 已登录的 OpenAI Codex 订阅生成图片或按本地参考图编辑，消耗订阅额度，无需 API Key。先读取 halo-imagegen 技能。只返回最终文件路径，不返回 base64。',
     parameters:{type:'object',properties:{prompt:{type:'string',description:'要生成的图片、用途、构图和需要保留的内容'},references:{type:'array',items:{type:'string'},maxItems:3,description:'可选，用户指定的本地参考图片路径，最多3张'}},required:['prompt']},
     execute:async(_id,args,signal)=>{
+      const startedAt = Date.now();
       signal?.throwIfAborted();
       if (busy) throw Error('已有生图任务进行中，请等待完成');
       if (typeof args.prompt !== 'string' || !args.prompt.trim() || args.prompt.length > 12000) throw Error('生图提示词需为 1–12000 字符');
@@ -97,7 +98,10 @@ export function imageTool(cwd, getCredential) {
         await fs.mkdir(dir,{recursive:true});
         const file = path.join(dir,`image-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${extension}`);
         await fs.writeFile(file,buffer,{flag:'wx'});
-        const result = {file,bytes:buffer.length,provider:'openai-codex',visualChecked:false};
+        const finishedAt = Date.now();
+        const result = {file,bytes:buffer.length,provider:'openai-codex',visualChecked:false,
+          sha256:crypto.createHash('sha256').update(buffer).digest('hex'),
+          timing:{startedAt,finishedAt,totalMs:finishedAt-startedAt}};
         return {content:[{type:'text',text:JSON.stringify(result)}],details:result};
       } finally { busy = false; }
     }

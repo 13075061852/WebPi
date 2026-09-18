@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { OutputRate } from '../src/renderer/js/output-rate.mjs';
 const source = fs.readFileSync('src/renderer/js/app.js', 'utf8');
 const updates = source.slice(source.indexOf('function onMessageUpdate(ev) {'), source.indexOf('\nfunction onMessageEnd(msg)'));
 const collapse = source.slice(source.indexOf('function collapseThink() {'), source.indexOf('/* 正文块：'));
 const frames = new Map(); let seq = 0, renders = 0;
 const t = { buf: '', body: { scrollHeight: 10 }, preview: {}, label: {}, el: { open: true }, t0: Date.now() };
+const turn = {};
 const context = vm.createContext({
   S: { thinking: t }, ensureThink: () => t,
+  ensureTurn: () => turn, OutputRate,
   requestAnimationFrame: callback => { frames.set(++seq, callback); return seq; },
   cancelAnimationFrame: id => frames.delete(id),
   streamRender: (body, text) => { renders++; body.text = text; },

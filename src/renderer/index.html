@@ -82,6 +82,7 @@
       </div>
 
       <!-- bottom: workspace files -->
+      <div id="sideHeightHandle" role="separator" tabindex="0" aria-label="调整项目与文件区域高度" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" title="上下拖动调整高度，双击恢复默认；方向键微调"></div>
       <div class="side-files">
         <div class="side-label row">
           <span id="sideFilesTitle">文件</span>
@@ -233,6 +234,8 @@
 </div>
 
 <!-- ======================= model modal ======================= -->
+<div id="conversationRenameModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="conversationRenameTitle"><div class="modal-panel"><div class="modal-head"><h3 id="conversationRenameTitle">重命名对话</h3><button class="modal-x" data-close aria-label="关闭">×</button></div><form id="conversationRenameForm" class="modal-body server-form"><label>对话名称<input id="conversationName" required maxlength="120" autocomplete="off" /></label><div id="conversationRenameError" role="alert"></div><div><button type="button" class="mini-btn" data-close>取消</button> <button id="conversationRenameSave" type="submit" class="mini-btn accent">保存</button></div></form></div></div>
+<div id="projectRunLogModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="projectRunLogTitle"><div class="modal-panel"><div class="modal-head"><h3 id="projectRunLogTitle">项目启动日志</h3><button class="modal-x" data-close aria-label="关闭">×</button></div><pre id="projectRunLogBody" class="modal-body"></pre></div></div>
 <div id="modelModal" class="modal" hidden>
   <div class="modal-panel">
     <div class="modal-head">
@@ -307,7 +310,7 @@
       <div id="setPane-pkgs" class="set-pane active"><div class="settings-title"><h3>插件技能</h3></div>
         <div class="set-head">
           <div class="set-search" id="pkgSearch">
-            <input id="pkgSearchInput" type="text" placeholder="搜索 pi 生态的插件 / 技能 / 主题…" />
+            <input id="pkgSearchInput" type="text" placeholder="按扩展名称搜索…" />
           </div>
           <div class="set-tabs" id="pkgTabs">
             <button class="ptab" data-t="installed">已安装</button>
@@ -441,7 +444,30 @@
 
 <div id="usageDetailModal" class="modal" hidden><div class="modal-panel usage-detail-panel"><div class="modal-head"><h3>用量明细</h3><button id="refreshUsageDetail" class="mini-btn">刷新</button><button class="modal-x" data-close aria-label="关闭">×</button></div><div id="usageDetailBody" class="modal-body"></div></div></div>
 <div id="videoUsageModal" class="modal" hidden><div class="modal-panel usage-detail-panel"><div class="modal-head"><h3>视频消耗记录</h3><button id="refreshVideoUsage" class="mini-btn">刷新</button><button class="modal-x" data-close aria-label="关闭">×</button></div><div id="videoUsageBody" class="modal-body"></div></div></div>
-<div id="serverModal" class="modal" hidden><div class="modal-panel"><div class="modal-head"><h3>添加服务器</h3><button class="modal-x" data-close>×</button></div><form id="serverForm" class="modal-body server-form"><label>名称<input name="name" required placeholder="例如：生产服务器" /></label><label>地址<input name="host" required placeholder="IP 或域名" /></label><div class="server-form-pair"><label>SSH 端口<input name="port" type="number" min="1" max="65535" value="22" required /></label><label>用户名<input name="username" required placeholder="root / ubuntu" /></label></div><label>认证方式<select name="auth"><option value="password">密码</option><option value="key">私钥文件</option></select></label><label><span id="serverSecretLabel">密码</span><input name="secret" type="password" required autocomplete="new-password" /></label><p class="settings-hint">凭据使用系统加密保存。首次连接记住主机指纹，指纹变化时拒绝连接。私钥需为无口令私钥。</p><div id="serverFormError" role="alert"></div><button type="submit" class="mini-btn accent">保存服务器</button></form></div></div><div id="toasts"></div>
+<div id="serverModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="serverModalTitle">
+  <div class="modal-panel">
+    <div class="modal-head"><h3 id="serverModalTitle">添加服务器</h3><button class="modal-x" data-close aria-label="关闭">×</button></div>
+    <form id="serverForm">
+      <div class="server-form-fields server-form">
+        <label>名称<input name="name" required placeholder="例如：生产服务器" /></label>
+        <label>服务器地址<input name="host" required placeholder="IP 地址或域名" autocapitalize="off" spellcheck="false" /></label>
+        <div class="server-form-pair">
+          <label>SSH 端口<input name="port" type="number" min="1" max="65535" value="22" required /></label>
+          <label>用户名<input name="username" required placeholder="例如：root 或 ubuntu" autocapitalize="off" spellcheck="false" /></label>
+        </div>
+        <div class="server-auth-fields">
+          <label>认证方式<select name="auth"><option value="password">密码</option><option value="key">私钥文件</option></select></label>
+          <label><span id="serverSecretLabel">密码</span><input name="secret" type="password" required autocomplete="new-password" /></label>
+        </div>
+      </div>
+      <div class="server-form-footer">
+        <div id="serverFormError" role="alert"></div>
+        <div class="server-form-actions"><button type="button" class="mini-btn" data-close>取消</button><button type="submit" class="mini-btn accent">保存服务器</button></div>
+      </div>
+    </form>
+  </div>
+</div>
+<div id="toasts"></div>
 <script src="js/terminals.js"></script>
 <script type="module" src="js/app.js"></script>
 </body>

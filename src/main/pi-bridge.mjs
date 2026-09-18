@@ -10,6 +10,9 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
+import { ProjectRuns } from './project-runs.mjs';
+import { refreshBillingFx } from './billing-fx.mjs';
+import { presentConversations, renameConversation } from './conversation-meta.mjs';
 import { imageTool, resolveImageCredential } from "./image-generation.mjs";
 import { videoTool } from "./video-generation.mjs";
 import { cloudflareTool } from './cloudflare.mjs';
@@ -292,6 +295,15 @@ export class PiBridge {
 
   constructor(store, crypto = {}, opts = {}) {
     this.store = store;
+    this.projectRuns = new ProjectRuns({analyze:(run,tools)=>this.analyzeProject(run,tools),emit:run=>this.emit('halo:project-run',run),
+      readRecipe:cwd=>{
+        const value=store.data.projectLaunchRecipes?.[cwd];
+        return value && crypto.unseal ? JSON.parse(crypto.unseal(value)) : null;
+      },
+      saveRecipe:(cwd,recipe)=>{
+        const value=crypto.seal?.(JSON.stringify(recipe));
+        if(value)store.set('projectLaunchRecipes',{...store.data.projectLaunchRecipes,[cwd]:value});
+      }});
     this.serverTargets = new Map(Object.entries(store.data.serverTargets || {}));
     this.sessionDir = opts.sessionDir || null; // 会话目录覆盖（测试隔离用）
     this.runtime = null;      // 焦点会话的 AgentSessionRuntime（兼容旧引用）
@@ -329,17 +341,16 @@ export class PiBridge {
 
   publicState() {
     const s = this.session;
-    // 当前上下文占用：最后一条 assistant 消息的用量 ≈ 本轮请求的完整上下文（输入+缓存读写+输出）
     let contextTokens = 0;
+    let contextEstimated = false;
     try {
-      const msgs = s?.messages || [];
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        const u = msgs[i]?.role === "assistant" ? msgs[i].usage : null;
-        if (u) {
-          contextTokens = (u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0) + (u.output || 0);
-          break;
-        }
-      }
+      const usage = s?.getContextUsage?.();
+      contextEstimated = usage?.tokens == null;
+      // Retained assistant usage belongs to the pre-compaction request. Estimate
+      // the rebuilt message context until a fresh model response supplies usage.
+      contextTokens = contextEstimated
+        ? (s?.messages || []).reduce((sum, message) => sum + (pi?.estimateTokens?.(message) || 0), 0)
+        : usage.tokens;
     } catch {}
     return {
       ready: !!s,
@@ -353,6 +364,8 @@ export class PiBridge {
       isStreaming: !!s?.isStreaming,
       usage: this.usage,
       contextTokens,
+      contextEstimated,
+      billingFx: this.store?.data?.billingFx || null,
       messageCount: s?.messages?.length ?? 0,
     };
   }
@@ -377,6 +390,7 @@ export class PiBridge {
     const operation = this._doStart().then(() => {
       this.pushState();
       this.#scheduleModelRefresh();
+      void refreshBillingFx(this.store).then(() => { if (!this.#disposed) this.pushState(); });
       return this.publicState();
     });
     this.startingPromise = operation;
@@ -497,7 +511,7 @@ async _doStart() {
       const file = session.sessionFile;
       records[file] = { ...records[file], serverId, file, name: records[file]?.name || "新会话", modified: records[file]?.modified || ctx.createdAt, running: !!session.isStreaming };
     }
-    return Object.values(records).filter(r => r.file && (fs.existsSync(r.file) || [...this.#pool.values()].some(c => c.runtime.session.sessionFile === r.file))).sort((a,b) => b.modified-a.modified);
+    return presentConversations(this.store, Object.values(records).filter(r => r.file && (fs.existsSync(r.file) || [...this.#pool.values()].some(c => c.runtime.session.sessionFile === r.file))).sort((a,b) => b.modified-a.modified));
   }
 
   /* 会话变化时自动记录到所属项目的 lastSession（未持久化的会话不记，落盘后由 agent_settled 补记） */
@@ -543,6 +557,7 @@ async _doStart() {
   }
 
   async removeProject(cwd) {
+    await this.projectRuns.stopProject(cwd);
     const key = PiBridge.normPath(cwd);
     const switched = key === PiBridge.normPath(this.cwd || "");
     if (switched) {
@@ -705,6 +720,7 @@ async _doStart() {
       // 否则列表的 running 匹配（按文件路径）会失配，徽标永远不亮
       try {
         const sf = session.sessionFile;
+        for (const run of this.projectRuns.runs.values()) if (run.sessionId === session.sessionId && sf) run.sessionFile = sf;
         if (sf && ctx.key !== PiBridge.normPath(sf)) {
           this.#pool.delete(ctx.key);
           ctx.key = PiBridge.normPath(sf);
@@ -729,7 +745,7 @@ async _doStart() {
         }
       }
       this._accountUsage(event, ctx);
-      this.emit("pi:event", { sessionId: session.sessionId, serverId: this.serverTargets.get(session.sessionId) || null, seq: ctx.eventSeq, event });
+      this.emit("pi:event", { sessionId: session.sessionId, cwd: ctx.cwd, serverId: this.serverTargets.get(session.sessionId) || null, seq: ctx.eventSeq, event });
       if (event?.type === "message_end" || event?.type === "agent_end" || event?.type === "agent_settled") {
         this._noteSession(session);
         if (ctx.key === this.#focusedKey) this.pushState();
@@ -784,7 +800,7 @@ async _doStart() {
   }
 
   /* runtime 工厂：每会话独立 services（cwd、扩展开关、默认智能体注入） */
-  #createRuntimeFactory() {
+  #createRuntimeFactory({extraTools = [], background = false} = {}) {
     return async ({ cwd, sessionManager, sessionStartEvent }) => {
       const { createAgentSessionServices, createAgentSessionFromServices } = await loadPi();
       const services = await createAgentSessionServices({
@@ -793,7 +809,7 @@ async _doStart() {
           additionalSkillPaths: [officeSkillsRoot],
           extensionsOverride: (base) => {
             // 缓存全部已发现的扩展（含即将被禁用的），供能力页展示与开关
-            this._allExtensions = (base.extensions || []).map((x) => ({
+            if (!background) this._allExtensions = (base.extensions || []).map((x) => ({
               name: path.basename(x.path || "") || "extension",
               path: x.path || "",
             }));
@@ -849,10 +865,10 @@ async _doStart() {
       if (process.platform === 'win32' && services.settingsManager.getDefaultTools() === undefined) {
         services.settingsManager.applyOverrides({ defaultTools: ['read', 'powershell', 'edit', 'write'] });
       }
-      this.services = services;
+      if (!background) this.services = services;
       return {
         ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
-          customTools: [{name:'preview_inspect',label:'查看实时预览',description:'读取此会话服务器当前已登录预览的正文、视口和滚动区域。需要视觉验证时 screenshot=true 返回当前页面截图；不导出登录凭据。',parameters:{type:'object',properties:{screenshot:{type:'boolean'}}},execute:async (_id,args,signal)=>{
+          customTools: [...extraTools, {name:'preview_inspect',label:'查看实时预览',description:'读取此会话服务器当前已登录预览的正文、视口和滚动区域。需要视觉验证时 screenshot=true 返回当前页面截图；不导出登录凭据。',parameters:{type:'object',properties:{screenshot:{type:'boolean'}}},execute:async (_id,args,signal)=>{
             if(signal?.aborted)throw Error('已取消');
             if(!this.inspectPreview)throw Error('当前环境没有页面预览，请在应用内打开服务');
             const sessionId=sessionManager.getSessionId();
@@ -1330,16 +1346,58 @@ async _doStart() {
   async compact(customInstructions) {
     const ctx = this.#focusedCtx();
     if (!ctx) throw new Error("Session not ready");
+    if (ctx.busy || ctx.runtime.session.isStreaming) throw new Error('任务进行中，请等待完成后再压缩上下文');
     ctx.busy = (ctx.busy || 0) + 1;
     try {
       const res = await ctx.runtime.session.compact(customInstructions);
-      return { ok: true, summary: String(res?.summary || "").slice(0, 400) };
+      return { ok: true, summary: String(res?.summary || "").slice(0, 1200), tokensBefore: res?.tokensBefore, estimatedTokensAfter: res?.estimatedTokensAfter };
     } finally {
       ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
+      this.pushState();
     }
   }
 
   /* ---------------- sessions ---------------- */
+
+  startProject() {
+    const session = this.session;
+    if (!session || !this.cwd || !this._findProject(this.cwd)) throw Error('请先选择本地项目');
+    if (this.serverTargets.get(session.sessionId)) throw Error('项目启动仅适用于本地项目');
+    return this.projectRuns.start({cwd:this.cwd, sessionId:session.sessionId, sessionFile:session.sessionFile, model:session.model});
+  }
+
+  async analyzeProject(run, tools) {
+    if (!run.model) throw Error('首次启动或快速启动修复需要先选择可用模型');
+    const {createAgentSessionRuntime, SessionManager, getAgentDir} = await loadPi();
+    if (run.controller.signal.aborted) return;
+    const runtime = await createAgentSessionRuntime(this.#createRuntimeFactory({extraTools:tools,background:true}), {
+      cwd:run.cwd, agentDir:getAgentDir(), sessionManager:SessionManager.inMemory(run.cwd),
+    });
+    const abort = () => { void runtime.session.abort().catch(()=>{}); };
+    let unsubscribe, modelError;
+    try {
+      if (run.controller.signal.aborted) return;
+      run.controller.signal.addEventListener('abort',abort,{once:true});
+      await runtime.session.setModel(run.model);
+      runtime.session.setActiveToolsByName(['read','powershell','bash',...tools.map(t=>t.name)]);
+      unsubscribe = runtime.session.subscribe(event=>{
+        if (event.type==='tool_execution_start' && !run.controller.signal.aborted && run.status!=='running') {
+          const stages={read:'正在读取项目文件…',powershell:'正在执行环境准备命令…',bash:'正在执行环境准备命令…',project_service_start:'正在启动开发服务…',project_service_status:'正在检查服务启动日志…',project_preview_ready:'正在验证预览地址…'};
+          this.projectRuns.update(run,{message:stages[event.toolName]||'后台 AI 正在分析项目…'});
+        }
+        if (event.type==='message_end' && event.message?.role==='assistant') {
+          const reply=(event.message.content||[]).filter(p=>p.type==='text').map(p=>p.text).join('\n');
+          run.log=(run.log+'\n'+reply).slice(-24000);
+          if(event.message.stopReason==='error')modelError=event.message.errorMessage||'模型请求失败';
+        }
+      });
+      await runtime.session.prompt(`你是独立的项目启动助手。当前项目目录：${run.cwd}。${run.fastError ? "上次成功方案快速启动失败，已清理本次启动的进程。失败信息：" + run.fastError + "。启动日志：" + run.log.slice(-6000) : ""}任务只是在本机启动该项目并提供可访问的前端预览，不修改业务源代码，不部署，不推送 Git，不删除用户文件或停止其他进程。\n先读取 AGENTS.md、README、package.json、锁文件和启动配置，判断 React/Vue/Vite/Next 或其他框架及前后端依赖。尊重项目自身启动流程，不猜测数据库密码。可以安装缺失的项目依赖；需要缺失凭据时明确报错，不能伪造成功。\n所有常驻进程必须用 project_service_start 工具启动，不能使用 Start-Process、nohup、后台 & 或其他脱离托管的方式。Windows 的 command 是 PowerShell 命令；必要时 npm 使用 npm.cmd。安装等短任务可以用普通命令工具。尽量监听 127.0.0.1；如端口被占用，验证是否是本项目服务，否则选其他空闲端口，绝不杀占用进程。\n用 project_service_status 查看日志，确定真正的前端监听端口和 base 路径；后端健康检查不能当作前端地址。若已有本项目的服务可访问，可以复用该地址，不要重复启动。最后调用 project_preview_ready 验证完整前端 URL（含子路径）。该工具成功后立即结束，服务会由应用持续托管。若工具失败，结合日志修正启动方式或地址再试，不能只在文字里声称启动成功。`);
+      if(modelError)throw Error(modelError);
+    } finally {
+      unsubscribe?.();run.controller.signal.removeEventListener('abort',abort);
+      await runtime.dispose();
+    }
+  }
 
   async listSessions(cwd = this.cwd) {
     const { SessionManager } = await loadPi();
@@ -1386,7 +1444,18 @@ async _doStart() {
         messageCount: messages.length, running });
     }
     out.sort((a, b) => new Date(b.modified || 0) - new Date(a.modified || 0));
-    return out.slice(0, 40);
+    return presentConversations(this.store, out).slice(0, 40);
+  }
+
+  async renameSession(file, name) {
+    const key = PiBridge.normPath(file);
+    let rows = await this.serverConversations();
+    for (const cwd of new Set([this.cwd, ...(this.store.data.projects || []).map(p => p.cwd)])) {
+      rows = rows.concat(await this.listSessions(cwd));
+    }
+    const row = rows.find(item => PiBridge.normPath(item.file) === key);
+    if (!row) throw Error('对话不存在，请刷新列表后重试');
+    return { name: renameConversation(this.store, row.file, name) };
   }
 
   /**
@@ -1590,7 +1659,11 @@ async _doStart() {
     };
     const windows = [mk(rl.primary_window, 5 * 3600), mk(rl.secondary_window, 7 * 24 * 3600)].filter(Boolean);
     if (!windows.length) throw new Error(`usage HTTP ${r.status}`);
-    return { kind: "windows", windows };
+    // The usage summary carries the available reset count for this same account.
+    // Missing/invalid values must remain unknown, not become zero.
+    const count = j?.rate_limit_reset_credits?.available_count;
+    const resetCredits = Number.isSafeInteger(count) && count >= 0 ? count : null;
+    return { kind: "windows", windows, resetCredits };
   }
 
   /** Z.AI / 智谱 GLM Coding 订阅：token 窗口用量百分比（认证为裸 token，无 Bearer 前缀） */
@@ -1741,6 +1814,7 @@ async _doStart() {
     const draft = [...this.#pool.values()].find((c) =>
       PiBridge.normPath(c.cwd || "") === PiBridge.normPath(cwd) &&
       (this.serverTargets.get(c.runtime.session.sessionId) || null) === serverId &&
+      ![...this.projectRuns.runs.values()].some(run=>run.sessionId===c.runtime.session.sessionId && !['stopped','error'].includes(run.status)) &&
       !c.busy && !c.runtime.session.isStreaming &&
       (c.runtime.session.messages?.length ?? 0) === 0);
     const ctx = draft || await this.#ensureFresh({cwd});
@@ -1769,6 +1843,8 @@ async _doStart() {
     if (!/\.jsonl$/i.test(abs)) throw new Error("不是会话记录文件");
     const key = PiBridge.normPath(abs);
     const ctx = this.#pool.get(key);
+    if (ctx && (ctx.busy || ctx.runtime.session.isStreaming)) throw new Error("任务进行中，先中止再删除");
+    await this.projectRuns.stopSession(abs);
     let switched = false;
     if (ctx) {
       if (ctx.busy || ctx.runtime.session.isStreaming) throw new Error("任务进行中，先中止再删除");
@@ -1857,6 +1933,8 @@ async _doStart() {
             }).filter(Boolean)
           : [],
       usage: m.usage || null,
+      provider: m.provider || null,
+      model: m.model || null,
     }));
   }
 
@@ -1916,6 +1994,7 @@ async _doStart() {
 
   async dispose() {
     this.#disposed = true;
+    await this.projectRuns.dispose();
     clearTimeout(this.#modelRefreshTimer);
     this.#modelRefreshTimer = null;
     this.#modelRefreshController?.abort();

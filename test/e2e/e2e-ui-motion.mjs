@@ -134,10 +134,21 @@ try {
     assert.equal(await evaluate('document.querySelectorAll(".device-morph-overlay,.device-morph-hidden").length'),0,'Completed transitions must restore the live chrome');
   }
   // Capture real intermediate frames separately from the timing run.
-  for (const [name, selector] of [['sidebar','#btnSidebar'],['phone','.pvdev[data-dev="mobile"]']]) {
+  for (const [name, selector] of [['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['sidebar','#btnSidebar'],['phone','.pvdev[data-dev="mobile"]']]) {
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
     await waitFor(() => evaluate('document.getAnimations().some(a=>a.playState==="running"&&a.effect?.pseudoElement?.startsWith("::view-transition-group(layout-"))'), 'No running geometry animation');
     await evaluate('window.__pausedAnimations=document.getAnimations().filter(a=>a.effect?.pseudoElement||a.effect?.target?.closest(".device-morph-overlay"));for(const a of __pausedAnimations){a.pause();a.currentTime=110;}');
+    if (name.startsWith('preview-')) {
+      const coverage = await evaluate(`(()=>{
+        const host=document.documentElement.classList.contains('layout-motion-global')?document.documentElement:document.querySelector('#layout');
+        return {opacity:getComputedStyle(host,'::view-transition-old(layout-center)').opacity,
+          clip:__pausedAnimations.some(a=>a.effect?.pseudoElement==='::view-transition-group(layout-center)'&&a.effect.getKeyframes().some(k=>k.clipPath)),
+          device:document.querySelector('#pvBody .dev-shell').style.viewTransitionName};
+      })()`);
+      assert.equal(coverage.opacity,'1','Outgoing preview must remain painted behind the sliding chat');
+      assert.equal(coverage.clip,true,'Preview reveal must track the chat edge');
+      assert.equal(coverage.device,'none','Device must stay inside the preview snapshot');
+    }
     if (name === 'phone') {
       const chrome=await evaluate('(()=>{const n=document.querySelector(".device-morph-shell"),s=getComputedStyle(n);return {transform:s.transform,radius:parseFloat(s.borderRadius),width:n.getBoundingClientRect().width,finalWidth:document.querySelector("#pvBody .dev-shell").getBoundingClientRect().width}})()');
       assert.equal(chrome.transform,'none','Shell edges must never be squeezed by scale');

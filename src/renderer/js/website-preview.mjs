@@ -102,7 +102,7 @@ export function mountWebsiteBrowser(body, url, onChange, createDeviceShell) {
     event.preventDefault(); const next = websiteURL(input.value);
     if (next) { loadingButton = go; status.hidden = true; setLoading(true); guest.src = next; }
   };
-  reload.onclick = () => { loadingButton = reload; status.hidden = true; setLoading(true); guest.reload(); };
+  reload.onclick = () => { loadingButton = reload; status.hidden = true; setLoading(true); guest.reloadIgnoringCache(); };
   body.querySelector('[data-nav=external]').onclick = () => { const target = websiteURL(input.value); if (target) void window.halo.openExternal(target); };
   guest.src = url;
   return guest;

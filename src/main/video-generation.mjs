@@ -133,7 +133,7 @@ export class VideoGeneration {
         const spec = videoSpec(config.provider);
         const model = args.model || config.model;
         const base = model !== config.model ? videoModelDefaults(config.provider, model) : config;
-        const options = validateVideoOptions(config.provider, { ...base, ...Object.fromEntries(['model', 'duration', 'resolution', 'ratio'].filter(key => args[key] !== undefined).map(key => [key, args[key]])) });
+        let options = validateVideoOptions(config.provider, { ...base, ...Object.fromEntries(['model', 'duration', 'resolution', 'ratio'].filter(key => args[key] !== undefined).map(key => [key, args[key]])) });
         const rules = spec.modelOptions[options.model];
         if (rules.requiresFirstFrame && !args.first_frame) throw Error('当前模型需要首帧图片');
         if (args.first_frame && !rules.supportsFirstFrame) throw Error('当前模型不支持首帧图片，请选择图生视频模型');
@@ -154,10 +154,26 @@ export class VideoGeneration {
         ]);
         signal?.throwIfAborted();
         update(`${spec.name} · ${options.model}：等待用户确认视频生成`);
-        const approved = await this.confirmGeneration({ provider: config.provider, providerName: spec.name,
-          ...options, prompt: args.prompt.trim(), firstFrame: args.first_frame || null, cwd, estimate: quote }, signal);
+        const approved = await this.confirmGeneration({ callId, provider: config.provider, providerName: spec.name,
+          ...options, prompt: args.prompt.trim(), firstFrame: args.first_frame || null, cwd, estimate: quote,
+          modelOptions: spec.modelOptions, network: config.network }, signal, confirmation => {
+          selection = { ...selection, status: 'awaiting_confirmation', confirmation };
+          update('等待确认视频参数');
+        });
         signal?.throwIfAborted();
-        if (approved !== true) return { status: 'cancelled', message: '用户未确认视频生成，未提交平台、未产生生成费用。请改用 Three.js、Canvas 或 CSS 动画，不要重复请求或绕过确认调用视频 API。' };
+        if (approved !== true && approved?.approved !== true) return { status: 'cancelled', message: '用户未确认视频生成，未提交平台、未产生生成费用。请改用 Three.js、Canvas 或 CSS 动画，不要重复请求或绕过确认调用视频 API。' };
+        if (approved?.options) {
+          options = validateVideoOptions(config.provider, approved.options);
+          const selectedRules = spec.modelOptions[options.model];
+          if (selectedRules.requiresFirstFrame && !firstFrame) throw Error('当前模型需要首帧图片');
+          if (firstFrame && !selectedRules.supportsFirstFrame) throw Error('当前模型不支持首帧图片');
+          quote = this.pricing ? await Promise.race([
+            this.pricing.estimate({ provider: config.provider, network: config.network, ...options, inputImageCount: firstFrame ? 1 : 0 }).catch(() => null),
+            delay(3000).then(() => null),
+          ]) : null;
+        }
+        signal?.throwIfAborted();
+        selection = { provider: config.provider, provider_name: spec.name, model: options.model, status: 'preparing' };
         update(`${spec.name} · ${options.model}：正在提交视频任务…`);
         let id;
         try { id = await this.provider(config.provider, config.network).create(key, { ...options, prompt: args.prompt.trim(), firstFrame }, signal); }
@@ -220,7 +236,7 @@ export class VideoGeneration {
 export function videoTool(cwd, getService) {
   return {
     name: 'video_generate', label: '视频生成',
-    description: '“动起来”“做动画”等请求优先使用 Three.js、Canvas、CSS 等本地动画方式，不要自行理解为调用视频模型。调用收费视频生成 API 前必须由用户在确认窗口中明确同意，即使用户说生成视频也不能跳过确认。未确认或拒绝时改用其他实现方式，禁止通过脚本或其他工具绕过确认直接调用视频 API。先用 models 查看同一套 default_config 和参数要求。用户未指定厂家、模型、分辨率、时长或比例时，generate 省略对应参数，使用保存的默认配置，不从历史模型沿用参数。用户明确指定时才覆盖相应参数。参数校验失败时按错误说明修正，不更换模型。generate 提交并等待视频，可指定本地首帧 first_frame；status 用原 provider/task_id 继续查询或下载；list 查当前项目最近任务。成功取得 file 后立即返回 Markdown 视频链接，说明实际 provider_name、model 和 usage.amount/usage.unit；usage 为 null 时说明平台未返回实际消耗，不以预估代替。文件已下载并完成 MP4 基本校验，界面可播放；用户未要求画面验收时，不再搜索 ffmpeg、运行抽帧/解码脚本或调用 preview_inspect，不以额外检查拖延交付；用户未明确要求时不发送到微信等外部渠道。失败/超时不要重新 generate，先 status，避免重复计费。',
+    description: '“动起来”“做动画”等请求优先使用 Three.js、Canvas、CSS 等本地动画方式，不要自行理解为调用视频模型。调用收费视频生成 API 前必须由用户在对话内的视频参数确认区域明确同意，即使用户说生成视频也不能跳过确认。未确认或拒绝时改用其他实现方式，禁止通过脚本或其他工具绕过确认直接调用视频 API。先用 models 查看同一套 default_config 和参数要求。用户未指定厂家、模型、分辨率、时长或比例时，generate 省略对应参数，使用保存的默认配置，不从历史模型沿用参数。用户明确指定时才覆盖相应参数。参数校验失败时按错误说明修正，不更换模型。generate 提交并等待视频，可指定本地首帧 first_frame；status 用原 provider/task_id 继续查询或下载；list 查当前项目最近任务。成功取得 file 后立即返回 Markdown 视频链接，说明实际 provider_name、model 和 usage.amount/usage.unit；usage 为 null 时说明平台未返回实际消耗，不以预估代替。文件已下载并完成 MP4 基本校验，界面可播放；用户未要求画面验收时，不再搜索 ffmpeg、运行抽帧/解码脚本或调用 preview_inspect，不以额外检查拖延交付；用户未明确要求时不发送到微信等外部渠道。失败/超时不要重新 generate，先 status，避免重复计费。',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['generate', 'status', 'list', 'models'] }, prompt: { type: 'string' }, task_id: { type: 'string' },
       provider: { type: 'string', enum: Object.keys(VIDEO_PROVIDERS) }, model: { type: 'string' },

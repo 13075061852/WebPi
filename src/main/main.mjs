@@ -1,3 +1,4 @@
+import { searchPackageNames } from './package-name-search.mjs';
 import { isTrustedUIURL } from "./trusted-ui-url.mjs";
 import electronUpdater from 'electron-updater';
 import { createAppUpdates } from './app-updates.mjs';
@@ -12,7 +13,7 @@ import { previewDocument } from "./document-preview.mjs";
 import { app, BrowserWindow, session, ipcMain, dialog, shell, protocol, safeStorage, clipboard, nativeImage, ClipboardItem } from "electron";
 import path from "node:path";
 import fs from "node:fs";
-import { X509Certificate } from "node:crypto";
+import { X509Certificate, createHash } from "node:crypto";
 import { spawnPi as runPiCommand } from "./pi-command.mjs";
 import { ServerManager, parseListeningPorts } from "./servers.mjs";
 import { TerminalPool } from "./terminal-pool.mjs";
@@ -28,6 +29,7 @@ import os from "node:os";
 import { VideoSettings } from "./video-settings.mjs";
 import { VideoPricing } from "./video-pricing.mjs";
 import { VideoGeneration } from "./video-generation.mjs";
+import { VideoConfirmations } from "./video-confirmations.mjs";
 import { videoResponse } from "./video-preview.mjs";
 
 // Applies to both npm start and the installed EXE, before Pi/OAuth can fetch.
@@ -124,17 +126,11 @@ function bootstrap() {
   const videoSettings = new VideoSettings(path.join(os.homedir(), '.pi', 'agent', 'halo-video.json'), { seal, unseal });
   const videoPricing = new VideoPricing();
   const video = new VideoGeneration(videoSettings, path.join(os.homedir(), '.pi', 'agent', 'halo-video-jobs.json'), { pricing: videoPricing });
-  video.confirmGeneration = async (request, signal) => {
+  const videoConfirmations = new VideoConfirmations();
+  app.on('before-quit', () => videoConfirmations.dispose());
+  video.confirmGeneration = async (request, signal, publish) => {
     if (signal?.aborted || !mainWin || mainWin.isDestroyed()) return false;
-    const estimate = request.estimate;
-    const cost = estimate?.available && Number.isFinite(estimate.total)
-      ? `${Number(estimate.total.toFixed(4))} ${estimate.currency === 'Credits' ? '积分' : estimate.currency}` : '暂不可用，以平台实际计费为准';
-    const { response } = await dialog.showMessageBox(mainWin, {
-      type: 'question', title: '确认视频生成', message: '是否调用视频模型生成？',
-      detail: `${request.providerName} · ${request.model}\n${request.resolution} · ${request.duration} 秒 · ${request.ratio}\n预估消耗：${cost}\n项目：${request.cwd}\n\n${request.prompt.slice(0, 600)}`,
-      buttons: ['使用其他方式', '确认生成视频'], defaultId: 0, cancelId: 0, noLink: true,
-    });
-    return response === 1 && !signal?.aborted;
+    return videoConfirmations.ask(request, signal, publish);
   };
   bridge.video = video;
   const servers = new ServerManager(store, seal, unseal);
@@ -251,7 +247,15 @@ function bootstrap() {
     if (response === 0) app.relaunch();
     app.quit();
   }
-  app.once('before-quit', () => {
+  let projectShutdown = null, projectShutdownDone = false;
+  function finishProjectServices(event, resume) {
+    if (projectShutdownDone || !bridge.projectRuns.runs.size) return false;
+    event.preventDefault();
+    projectShutdown ||= bridge.projectRuns.dispose().finally(() => { projectShutdownDone = true; resume(); });
+    return true;
+  }
+  app.on('before-quit', event => {
+    if (finishProjectServices(event, () => app.quit())) return;
     if (!quitting) {
       quitting = true;
       disarmTreeWatcher();
@@ -375,7 +379,8 @@ function bootstrap() {
       if (splashWin && !splashWin.isDestroyed()) splashWin.close();
       splashWin = null;
     });
-    mainWin.on("close", () => {
+    mainWin.on("close", event => {
+      if (finishProjectServices(event, () => { if (mainWin && !mainWin.isDestroyed()) mainWin.close(); })) return;
       if (!quitting) {
         quitting = true;
         startup.dispose();
@@ -480,7 +485,7 @@ function bootstrap() {
   handle('halo:app-update-state', () => updates.getState());
   handle('halo:download-app-update', () => updates.download());
   if (app.isPackaged && process.env.PI_OFFLINE !== '1') {
-    const firstCheck = setTimeout(() => void updates.check(), 30000);
+    const firstCheck = setTimeout(() => void updates.check(), 3000);
     const nextChecks = setInterval(() => void updates.check(), 6 * 60 * 60 * 1000);
     firstCheck.unref(); nextChecks.unref();
     app.once('before-quit', () => { clearTimeout(firstCheck); clearInterval(nextChecks); });
@@ -555,6 +560,8 @@ function bootstrap() {
     } finally { environmentRepairBusy = false; }
   });
   handle("halo:video-settings", () => videoSettings.publicState());
+  handle("halo:video-confirm", input => videoConfirmations.respond(input));
+  handle("halo:video-confirmations", () => videoConfirmations.list());
   handle("halo:video-balance", input => video.balance(input));
   handle("halo:video-history", () => video.consumptionHistory());
   handle("halo:video-save", input => videoSettings.save(input));
@@ -577,6 +584,10 @@ function bootstrap() {
   handle("halo:set-model", (provider, id) => bridge.setModel(provider, id));
   handle("halo:set-thinking", (level) => bridge.setThinkingLevel(level));
   handle("halo:list-sessions", () => bridge.listSessions());
+  handle('halo:project-run-start', () => bridge.startProject());
+  handle('halo:project-run-list', () => bridge.projectRuns.list());
+  handle('halo:project-run-stop', id => bridge.projectRuns.stop(id));
+  handle("halo:rename-session", (file, name) => bridge.renameSession(file, name));
   handle("halo:usage-summary", (args) => bridge.usageSummary(args?.days || 30));
   handle("halo:model-quota", (provider, force) => bridge.modelQuota(provider, force));
 
@@ -722,14 +733,22 @@ function bootstrap() {
     return true;
   });
 
-  handle("halo:artifact-files", async (files) => {
+  handle("halo:artifact-files", async (files, options) => {
     if (!Array.isArray(files) || files.length > 100) throw Error('产物列表无效');
     const found=await Promise.all(files.map(async file=>{
       if(typeof file !== 'string') return null;
       const abs=path.resolve(bridge.cwd || '.',file);
       if(!isInsideProject(abs)) return null;
       const stat=await fs.promises.stat(abs).catch(()=>null);
-      return stat?.isFile() ? file : null;
+      if (!stat?.isFile()) return null;
+      if (options?.imageHashes && /\.(png|jpe?g|webp)$/i.test(abs) && stat.size <= 32 * 1024 * 1024) {
+        try {
+          const hash = createHash('sha256');
+          for await (const chunk of fs.createReadStream(abs)) hash.update(chunk);
+          return {file,sha256:hash.digest('hex')};
+        } catch { return file; }
+      }
+      return file;
     }));
     return found.filter(Boolean);
   });
@@ -814,13 +833,12 @@ function bootstrap() {
     return types;
   };
   handle("halo:pkg-search", async ({ query = "", from = 0, size = 20, type = "" } = {}) => {
-    // 分类用裸关键词下推到 npm 服务端（extension/skill/theme/prompt），与官网分类口径一致
-    // （glimpseui 等官网 prompt 包带裸 "prompt" 关键词；pi-prompt 显式关键词只有少数包用）
+    // Use the official catalog's search and category filters, then match names locally.
     const t = ["extension", "skill", "theme", "prompt"].includes(String(type)) ? String(type) : "";
-    const text = encodeURIComponent("keywords:pi-package" + (t ? "," + t : "") + (String(query).trim() ? " " + String(query).trim() : ""));
-    const res = await fetch(`https://registry.npmjs.org/-/v1/search?text=${text}&size=${size}&from=${from}`);
-    if (!res.ok) throw new Error("npm 搜索失败 " + res.status);
-    const j = await res.json();
+    const category = "keywords:pi-package" + (t ? "," + t : "");
+    from = Math.max(0, Math.floor(Number(from) || 0));
+    size = Math.max(1, Math.min(250, Math.floor(Number(size) || 20)));
+    const j = await searchPackageNames(category, query, from, size);
     const items = (j.objects || []).map((o) => {
       const p = o.package || {};
       return {
@@ -831,7 +849,7 @@ function bootstrap() {
         author: p.publisher?.username || (typeof p.author === "string" ? p.author : p.author?.name) || "",
         repo: p.links?.repository || "",
         homepage: p.links?.homepage || "",
-        types: pkgTypes(p),
+        types: p.types?.length ? p.types : pkgTypes(p),
       };
     });
     return { total: j.total || items.length, items };

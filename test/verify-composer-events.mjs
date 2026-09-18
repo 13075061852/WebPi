@@ -20,7 +20,7 @@ function harness() {
     queued: { steering: [], followUp: [] } };
   const invoke = (method, ...args) => new Promise((resolve, reject) => calls.push({ method, args, resolve, reject }));
   const context = vm.createContext({
-    S, Map, Date, userMessageParts, userMessageText,
+    S, Map, Date, compactingSessions: new Set(), userMessageParts, userMessageText,
     $: selector => ({ '#input': input, '#attachRow': attachments, '#messages': messages, '#projList': node() })[selector] || node(),
     $$: () => [], document: { createElement: node },
     window: { __piDebug: { ignored: 0 }, halo: Object.fromEntries(['prompt', 'steer', 'followUp', 'projectAdd'].map(method => [method, (...args) => invoke(method, ...args)])) },

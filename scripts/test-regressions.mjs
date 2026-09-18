@@ -6,9 +6,14 @@ import { fileURLToPath } from 'node:url';
 // Local regressions: bundled/offline Pi only; no saved accounts, GUI or Office installation required.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tests = [
+  'verify-app-updates', 'verify-image-generation', 'verify-image-runtime', 'verify-image-card-timing',
+  'verify-turn-cost',
+  'verify-context-rate', 'verify-compaction-feedback',
+  'verify-package-search',
+  'verify-project-fast-start',
   'verify-env-proxy', 'verify-pi-command', 'verify-bundled-pi', 'verify-environment-detection', 'verify-environment-manager', 'verify-video-generation',
-  'verify-video-domestic', 'verify-video-international', 'verify-video-platforms', 'verify-video-apimart', 'verify-video-pricing', 'verify-video-workflow', 'verify-video-billing',
-  'verify-session-integrity', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-server-delete',
+  'verify-video-domestic', 'verify-video-international', 'verify-video-platforms', 'verify-video-apimart', 'verify-video-pricing', 'verify-video-workflow', 'verify-video-billing', 'verify-video-confirmations',
+  'verify-session-integrity', 'verify-conversation-meta', 'verify-conversation-switch', 'verify-project-runs', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-server-delete',
   'verify-composer-events', 'verify-office-protocol', 'verify-ipc-sender',
   'verify-session-queue', 'verify-preview-races', 'verify-preview-refresh', 'verify-preview-motion',
   'verify-preview-file', 'verify-preview-inspection', 'verify-workspace-path',

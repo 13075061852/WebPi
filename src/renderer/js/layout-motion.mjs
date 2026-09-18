@@ -10,12 +10,12 @@ export function createLayoutMotion({ setPaused }) {
   let maskFades = [];
   let running = false;
   const selectors = { sidebar: '#sidebar', center: '#center', chat: '#chat', device: '#pvBody .dev-shell' };
-  function measure(morphingDevice = false) {
+  function measure(morphingDevice = false, captureDevice = true) {
     return Object.fromEntries(Object.entries(selectors).map(([name, selector]) => {
       const element = document.querySelector(selector);
       const rect = element?.getBoundingClientRect();
       const chrome = morphingDevice && name === 'device';
-      const visible = rect?.width > 1 && rect.height > 1 && (chrome || element.checkVisibility({ visibilityProperty: true, opacityProperty: true }));
+      const visible = (name !== 'device' || captureDevice) && rect?.width > 1 && rect.height > 1 && (chrome || element.checkVisibility({ visibilityProperty: true, opacityProperty: true }));
       if (element) element.style.viewTransitionName = visible && !chrome ? `layout-${name}` : 'none';
       return [name, visible ? rect : null];
     }));
@@ -75,7 +75,11 @@ export function createLayoutMotion({ setPaused }) {
         root.classList.add('layout-motion');
         root.classList.toggle('layout-motion-global', host === root);
         const origin = host === root ? { x: 0, y: 0 } : host.getBoundingClientRect();
-        const before = measure();
+        const previewFold = changes.some(item => item.previewFold);
+        root.classList.toggle('layout-preview-fold', previewFold);
+        // Capture the preview as one surface so its device chrome cannot float
+        // above the chat while the chat covers/unveils the preview.
+        const before = measure(false, !previewFold);
         const deviceMorph = host !== root && before.device && masks.size ? createDeviceMorph() : null;
         const motionOptions = { duration: 280, easing: deviceMorph ? 'cubic-bezier(.4,0,.2,1)' : 'cubic-bezier(.22,.68,0,1)', fill: 'both' };
         const restoreViewports = holdViewports();
@@ -83,7 +87,7 @@ export function createLayoutMotion({ setPaused }) {
         let after;
         const update = () => {
           changes.forEach(item => item.change());
-          after = measure(!!deviceMorph);
+          after = measure(!!deviceMorph, !previewFold);
           root.classList.toggle('layout-sidebar-enter', !before.sidebar && !!after.sidebar);
           root.classList.toggle('layout-sidebar-leave', !!before.sidebar && !after.sidebar);
         };
@@ -95,6 +99,23 @@ export function createLayoutMotion({ setPaused }) {
         document.addEventListener('visibilitychange', hidden);
         try {
           await transition.ready;
+          if (previewFold && !!before.center !== !!after.center) {
+            const rect = before.center || after.center;
+            const closing = !!before.center;
+            const pseudoElement = '::view-transition-group(layout-center)';
+            for (const animation of document.getAnimations()) {
+              if (animation.effect?.pseudoElement === pseudoElement) animation.cancel();
+            }
+            temporary.push(host.animate([
+              { clipPath: closing ? 'inset(0 0% 0 0)' : 'inset(0 100% 0 0)' },
+              { clipPath: closing ? 'inset(0 100% 0 0)' : 'inset(0 0% 0 0)' },
+            ], { ...motionOptions, pseudoElement }));
+            temporary.push(host.animate({
+              width: [`${rect.width}px`, `${rect.width}px`],
+              height: [`${rect.height}px`, `${rect.height}px`],
+              transform: [`translate(${rect.x - origin.x}px, ${rect.y - origin.y}px)`, `translate(${rect.x - origin.x}px, ${rect.y - origin.y}px)`],
+            }, { ...motionOptions, pseudoElement }));
+          }
           for (const animation of document.getAnimations()) {
             const name = animation.effect?.pseudoElement?.match(/^::view-transition-group\(layout-(\w+)\)$/)?.[1];
             const first = before[name], last = after[name];
@@ -173,18 +194,18 @@ export function createLayoutMotion({ setPaused }) {
       maskFades = [];
       for (const mask of masks) mask.remove();
       masks.clear();
-      root.classList.remove('layout-motion', 'layout-motion-global', 'layout-sidebar-enter', 'layout-sidebar-leave', 'layout-device-held');
+      root.classList.remove('layout-motion', 'layout-motion-global', 'layout-sidebar-enter', 'layout-sidebar-leave', 'layout-device-held', 'layout-preview-fold');
       for (const selector of Object.values(selectors)) document.querySelector(selector)?.style.removeProperty('view-transition-name');
       running = false;
       void setPaused(false);
     }
   }
-  return (change, { maskPreview = false } = {}) => {
+  return (change, { maskPreview = false, previewFold = false } = {}) => {
     if (maskPreview) {
       maskFades.forEach(animation => animation.cancel());
       maskFades = [];
     }
-    pending.push({ change, maskPreview });
+    pending.push({ change, maskPreview, previewFold });
     if (!running) void drain();
   };
 }

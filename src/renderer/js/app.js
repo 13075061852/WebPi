@@ -7,7 +7,14 @@ import { websiteURL, renderWebsiteCards, mountWebsiteBrowser } from './website-p
 import { userMessageText, userMessageParts } from "./user-message.mjs";
 import { initEnvironmentSettings } from "./environment-settings.mjs";
 import { initVideoSettings } from "./video-settings.mjs";
+import { mountVideoConfirmation } from "./video-confirmation.mjs";
 import { videoBalanceText } from "./video-balance.mjs";
+import { initProjectRuns } from './project-runs.mjs';
+import { initSidebarHeight } from './sidebar-height.mjs';
+import { OutputRate } from './output-rate.mjs';
+import { toolIcon, thinkingIcon } from './tool-icons.mjs';
+import { wireToolDetails, setToolDetailsOpen } from './tool-details.mjs';
+import { TurnCost } from './turn-cost.mjs';
 /* ============================================================
    Pi Halo — app orchestration (v2, hardened)
    Maps pi SDK session events onto the celestial UI.
@@ -86,6 +93,7 @@ document.addEventListener("DOMContentLoaded", () => {
   try {
   document.body.classList.add("enter");
   wireUI();
+  initSidebarHeight();
   initAppUpdates();
   wirePi();
   initStartupProgress({ onRetry: restoreInitialWorkspace });
@@ -170,11 +178,18 @@ let browsingServerId = null, portServerId = null, portRequest = 0, portPreviewRe
 const portCache = new Map();
 let selectedPortKey = null;
 let previewService = null;
-function openWebsite(value) {
+const projectRunnerUI = initProjectRuns({api:window.halo, context:()=>S.state, switchProject,
+  openPreview:openWebsite, toast, showLogs:(message, log)=>{
+    $('#projectRunLogTitle').textContent=message;
+    $('#projectRunLogBody').textContent=log;
+    openModal('projectRunLogModal');
+  }});
+function openWebsite(value, projectRun = null) {
   const url = websiteURL(value); if (!url) return;
   const request = ++portPreviewRequest;
   S.previewFile = null; selectedPortKey = null; updatePortSelection();
-  previewService = {kind:'website', url, status:'loading'};
+  previewService = {kind:'website', url, status:'loading',
+    ...(projectRun?.cwd ? { projectCwd: projectRun.cwd, projectOrigin: new URL(url).origin } : {})};
   $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
   $('#pvName').textContent = new URL(url).hostname;
   mountWebsiteBrowser($('#pvBody'), url, state => {
@@ -199,13 +214,18 @@ function currentPreviewContext() {
   return context;
 }
 // Run once after the retry loop settles, including background sessions on this server.
-function refreshCompletedPreview({event, sessionId, serverId}) {
+function refreshCompletedPreview({event, sessionId, serverId, cwd}) {
   if (event?.type !== "agent_settled") return;
   if (previewService) {
-    if (!serverId || serverId !== previewService.serverId) return;
+    const localProject = !serverId && previewService.projectCwd && cwd
+      && normPath(cwd) === normPath(previewService.projectCwd);
+    const remoteServer = serverId && serverId === previewService.serverId;
+    if ((!localProject && !remoteServer) || S.switchingSession) return;
     const guest = document.querySelector('#pvBody webview');
     if (!guest) return;
     try {
+      // A user may have navigated this browser away from the project's service.
+      if (localProject && new URL(guest.getURL()).origin !== previewService.projectOrigin) return;
       guest.reloadIgnoringCache();
       previewService.status = 'loading';
     } catch { /* The preview may have been detached during navigation. */ }
@@ -379,7 +399,7 @@ async function refreshServers() {
       remove.title = "删除会话"; remove.setAttribute("aria-label", "删除会话 " + conversation.name);
       remove.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>';
       remove.addEventListener("click", () => requestDeleteSession(conversation, row, remove));
-      row.append(button, remove); children.appendChild(row);
+      row.append(button, conversationRenameButton(conversation), remove); children.appendChild(row);
     }
     if (server.id === selected) group.classList.add("current");
     list.appendChild(group);
@@ -471,6 +491,10 @@ function applyState(st) {
   $("#thinkChip").textContent = THINK_LABELS[tl] || tl;
 
   renderStats(st.usage);
+  for (const label of $$('.turn-cost')) {
+    const cost = label.closest('.turn')?.__turnCost;
+    if (cost) { const value = cost.format(st.billingFx); label.textContent = value.text; label.title = value.title; }
+  }
 
   const ready = !!st.ready;
   $("#input").placeholder = ready
@@ -558,9 +582,13 @@ function renderQuotaChip() {
     });
     const tight = parts.reduce((a, b) => (b.remaining < a.remaining ? b : a));
     $("#ctxQuotaBar").style.width = (tight.remaining * 100).toFixed(1) + "%";
-    $("#ctxQuotaText").textContent = parts.map((p) => p.text).join(" · ");
+    const resetLabel = provider === "openai-codex"
+      ? `重置卡 ${Number.isSafeInteger(q.resetCredits) && q.resetCredits >= 0 ? `${q.resetCredits} 次` : "—"}`
+      : "";
+    $("#ctxQuotaText").textContent = [...parts.map((p) => p.text), ...(resetLabel ? [resetLabel] : [])].join(" · ");
     el.classList.toggle("low", tight.remaining < 0.15);
     el.title = `订阅额度 · ${parts.map((p) => p.title).join("，")}（每轮对话后刷新）`;
+    if (resetLabel) el.title += ` · ${resetLabel}${q.resetCredits == null ? "（暂未获取）" : "（剩余可用次数）"}`;
     return;
   }
   // 没有真实额度数据：一律不显示百分比，只提示
@@ -616,7 +644,7 @@ function renderStats(u = {}) {
     `<span title="输出 tokens（累计）">↓ ${fmtTokens(u.output)}</span>` +
     `<span title="缓存读取（累计）">R ${fmtTokens(u.cacheRead)}</span>` +
     `<span title="缓存命中率（缓存读取 / 全部提示 tokens）">CH ${ch}</span>` +
-    `<span title="上下文占用（当前会话 / 模型窗口）">${esc(ctxPart)}</span>`;
+    `<span title="上下文占用（当前会话 / 模型窗口）；压缩后在下一次模型回复前为估算">${st.contextEstimated ? '约 ' : ''}${esc(ctxPart)}</span>`;
 }
 
 const THINK_LABELS = {
@@ -662,13 +690,13 @@ function setStreamingUI(v) {
 function wirePi() {
   // lightweight diagnostics: real-link event tracing (visible via CDP)
   window.__piDebug = { count: 0, types: [], ignored: 0 };
-  window.halo.onPiEvent(({ sessionId, serverId, event, seq }) => {
+  window.halo.onPiEvent(({ sessionId, serverId, cwd, event, seq }) => {
     try {
       window.__piDebug.count++;
       window.__piDebug.types.push(event?.type);
       if (window.__piDebug.types.length > 200) window.__piDebug.types.shift();
     } catch {}
-    refreshCompletedPreview({event, sessionId, serverId});
+    refreshCompletedPreview({event, sessionId, serverId, cwd});
     handlePiEvent(event, sessionId, seq);
   });
   // debug/test hook: inject synthetic events without the main process
@@ -783,8 +811,15 @@ function handlePiEvent(event, sessionId, seq) {
         if (S.queued.steering.length > had) toast("已入队引导消息", "ok");
         break;
       }
-      case "compaction_start": toast("正在压缩上下文…", ""); break;
-      case "compaction_end": toast("上下文已压缩 ✓", "ok"); break;
+      case "compaction_start": if (event.reason !== 'manual') toast("正在压缩上下文…", ""); break;
+      case "compaction_end":
+        if (event.reason !== 'manual' && S.turn && event.result?.usage) {
+          (S.turn.__turnCost ||= new TurnCost()).add({ provider: S.state?.model?.provider,
+            model: S.state?.model?.id, timestamp: Date.now(), usage: event.result.usage, content: 'auto-compaction' });
+        }
+        refreshState();
+        if (event.reason !== 'manual') toast(event.errorMessage || (event.aborted ? '上下文压缩已取消' : '上下文已压缩 ✓'), event.errorMessage ? 'err' : event.aborted ? '' : 'ok');
+        break;
       case "auth_event": onAuthEvent(event); break;
   }
 }
@@ -806,7 +841,7 @@ function ensureTurn() {
   wrap.__toolCount = 0;
   wrap.innerHTML = `
     <div class="turn-status" hidden>
-      <span class="pi-orb" aria-hidden="true"><svg viewBox="0 0 24 24"><circle class="orbit-track" cx="12" cy="12" r="9"/><g class="orbit-outer"><path d="M12 3a9 9 0 0 1 9 9"/><circle cx="21" cy="12" r="1.5"/></g><g class="orbit-inner"><path d="M12 7a5 5 0 0 1 0 10"/></g><circle class="orbit-core" cx="12" cy="12" r="1.5"/></svg></span>
+      <span class="pi-orb" aria-hidden="true"><svg viewBox="0 0 32 32"><circle class="orbit-track" cx="16" cy="16" r="13"/><g class="orbit-outer"><path d="M16 3a13 13 0 0 1 11.26 6.5 M27.26 22.5A13 13 0 0 1 16 29 M4.74 22.5a13 13 0 0 1 0-13"/><circle class="orbit-satellite" cx="16" cy="3" r="1.5"/></g><g class="orbit-inner"><ellipse cx="16" cy="16" rx="9" ry="5.5" transform="rotate(-35 16 16)"/><path d="M16 7a9 9 0 0 1 9 9"/></g><path class="orbit-core" d="M16 9.5 18 14l4.5 2-4.5 2-2 4.5-2-4.5-4.5-2 4.5-2Z"/></svg></span>
       <span class="turn-status-copy">
         <b class="turn-status-text">正在思考…</b>
         <span class="turn-status-meta">刚刚开始</span>
@@ -834,7 +869,7 @@ function compactToolTimeline(turn) {
   const cutoff = tools[tools.length - 1];
   for (const node of Array.from(turn.children)) {
     if (node === cutoff) break;
-    if (node.matches('.tool, .think, .md, .stall-hint')) body.appendChild(node);
+    if (node.matches('.tool, .think, .md, .stall-hint') && !node.querySelector('.video-confirmation')) body.appendChild(node);
   }
   const status = turn.querySelector('.turn-status');
   if (status) archive.querySelector('summary').prepend(status);
@@ -893,6 +928,24 @@ function updateVideoArtifactCard(button, file, turn, cwd) {
   button.setAttribute('aria-label', `预览视频：${file.split(/[\\/]/).pop()}，${model.textContent}，${time}，${cost}`);
 }
 
+function updateImageArtifactCard(button, file, turn, cwd, hash) {
+  if (!button?.classList.contains('artifact-image')) return;
+  const results = [...(turn.__imageResults?.values() || [])];
+  const result = results.find(item => hash && item.sha256 === hash)
+    || results.find(item => (!hash || !item.sha256) && normPath(artifactPath(item.file, cwd) || '') === normPath(file));
+  if (!result) return;
+  const exact = Number.isFinite(result.timing?.totalMs);
+  const duration = exact ? result.timing.totalMs : result.__toolDurationMs;
+  if (!Number.isFinite(duration) || duration < 0) return;
+  let label = button.querySelector('.artifact-image-timing');
+  if (!label) {
+    label = document.createElement('span'); label.className = 'artifact-image-timing';
+    button.querySelector('.artifact-meta').append(label);
+  }
+  label.textContent = `· 生成用时 ${exact ? '' : '约 '}${formatDuration(Math.max(1, Math.round(duration / 1000)))}`;
+  label.title = '从图片生成指令开始执行，到图片返回并保存完成（含请求、生成与下载）';
+}
+
 async function showTurnArtifacts(turn) {
   renderWebsiteCards(turn, openWebsite);
   const request = turn.__artifactRequest = (turn.__artifactRequest || 0) + 1;
@@ -905,10 +958,11 @@ async function showTurnArtifacts(turn) {
   }
   if (!paths.length) { turn.querySelector(':scope > .turn-artifacts')?.remove(); return; }
   // Resolve delivery paths after renames; never advertise vanished intermediate files.
-  const checked=await window.halo.artifactFiles(paths.slice(0,100)).catch(()=>null);
+  const checked=await window.halo.artifactFiles(paths.slice(0,100), {imageHashes:!!turn.__imageResults?.size}).catch(()=>null);
   if (!turn.isConnected || request !== turn.__artifactRequest || switchSeq !== S.sessionSwitchSeq ||
       cwd !== (S.state?.cwd || '') || !checked?.ok) return;
-  paths = [...new Map(checked.data.map(file => [normPath(file), file])).values()];
+  const hashes = new Map(checked.data.filter(item => typeof item === 'object').map(item => [normPath(item.file), item.sha256]));
+  paths = [...new Map(checked.data.map(item => { const file = typeof item === 'string' ? item : item.file; return [normPath(file), file]; })).values()];
   let box = turn.querySelector(':scope > .turn-artifacts');
   if (!paths.length) { box?.remove(); return; }
   box ||= document.createElement('div');
@@ -925,6 +979,7 @@ async function showTurnArtifacts(turn) {
     const previous = existing.get(key);
     if (previous) {
       updateVideoArtifactCard(previous.querySelector('.artifact-video'), file, turn, cwd);
+      updateImageArtifactCard(previous.matches('.artifact-image') ? previous : previous.querySelector('.artifact-image'), file, turn, cwd, hashes.get(key));
       if (box.children[index] !== previous) box.insertBefore(previous, box.children[index] || null);
       index++;
       continue;
@@ -932,6 +987,7 @@ async function showTurnArtifacts(turn) {
     const button=document.createElement('button');
     decorateArtifactCard(button, file, previewURL(file));
     updateVideoArtifactCard(button, file, turn, cwd);
+    updateImageArtifactCard(button, file, turn, cwd, hashes.get(key));
     button.onclick=async()=>{
       document.body.classList.remove('preview-collapsed','focus-mode');
       syncPreviewMotion();
@@ -983,6 +1039,9 @@ function collectArtifactResult(turn, toolName, text, toolDurationMs) {
       }
       return;
     }
+    if (toolName === 'image_generate' && result.file) {
+      (turn.__imageResults ||= new Map()).set(result.file, {...result,__toolDurationMs:toolDurationMs});
+    }
     if (toolName === 'video_generate' && result.task_id && result.model) {
       const records = (turn.__videoResults ||= new Map());
       const key = `${result.provider}:${result.task_id}`;
@@ -1012,7 +1071,7 @@ function finalizeTurn() {
   // 只把最后一段正文视为最终回答；此前的阶段性说明与思考、工具一起收进过程。
   const finalAnswer = $$(".md", turn).at(-1) || null;
   const processNodes = $$(".think, .tool, .stall-hint, .md", turn).filter((node) => node !== finalAnswer);
-  if (processNodes.length) {
+  if (processNodes.length || turn.__outputRate?.average() || turn.__turnCost) {
     const elapsed = turn.__history
       ? (turn.__startedAt > 0 && turn.__endedAt > turn.__startedAt ? Math.max(1, Math.round((turn.__endedAt - turn.__startedAt) / 1000)) : null)
       : Math.max(1, Math.round((Date.now() - (turn.__startedAt || Date.now())) / 1000));
@@ -1023,11 +1082,14 @@ function finalizeTurn() {
     group.className = "process-group";
     group.innerHTML = `
       <summary title="展开执行过程 · ${processNodes.length} 个步骤${errors ? ` · ${errors} 个失败` : ""}">
-        <span class="process-label">${durationLabel}</span>
+        <span class="process-label">${durationLabel}${turn.__outputRate?.average() ? ` · ${turn.__outputRate.average()}` : ''}</span>
+        ${turn.__turnCost ? `<span class="turn-cost" title="${esc(turn.__turnCost.format(S.state?.billingFx).title)}">${esc(turn.__turnCost.format(S.state?.billingFx).text)}</span>` : ''}
         <svg class="process-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>
       </summary>
       <div class="process-body"></div>`;
-    processNodes[0].parentNode.insertBefore(group, processNodes[0]);
+    const anchor = processNodes[0] || finalAnswer;
+    if (anchor) anchor.parentNode.insertBefore(group, anchor);
+    else turn.appendChild(group);
     const body = $(".process-body", group);
     for (const node of processNodes) body.appendChild(node);
   }
@@ -1061,7 +1123,7 @@ function updateTurnStatus() {
   const elapsed = Math.max(0, Math.round((Date.now() - (turn.__startedAt || Date.now())) / 1000));
   const toolCount = turn.__toolCount || 0;
   $(".turn-status-meta", row).textContent =
-    `${elapsed < 2 ? "刚刚开始" : `已运行 ${formatDuration(elapsed)}`}${toolCount ? ` · ${toolCount} 个工具` : ""}`;
+    `${elapsed < 2 ? "刚刚开始" : `已运行 ${formatDuration(elapsed)}`} · ${turn.__outputRate?.live() || '约 0.0 token/s'}${toolCount ? ` · ${toolCount} 个工具` : ""}`;
   const summary = turn.querySelector(":scope > .tool-history > summary");
   const parent = summary || turn;
   if (row.parentElement !== parent || parent.firstElementChild !== row) parent.prepend(row);
@@ -1080,7 +1142,7 @@ function ensureThink() {
   if (S.thinking) return S.thinking;
   const d = document.createElement("details");
   d.className = "think";
-  d.innerHTML = `<summary><span class="diamond">◆</span><span class="think-preview">正在分析下一步…</span><span class="think-label">思考中</span></summary><div class="think-body"></div>`;
+  d.innerHTML = `<summary>${thinkingIcon()}<span class="think-preview">正在分析下一步…</span><span class="think-label">思考中</span></summary><div class="think-body"></div>`;
   ensureTurn().appendChild(d);
   updateTurnStatus();
   d.open = true;
@@ -1137,6 +1199,8 @@ function onMessageStart(msg) {
     return;
   }
   if (!msg || msg.role !== "assistant") return;
+  const turn = ensureTurn();
+  (turn.__outputRate ||= new OutputRate()).start();
   S.assistantText = "";
   S.thinkStreamed = false; // 本条消息是否流式收到过思考 delta（防止单尾重复恢复）
   collapseThink(); // 上一条消息残留的思考阶段收起，不能直接丢弃
@@ -1144,6 +1208,10 @@ function onMessageStart(msg) {
 
 function onMessageUpdate(ev) {
   if (!ev) return;
+  if (['text_delta', 'thinking_delta', 'toolcall_delta'].includes(ev.type)) {
+    const turn = ensureTurn();
+    (turn.__outputRate ||= new OutputRate()).delta(ev.delta);
+  }
   if (ev.type === "text_delta") {
     collapseThink(); // 文本开始输出时把思考折叠为一行
     ensureTextBlock();
@@ -1166,6 +1234,8 @@ function onMessageUpdate(ev) {
 
 function onMessageEnd(msg) {
   if (!msg || msg.role !== "assistant") return;
+  (ensureTurn().__turnCost ||= new TurnCost()).add(msg);
+  S.turn?.__outputRate?.end(msg.usage);
 
   // A1: surface model errors that pi reports on the message itself
   if (msg.stopReason === "error" && msg.errorMessage) {
@@ -1305,17 +1375,14 @@ function onToolStart(ev) {
   card.className = "tool running";
   card.innerHTML = `
     <div class="tool-line" title="${esc(toolName)}">
-      <span class="tool-dot"></span>
+      ${toolIcon(toolName)}
       <span class="tool-name">${esc(toolLabel(toolName))}</span>
       <span class="tool-arg">${esc(trunc(toolDesc(toolName, args), TRUNC_TOOL_ARG))}</span>
       <span class="tool-elapsed"></span>
       <svg class="tool-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>
     </div>
     <div class="tool-out" hidden></div>`;
-  $(".tool-line", card).addEventListener("click", () => {
-    const out = $(".tool-out", card);
-    if (out.dataset.has) out.hidden = !out.hidden;
-  });
+  wireToolDetails(card, args);
   turn.appendChild(card);
   compactToolTimeline(turn);
   updateTurnStatus();
@@ -1335,11 +1402,20 @@ function onToolStart(ev) {
 function onToolUpdate(ev) {
   const rec = S.toolCards.get(ev.toolCallId);
   if (!rec) return;
+  const partialOutput = ev.partialResult || ev.partial || ev.result;
+  const outputText = partialOutput?.content?.filter(c => c.type === 'text').map(c => c.text).join('\n');
+  if (outputText) rec.out.textContent = trunc(outputText, 4000);
   if (rec.toolName === 'video_generate') {
     const partial = ev.partialResult || ev.partial || ev.result;
     const details = partial?.details;
+    if (details?.confirmation) {
+      mountVideoConfirmation(rec.card, details.confirmation);
+      const archive = rec.card.closest('details.tool-history');
+      if (archive) archive.open = true;
+    }
+    else rec.card.querySelector('.video-confirmation')?.remove();
     if (details?.model && details?.provider) {
-      const status = { preparing: '提交中', queued: '排队中', running: '正在生成', succeeded: '正在下载', failed: '生成失败', cancelled: '已取消' }[details.status] || '正在生成';
+      const status = { awaiting_confirmation: '等待确认', preparing: '提交中', queued: '排队中', running: '正在生成', succeeded: '正在下载', failed: '生成失败', cancelled: '已取消' }[details.status] || '正在生成';
       rec.videoProgress = `${details.provider_name || details.provider} · ${details.model} · ${status}`;
       rec.arg.textContent = rec.videoProgress;
       updateTurnStatus();
@@ -1358,6 +1434,7 @@ function onToolEnd(ev) {
 
   if (!rec) return;
   // elapsed + 状态点
+  rec.card.querySelector('.video-confirmation')?.remove();
   const secs = (Date.now() - rec.startedAt) / 1000;
   rec.elapsedEl.textContent = secs >= 0.5 ? (secs < 60 ? `${secs.toFixed(1)}秒` : formatDuration(secs)) : "";
   rec.card.classList.remove("running");
@@ -1371,9 +1448,9 @@ function onToolEnd(ev) {
     collectArtifactResult(turn, rec.toolName, text, secs * 1000);
     // The completed file is deliverable now, even if the assistant continues
     // thinking or running unrelated tools before its final response.
-    if (turn?.isConnected && rec.toolName === 'video_generate') {
+    if (turn?.isConnected && ['video_generate','image_generate'].includes(rec.toolName)) {
       showTurnArtifacts(turn);
-      void loadVideoBalance();
+      if (rec.toolName === 'video_generate') void loadVideoBalance();
       scheduleTreeRefresh();
     }
   }
@@ -1402,7 +1479,7 @@ function onToolEnd(ev) {
   } else {
     out.textContent = text ? trunc(text, 4000) : (isError ? "（无输出）" : "（完成）");
   }
-  if (!isError && AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim()) out.hidden = false;
+  if (!isError && AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim()) setToolDetailsOpen(rec.card, true);
   scrollDown();
 }
 
@@ -1529,11 +1606,47 @@ function handleMentionKey(e) {
   return true;
 }
 
+const compactingSessions = new Set();
+async function compactConversation(instructions) {
+  const sessionId = S.state?.sessionId;
+  if (compactingSessions.has(sessionId)) return toast('上下文正在压缩，请稍候', '');
+  compactingSessions.add(sessionId);
+  const note = document.createElement('div'); note.className = 'extension-notice';
+  note.setAttribute('role', 'status');
+  const label = document.createElement('div'); label.className = 'extension-notice-label'; label.textContent = '压缩上下文';
+  const status = document.createElement('pre'); status.textContent = '正在生成上下文摘要，请稍候…';
+  note.append(label, status); $('#messages').append(note); scrollDown();
+  try {
+    const reply = await window.halo.compact(instructions);
+    if (!reply?.ok || reply.data?.ok === false) throw Error(reply?.error || reply.data?.error || '压缩失败');
+    const result = reply.data || {};
+    status.textContent = '上下文压缩完成' + (Number.isFinite(result.tokensBefore) && Number.isFinite(result.estimatedTokensAfter)
+      ? ` · ${result.tokensBefore.toLocaleString()} → 约 ${result.estimatedTokensAfter.toLocaleString()} tokens` : '')
+      + (result.summary ? '\n\n' + result.summary : '');
+  } catch (error) {
+    const message = String(error?.message || error);
+    status.textContent = /Nothing to compact|session too small/i.test(message) ? '当前上下文较短，无需压缩。'
+      : /Already compacted/i.test(message) ? '当前上下文已压缩，无需重复执行。'
+      : /cancelled|AbortError/i.test(message) ? '上下文压缩已取消。'
+      : '压缩失败：' + message;
+    if (note.isConnected) toast(status.textContent, 'err');
+  } finally {
+    compactingSessions.delete(sessionId);
+    // Also refresh when the SDK reports "Already compacted" (e.g. after auto compaction).
+    if (S.state?.sessionId === sessionId) {
+      try {
+        const state = await window.halo.getState();
+        if (state?.ok && S.state?.sessionId === sessionId && state.data?.sessionId === sessionId) applyState(state.data);
+      } catch {}
+    }
+  }
+}
 async function send(queueMode = "steer") {
   const input = $("#input");
   const text = input.value.trim();
   if (!text && S.images.length === 0) return;
   if (S.switchingSession) return toast("正在切换会话，请稍候再发送", "");
+  if (compactingSessions.has(S.state?.sessionId)) return toast('上下文正在压缩，请完成后再发送', '');
 
   const queued = S.streaming;
   if (queued) {
@@ -1550,9 +1663,8 @@ async function send(queueMode = "steer") {
   if (lc === "/thinking") { input.value = ""; return openModal("thinkModal"); }
   if (lc === "/compact" || lc.startsWith("/compact ")) {
     input.value = "";
-    toast("压缩上下文中…");
-    const r = await window.halo.compact(text.slice(8).trim() || undefined);
-    if (r?.ok) toast("上下文已压缩 ✓", "ok");
+    closeMentions(); autoGrow();
+    await compactConversation(text.slice(8).trim() || undefined);
     return;
   }
   if (lc === "/help") { input.value = ""; return openModal("helpModal"); }
@@ -1652,7 +1764,7 @@ async function restoreHistory(viewOverride) {
           m.timestamp && rec.startedAt ? new Date(m.timestamp) - rec.startedAt : undefined);
         rec.out.dataset.has = "1";
         rec.out.textContent = text ? trunc(text, 4000) : (m.isError ? "（无输出）" : "（完成）");
-        if (!m.isError && AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim()) rec.out.hidden = false;
+        if (!m.isError && AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim()) setToolDetailsOpen(rec.card, true);
         rec.card.classList.remove("running");
         rec.card.classList.add(m.isError ? "error" : "done");
         if (m.timestamp && rec.startedAt) {
@@ -1665,6 +1777,7 @@ async function restoreHistory(viewOverride) {
     if (m.role !== "assistant") return;
     const turn = ensureTurn();
     turn.__history = true;
+    if (!m.__partial) (turn.__turnCost ||= new TurnCost()).add(m);
     turn.__startedAt = turnStart;
     turn.__endedAt = savedTiming?.end || timestamp;
     turn.__estimated = !savedTiming;
@@ -1674,7 +1787,7 @@ async function restoreHistory(viewOverride) {
         // 与实时渲染一致：折叠的思考块，点开看全文
         const d = document.createElement("details");
         d.className = "think";
-        d.innerHTML = `<summary><span class="diamond">◆</span><span class="think-preview"></span><span class="think-label">思考</span></summary><div class="think-body"></div>`;
+        d.innerHTML = `<summary>${thinkingIcon()}<span class="think-preview"></span><span class="think-label">思考</span></summary><div class="think-body"></div>`;
         turn.appendChild(d);
         $(".think-body", d).innerHTML = rich(c.thinking);
         $(".think-preview", d).textContent = thinkPreviewText(c.thinking);
@@ -1688,7 +1801,7 @@ async function restoreHistory(viewOverride) {
         card.className = "tool running";
         card.innerHTML = `
           <div class="tool-line" title="${esc(c.name)}">
-            <span class="tool-dot"></span>
+            ${toolIcon(c.name)}
             <span class="tool-name">${esc(toolLabel(c.name))}</span>
             <span class="tool-arg">${esc(trunc(toolDesc(c.name, c.arguments), TRUNC_TOOL_ARG))}</span>
             <span class="tool-elapsed"></span>
@@ -1696,7 +1809,7 @@ async function restoreHistory(viewOverride) {
           </div>
           <div class="tool-out" hidden></div>`;
         const out = $(".tool-out", card);
-        $(".tool-line", card).addEventListener("click", () => { if (out.dataset.has) out.hidden = !out.hidden; });
+        wireToolDetails(card, c.arguments);
         turn.appendChild(card);
         toolCards.set(c.id, { card, out, arg: $(".tool-arg", card), elapsedEl: $(".tool-elapsed", card), toolName: c.name, startedAt: m.timestamp ? new Date(m.timestamp).getTime() : 0 });
       } else if (c.type === "text") {
@@ -1753,6 +1866,21 @@ async function restoreHistory(viewOverride) {
   // 同步插入已完成（期间无帧绘制），此刻移除才不会触发入场动画
   $("#messages").classList.remove("restoring");
   scrollDown(true);
+  if (live && window.halo.videoConfirmations) {
+    const pending = await window.halo.videoConfirmations().catch(() => null);
+    if (switchSeq !== S.sessionSwitchSeq) return;
+    for (const request of pending?.ok ? pending.data : []) {
+      const rec = S.toolCards.get(request.callId);
+      if (rec?.toolName === 'video_generate' && rec.card.classList.contains('running') && normPath(request.cwd) === normPath(S.state?.cwd || '')) {
+        mountVideoConfirmation(rec.card, request);
+        const archive = rec.card.closest('details.tool-history');
+        if (archive) archive.open = true;
+        rec.videoProgress = `${request.providerName} · ${request.model} · 等待确认`;
+        rec.arg.textContent = rec.videoProgress;
+        updateTurnStatus();
+      }
+    }
+  }
 }
 
 /* ============================================================
@@ -1869,16 +1997,20 @@ async function restoreWorkspace() {
 
 async function openSession(file) {
   const seq = ++S.sessionSwitchSeq;
+  const previousCwd = S.state?.cwd;
   S.switchingSession = true;
   clearChat();
   try {
     const r = await window.halo.openSession(file);
     if (seq !== S.sessionSwitchSeq) return;
-    clearChat();
+    if (!r?.ok) throw Error(r?.error || '打开对话失败');
+    const projectChanged = normPath(previousCwd || '') !== normPath(r.data?.cwd || '');
+    if (projectChanged) await applyProjectReset();
+    else clearChat();
     if (r?.data) applyState(r.data); // 清理旧视图后再同步焦点流状态，运行中的会话仍显示“中止”
     await restoreHistory();
     if (seq !== S.sessionSwitchSeq) return;
-    loadSessions();
+    await Promise.all([loadSessions(), ...(projectChanged ? [loadTree(true), loadResources()] : [])]);
   } catch (e) {
     if (seq === S.sessionSwitchSeq) toast(`打开失败：${e?.message || e}`, "err");
   } finally {
@@ -2165,7 +2297,7 @@ function wireUI() {
     button.setAttribute("aria-expanded", String(!collapsed));
     $("#center").inert = collapsed;
     $("#btnFocus").title = "专注模式 · 对话全屏（隐藏侧栏与工作区）";
-  }));
+  }, { previewFold: true }));
   $("#btnFocus").addEventListener("click", () => applyPreviewLayout(() => {
     const on = document.body.classList.toggle("focus-mode");
     $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
@@ -2709,8 +2841,7 @@ async function attachImages() {
     ...i,
     mediaType: normImageMime(i.mediaType) || sniffImageMime(i.data) || "image/png",
   }));
-  S.images.push(...imgs);
-  renderAttachments();
+  for (const img of imgs) await attachPrepared(img);
   if (d.skipped?.length) toast(`已跳过超大图片：${d.skipped.join("、")}（单张上限 25MB）`, "err");
 }
 
@@ -2729,20 +2860,32 @@ function addImageFile(file) {
 
 /* 入队前准备：超大图自动压缩（限制最大边长 + 转 JPEG），避免多图历史撑爆请求体 */
 async function attachPrepared(img) {
+  const enqueue = prepared => {
+    // Check at insertion time as compression of two rapid pastes can overlap.
+    // Names are deliberately ignored: clipboard images commonly share image.png.
+    if (S.images.some(existing => existing.data === prepared.data)) {
+      toast("已跳过重复图片", "");
+      return false;
+    }
+    S.images.push(prepared);
+    renderAttachments();
+    return true;
+  };
+  if (S.images.some(existing => existing.data === img.data)) {
+    toast("已跳过重复图片", "");
+    return;
+  }
   try {
     const bytes = Math.floor((img.data.length * 3) / 4);
     if (bytes > IMG_DOWNSCALE.maxBytes) {
       const small = await downscaleImage(img.data, img.mediaType, IMG_DOWNSCALE.maxEdge, IMG_DOWNSCALE.quality);
       if (small && small.data.length < img.data.length) {
-        S.images.push({ name: img.name.replace(/\.png$/i, ".jpg"), mediaType: small.mediaType, data: small.data });
-        renderAttachments();
-        toast("大图已自动压缩", "ok");
+        if (enqueue({ name: img.name.replace(/\.png$/i, ".jpg"), mediaType: small.mediaType, data: small.data })) toast("大图已自动压缩", "ok");
         return;
       }
     }
   } catch {}
-  S.images.push(img);
-  renderAttachments();
+  enqueue(img);
 }
 
 function downscaleImage(b64, srcMime, maxSide, quality) {
@@ -2942,14 +3085,14 @@ async function loadProjects() {
       if (normPath(session.file) === normPath(S.state?.sessionFile)) button.classList.add("active");
       if (session.running) { const dot = document.createElement("i"); dot.className = "server-running-dot"; button.prepend(dot); }
       button.addEventListener("click", async () => {
-        if (!p.active) { await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
         await openSession(session.file); loadProjects();
       });
       const remove = document.createElement("button"); remove.className = "project-conversation-remove server-conversation-delete"; remove.title = "删除会话"; remove.setAttribute("aria-label", "删除会话 " + (session.name || "新会话"));
       remove.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>';
       remove.addEventListener("click", () => requestDeleteSession(session, row, remove));
-      row.append(button, remove); children.appendChild(row);
+      row.append(button, conversationRenameButton(session), remove); children.appendChild(row);
     }
+    projectRunnerUI.mount(group, p);
     box.appendChild(group);
   }
 }
@@ -3001,6 +3144,35 @@ async function switchProject(cwd) {
    modals / toast / misc
    ============================================================ */
 const modalMotion = createModalMotion({ syncPreview: syncPreviewMotion });
+let renameTarget = null;
+function conversationRenameButton(conversation) {
+  const button = document.createElement('button');
+  button.className = 'server-conversation-rename server-conversation-delete';
+  button.title = '重命名对话';
+  button.setAttribute('aria-label', '重命名对话 ' + (conversation.name || '新会话'));
+  button.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="m15 5 4 4M4 20l4-1L20 7l-4-4L4 15Z"/></svg>';
+  button.addEventListener('click', () => {
+    renameTarget = conversation.file;
+    $('#conversationName').value = conversation.name || '';
+    $('#conversationRenameError').textContent = '';
+    openModal('conversationRenameModal');
+    $('#conversationName').focus(); $('#conversationName').select();
+  });
+  return button;
+}
+$('#conversationRenameForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const save = $('#conversationRenameSave'), file = renameTarget;
+  if (save.disabled) return;
+  save.disabled = true;
+  try {
+    const result = await window.halo.renameSession(file, $('#conversationName').value);
+    if (!result?.ok) throw Error(result?.error || '重命名失败');
+    closeModal($('#conversationRenameModal'));
+    await Promise.all([refreshServers(), loadProjects(), loadSessions()]);
+  } catch (error) { $('#conversationRenameError').textContent = error.message; }
+  finally { save.disabled = false; }
+});
 function openModal(id) {
   const m = document.getElementById(id);
   modalMotion.open(m);
@@ -3681,7 +3853,7 @@ function renderInstalled() {
     return;
   }
   const q = (S.pkgQuery || "").toLowerCase();
-  const rows = list.map((p, i) => ({ p, i })).filter(({ p }) => !q || (p.raw || "").toLowerCase().includes(q));
+  const rows = list.map((p, i) => ({ p, i })).filter(({ p }) => !q || (p.raw || "").replace(/^npm:/, "").toLowerCase().includes(q));
   if (!rows.length) {
     box.innerHTML = `<div class="pkg-empty">没有匹配“${esc(S.pkgQuery)}”的已安装包</div>`;
     return;
@@ -3728,14 +3900,17 @@ async function updateAllPkgs() {
   if (S.pkgLoaded) loadMarket(1);
 }
 const PAGE_SIZE = 20;
+let marketRequest = 0;
 async function loadMarket(page) {
   if (S.pkgType === "installed") return; // 已安装 tab 不需要市场数据（切回时 syncPkgTab 会重新加载）
   if (page) S.pkgPage = page;
   S.pkgPage = S.pkgPage || 1;
+  const request = ++marketRequest, query = S.pkgQuery, type = S.pkgType;
   const box = $("#pkgMarket");
   box.innerHTML = `<div class="pkg-empty">加载中…</div>`;
   const typeParam = ["extension", "skill", "theme", "prompt"].includes(S.pkgType) ? S.pkgType : "";
   const r = await window.halo.pkgSearch({ query: S.pkgQuery || "", from: (S.pkgPage - 1) * PAGE_SIZE, size: PAGE_SIZE, type: typeParam });
+  if (request !== marketRequest || query !== S.pkgQuery || type !== S.pkgType) return;
   if (!r?.ok) {
     box.innerHTML = `<div class="pkg-empty">加载失败：${esc(r?.error || "")}</div>`;
     renderPager();
