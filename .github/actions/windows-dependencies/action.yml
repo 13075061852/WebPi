@@ -1,0 +1,29 @@
+name: Cached Windows dependencies
+description: Restore exact Node/native dependencies; skip installation only on an exact cache hit.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+        cache: npm
+    - id: key
+      shell: pwsh
+      run: node scripts/dependency-cache-key.mjs
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/AppData/Local/electron/Cache
+          ~/AppData/Local/electron-builder/Cache
+        key: builder-windows-2025-${{ steps.key.outputs.key }}
+        restore-keys: builder-windows-2025-
+    - id: dependencies
+      uses: actions/cache@v4
+      with:
+        path: node_modules
+        key: windows-2025-${{ steps.key.outputs.key }}
+    - if: steps.dependencies.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: npm ci --prefer-offline --no-audit --no-fund
+    - shell: pwsh
+      run: node -e "require('electron/package.json');require('node-pty');require('@napi-rs/canvas');console.log('Dependency cache smoke check passed')"

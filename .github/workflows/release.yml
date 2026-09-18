@@ -16,18 +16,14 @@ concurrency:
   group: windows-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 jobs:
-  release:
-    runs-on: windows-latest
+  build:
+    runs-on: windows-2025
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
       - name: Validate release version
         run: |
           node -e "if(process.env.RELEASE_TAG !== 'v'+require('./package.json').version) throw Error('Tag must match package.json version')"
@@ -36,7 +32,7 @@ jobs:
           # remain identical to the existing tag. Never move a release tag.
           git diff --exit-code $env:RELEASE_TAG HEAD -- src assets package.json package-lock.json build
           if ($LASTEXITCODE -ne 0) { throw 'Shipped inputs differ from the release tag' }
-      - run: npm ci
+      - uses: ./.github/actions/windows-dependencies
       - name: Provide a verified Chinese TrueType font
         run: |
           $ErrorActionPreference = 'Stop'
@@ -98,38 +94,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node test/e2e/e2e-packaged-proxy.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Upload all verified files to one draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $tag = $env:RELEASE_TAG
-          $report = Get-Content -LiteralPath 'test/results/release-artifacts.json' -Raw | ConvertFrom-Json
-          if ($tag -ne "v$($report.version)") { throw 'Verified source version differs from the release tag' }
-          $pagesJson = gh api --paginate --slurp "repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect existing releases' }
-          $pages = ($pagesJson -join [Environment]::NewLine) | ConvertFrom-Json
-          $matching = @($pages | ForEach-Object { $_ } | Where-Object { $_.tag_name -eq $tag })
-          if ($matching.Count -gt 1) { throw 'Duplicate releases exist for this tag; resolve them before uploading' }
-          if ($matching.Count -eq 1 -and -not $matching[0].draft) { throw 'This tag is already published; use a new version for changed installer bytes' }
-          if ($matching.Count -eq 0) {
-            gh release create $tag --draft --verify-tag --title "Pi Halo $($report.version)" --notes 'Windows 安装包已通过自动校验，等待最终发布。'
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot create draft release' }
-          }
-          $assets = @($report.assets | ForEach-Object { Join-Path 'dist' $_ })
-          if ($assets.Count -ne 3) { throw 'Expected the verified EXE, blockmap, and latest.yml' }
-          gh release upload $tag @assets --clobber
-          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
-          $uploadedJson = gh release view $tag --json tagName,isDraft,assets
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the draft release after upload' }
-          $uploaded = ($uploadedJson -join [Environment]::NewLine) | ConvertFrom-Json
-          if (-not $uploaded.isDraft -or $uploaded.tagName -ne $tag) { throw 'Upload destination changed unexpectedly' }
-          foreach ($name in $report.assets) {
-            $remote = @($uploaded.assets | Where-Object { $_.name -eq $name })
-            $local = Get-Item -LiteralPath (Join-Path 'dist' $name)
-            if ($remote.Count -ne 1 -or $remote[0].size -ne $local.Length) { throw "Uploaded asset is missing or incomplete: $name" }
-          }
-          Write-Output "Verified all three assets in draft $tag"
+      - name: Retain verified installer for upload-only retries
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-verified-installer
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+            test/results/release-artifacts.json
       - name: Retain verification evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -137,3 +113,17 @@ jobs:
           name: windows-release-verification
           path: test/results/
           if-no-files-found: ignore
+  upload:
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-verified-installer
+      - name: Verify hashes and upload draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/upload-release.ps1

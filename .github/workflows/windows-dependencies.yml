@@ -1,0 +1,23 @@
+name: Warm Windows dependencies
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - package-lock.json
+      - .github/actions/windows-dependencies/**
+      - .github/workflows/windows-dependencies.yml
+      - scripts/dependency-cache-key.mjs
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-dependencies-main
+  cancel-in-progress: false
+jobs:
+  warm:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/windows-dependencies

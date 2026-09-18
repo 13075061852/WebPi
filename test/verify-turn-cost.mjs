@@ -19,7 +19,9 @@ const partial = new TurnCost(); partial.add({...msg,__partial:true}); assert.equ
 const old = new TurnCost(); old.add({...msg,timestamp:Date.parse('2026-05-01')});
 assert.equal(old.format({rate:7,date:'2026-09-18'}).text,'约 ¥693.0000','Historical calls must not use current native tariff');
 const fetchOriginal=globalThis.fetch;
+const offline=process.env.PI_OFFLINE;
 try {
+  delete process.env.PI_OFFLINE; // All requests below are intercepted by this fixture.
   let calls=0; globalThis.fetch=async()=>{calls++;return {ok:true,json:async()=>({date:'2026-09-18',rates:{CNY:7}})};};
   const store={data:{},set(key,value){this.data[key]=value;}};
   assert.equal((await refreshBillingFx(store)).rate,7);
@@ -27,5 +29,5 @@ try {
   store.data.billingFx.fetchedAt=0;
   globalThis.fetch=async()=>{throw Error('offline');};
   assert.equal((await refreshBillingFx(store)).rate,7);
-} finally {globalThis.fetch=fetchOriginal;}
+} finally {globalThis.fetch=fetchOriginal;if(offline===undefined)delete process.env.PI_OFFLINE;else process.env.PI_OFFLINE=offline;}
 console.log('PASS per-turn costs: dedup, peak/off-peak, mixed currencies, subscription, unknown, historical pricing, cached FX');
