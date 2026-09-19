@@ -119,15 +119,27 @@ export function initVideoSettings({ root = document, api = window.halo, onSaved 
       const button = form.ownerDocument.createElement('button');
       button.type = 'button'; button.className = 'model-provider'; button.dataset.provider = spec.id; button.title = spec.name;
       const name = form.ownerDocument.createElement('span');
+      name.className = 'video-provider-name';
       name.textContent = PROVIDER_LABELS[spec.id] || spec.name;
       button.appendChild(name);
+      const badges = form.ownerDocument.createElement('div');
+      badges.className = 'video-provider-badges';
+      const configured = !!savedFor(spec.id).hasApiKey;
+      button.classList.toggle('is-configured', configured);
+      button.title = `${spec.name} · ${configured ? '已配置' : '未配置'}`;
+      if (configured) {
+        const badge = form.ownerDocument.createElement('span');
+        badge.className = 'video-configured-badge'; badge.textContent = '已配置';
+        badges.appendChild(badge);
+      }
       if (spec.id === state.provider) {
         button.classList.add('is-default');
-        button.title = `${spec.name} · 默认模型：${state.defaultModel}`;
+        button.title += ` · 默认模型：${state.defaultModel}`;
         const badge = form.ownerDocument.createElement('span');
         badge.className = 'video-default-badge'; badge.textContent = '默认';
-        button.appendChild(badge);
+        badges.appendChild(badge);
       }
+      if (badges.childElementCount) button.appendChild(badges);
       return button;
     }));
   }

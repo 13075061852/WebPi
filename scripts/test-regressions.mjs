@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tests = [
   'verify-release-workflow',
+  'verify-release-history',
   'verify-app-updates', 'verify-image-generation', 'verify-image-card-timing',
   'verify-turn-cost',
   'verify-context-rate', 'verify-compaction-feedback',

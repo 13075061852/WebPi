@@ -1,0 +1,55 @@
+/* Shared scenic palettes for the workspace and launch window. */
+:root[data-wallpaper="nebula"] {
+  --wallpaper: url('../../../assets/themes/nebula.png'); --veil: rgba(7,12,30,calc(.24 * var(--wallpaper-cover, .65)));
+  --bg0: #0c1327; --bg1: rgba(15,23,46,calc(.78 * var(--wallpaper-cover, .65))); --panel: #18223c; --panel-2: rgba(37,49,79,calc(.78 * var(--wallpaper-cover, .65)));
+  --txt: #edf0ff; --txt-dim: #b5c0df; --txt-faint: #929fc3; --acc: #c2b6ff; --acc-ink: #16112c;
+  --hair: #bdcaff24; --hair-2: #bdcaff45; --ok: #83d4bf;
+}
+:root[data-wallpaper="mist"] {
+  --wallpaper: url('../../../assets/themes/mist.png'); --veil: rgba(232,245,239,calc(.12 * var(--wallpaper-cover, .65)));
+  --bg0: #e4efe9; --bg1: rgba(234,244,239,calc(.80 * var(--wallpaper-cover, .65))); --panel: #f5faf7; --panel-2: rgba(255,255,255,calc(.78 * var(--wallpaper-cover, .65)));
+  --txt: #18372e; --txt-dim: #43675b; --txt-faint: #5e7d71; --acc: #286a58; --acc-ink: #ffffff;
+  --hair: #224d3922; --hair-2: #224d3944; --ok: #23755b;
+}
+:root[data-wallpaper="dunes"] {
+  --wallpaper: url('../../../assets/themes/dunes.png'); --veil: rgba(255,235,210,calc(.14 * var(--wallpaper-cover, .65)));
+  --bg0: #f3e6d7; --bg1: rgba(250,238,221,calc(.83 * var(--wallpaper-cover, .65))); --panel: #fff7ec; --panel-2: rgba(255,248,235,calc(.82 * var(--wallpaper-cover, .65)));
+  --txt: #422e25; --txt-dim: #795543; --txt-faint: #956b53; --acc: #a85d3b; --acc-ink: #fffaf3;
+  --hair: #6f452823; --hair-2: #6f452846; --ok: #58774b;
+}
+:root[data-wallpaper="blueprint"] {
+  --wallpaper: url('../../../assets/themes/blueprint.png'); --veil: rgba(5,19,30,calc(.22 * var(--wallpaper-cover, .65)));
+  --bg0: #101d2b; --bg1: rgba(13,30,44,calc(.82 * var(--wallpaper-cover, .65))); --panel: #152c3c; --panel-2: rgba(32,55,70,calc(.83 * var(--wallpaper-cover, .65)));
+  --txt: #e6f5ff; --txt-dim: #afc9db; --txt-faint: #90abbc; --acc: #83d5eb; --acc-ink: #102631;
+  --hair: #a5d5ed26; --hair-2: #a5d5ed48; --ok: #83ceb4;
+}
+:root[data-wallpaper="executive"] {
+  --wallpaper: url('../../../assets/themes/executive.png'); --veil: rgba(10,15,24,calc(.28 * var(--wallpaper-cover, .65)));
+  --bg0: #151c28; --bg1: rgba(22,30,43,calc(.84 * var(--wallpaper-cover, .65))); --panel: #202b3b; --panel-2: rgba(40,49,65,calc(.85 * var(--wallpaper-cover, .65)));
+  --txt: #f3f0e8; --txt-dim: #c6c4be; --txt-faint: #a5a79f; --acc: #d7ba80; --acc-ink: #231e14;
+  --hair: #d7c89d25; --hair-2: #d7c89d48; --ok: #91bca0;
+}
+:root[data-wallpaper="scholar"] {
+  --wallpaper: url('../../../assets/themes/scholar.png'); --veil: rgba(250,244,229,calc(.12 * var(--wallpaper-cover, .65)));
+  --bg0: #eee9dc; --bg1: rgba(248,244,233,calc(.82 * var(--wallpaper-cover, .65))); --panel: #fffdf5; --panel-2: rgba(255,253,245,calc(.83 * var(--wallpaper-cover, .65)));
+  --txt: #353b2d; --txt-dim: #616851; --txt-faint: #7b7c65; --acc: #59674b; --acc-ink: #fffef5;
+  --hair: #454c3224; --hair-2: #454c3248; --ok: #4c7753;
+}
+:root[data-wallpaper="studio"] {
+  --wallpaper: url('../../../assets/themes/studio.png'); --veil: rgba(250,240,252,calc(.12 * var(--wallpaper-cover, .65)));
+  --bg0: #efe9f6; --bg1: rgba(248,241,251,calc(.82 * var(--wallpaper-cover, .65))); --panel: #fefbff; --panel-2: rgba(255,250,255,calc(.84 * var(--wallpaper-cover, .65)));
+  --txt: #382d49; --txt-dim: #6b5a7e; --txt-faint: #85708f; --acc: #8560ac; --acc-ink: #fff;
+  --hair: #674d8524; --hair-2: #674d8548; --ok: #447f70;
+}
+:root[data-wallpaper="garden"] {
+  --wallpaper: url('../../../assets/themes/garden.png'); --veil: rgba(255,246,235,calc(.12 * var(--wallpaper-cover, .65)));
+  --bg0: #f7eee6; --bg1: rgba(255,246,239,calc(.90 * var(--wallpaper-cover, .65))); --panel: #fffaf6; --panel-2: rgba(255,251,247,calc(.92 * var(--wallpaper-cover, .65)));
+  --txt: #493b36; --txt-dim: #766057; --txt-faint: #8b7065; --acc: #ac657a; --acc-ink: #fff;
+  --hair: #966c5928; --hair-2: #966c5948; --ok: #587d53;
+}
+:root[data-wallpaper="spacepig"] {
+  --wallpaper: url('../../../assets/themes/spacepig.png'); --veil: rgba(8,10,28,calc(.26 * var(--wallpaper-cover, .65)));
+  --bg0: #0e1026; --bg1: rgba(19,20,48,calc(.84 * var(--wallpaper-cover, .65))); --panel: #1d1e42; --panel-2: rgba(45,43,86,calc(.85 * var(--wallpaper-cover, .65)));
+  --txt: #f2eeff; --txt-dim: #c3bce0; --txt-faint: #a09abb; --acc: #c9a5ff; --acc-ink: #1b1132;
+  --hair: #c1aaff26; --hair-2: #c1aaff4a; --ok: #7fd2c0;
+}

@@ -11,6 +11,7 @@
 <script src="vendor/xterm.js"></script>
 <script src="vendor/addon-fit.js"></script>
 <script src="js/markdown.js"></script>
+<link rel="stylesheet" href="css/theme-scenic.css">
 <link rel="stylesheet" href="css/theme-collection.css">
 </head>
 <body>
@@ -305,6 +306,10 @@
         <svg viewBox="0 0 24 24" class="ic"><path d="M4 20h16M7 20v-6M12 20V8M17 20v-9"/></svg>
         用量统计
       </button>
+      <button class="set-nav" data-pane="history">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M3 11a9 9 0 1 1 2.5 7M3 4v7h7M12 7v5l3 2"/></svg>
+        历史版本
+      </button>
     </div>
     <div class="set-main">
       <div id="setPane-pkgs" class="set-pane active"><div class="settings-title"><h3>插件技能</h3></div>
@@ -368,7 +373,7 @@
         </div>
       </div>
       <div class="set-pane" id="setPane-environment">
-        <div class="settings-title environment-title"><h3>环境配置</h3><button type="button" id="environmentRefresh" class="mini-btn">重新检测</button></div>
+        <div class="settings-title environment-title"><h3>环境配置</h3></div>
         <div class="set-body environment-body">
           <div id="environmentTools" class="environment-tools" aria-label="本地开发工具"></div>
           <section id="githubSettings" class="github-settings">
@@ -383,6 +388,7 @@
           </section>
           <div class="environment-install">
             <!-- Environment actions stay below all tool and authorization cards. -->
+            <button type="button" id="environmentRefresh" class="mini-btn">重新检测</button>
             <button type="button" id="environmentRepair" class="mini-btn">AI 修复</button>
             <button id="environmentRepairStop" type="button" class="mini-btn" hidden>停止修复</button>
             <button type="button" id="environmentInstall" class="mini-btn accent" disabled>一键配置环境</button>
@@ -411,10 +417,25 @@
           <div id="usageContent"><div class="set-soon">正在统计…</div></div>
         </div>
       </div>
-      <div class="set-pane" id="setPane-login"><div class="settings-title"><h3>模型登录</h3><button id="settingsAuth" class="mini-btn">管理登录账号 ↗</button></div>
+      <div class="set-pane" id="setPane-history">
+        <div class="settings-title"><h3>历史版本</h3><button id="releaseHistoryRefresh" class="mini-btn">刷新记录</button></div>
+        <div class="set-body">
+          <button id="releaseRepository" class="release-repository" type="button">
+            <svg viewBox="0 0 24 24" class="ic"><path d="m8 5-6 7 6 7m8-14 6 7-6 7m-3-16-2 18"/></svg>
+            <span><b>GitHub 开源仓库</b><small>github.com/13075061852/WebPi</small></span>
+            <svg viewBox="0 0 24 24" class="ic"><path d="M7 17 17 7M7 7h10v10"/></svg>
+          </button>
+          <div class="release-history-meta"><span id="releaseCurrentVersion"></span><span id="releaseHistoryStatus" role="status"></span></div>
+          <div class="release-history-layout">
+            <nav id="releaseHistoryNav" aria-label="历史版本导航"></nav>
+            <div id="releaseHistoryList" tabindex="0" aria-label="版本更新说明"></div>
+          </div>
+        </div>
+      </div>
+      <div class="set-pane" id="setPane-login"><div class="settings-title"><h3>模型登录</h3></div>
         <div class="set-body">
           <div class="set-sec">
-            <div id="defModelList" class="pkg-list"></div>
+            <div id="defModelList" class="pkg-list"><button id="settingsAuth" class="mini-btn">管理登录账号 ↗</button></div>
           </div>
         </div>
       </div>

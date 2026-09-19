@@ -34,3 +34,41 @@ footer > div { flex: 1; min-width: 0; }
 @keyframes draw { from { stroke-dashoffset: 120; } to { stroke-dashoffset: 0; } }
 @keyframes pulse { 0%,100% { opacity: .2; } 50% { opacity: .8; } }
 @media (prefers-reduced-motion: reduce) { *, #stage { animation: none !important; transition-duration: 1ms !important; } }
+/* Theme color is restored before paint; the launch card shares the workspace palette. */
+:root {
+ --surface: var(--bg0, #15182e); --ink: var(--txt, #f0efff);
+ --muted: color-mix(in srgb, var(--ink) 72%, var(--surface));
+ --line: color-mix(in srgb, var(--ink) 16%, transparent);
+ --glow: var(--acc, #a99cf5); --glow-secondary: #579bc4;
+}
+:root[data-theme="light"] {
+ --surface: var(--bg0, #eef0fa); --ink: var(--txt, #303956);
+ --muted: color-mix(in srgb, var(--ink) 75%, var(--surface));
+ --line: color-mix(in srgb, var(--ink) 16%, transparent);
+ --glow: var(--acc, #8573c3); --glow-secondary: #77b5ad;
+}
+#stage { isolation: isolate; background: var(--surface); }
+#stage::before {
+ content: ""; position: absolute; inset: 0; z-index: -2;
+ background: radial-gradient(ellipse at 12% 0%, color-mix(in srgb, var(--glow) 38%, transparent), transparent 68%),
+ radial-gradient(ellipse at 100% 80%, color-mix(in srgb, var(--glow-secondary) 26%, transparent), transparent 65%), var(--surface);
+}
+:root[data-wallpaper]:not([data-wallpaper=""]) #stage::before {
+ background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 48%, transparent), color-mix(in srgb, var(--surface) 70%, transparent) 68%, var(--surface)), var(--wallpaper) center / cover no-repeat;
+}
+#stage::after {
+ content: ""; position: absolute; z-index: -1; width: 260px; height: 260px; left: 118px; top: -16px;
+ background: radial-gradient(circle, color-mix(in srgb, var(--glow) 25%, transparent), transparent 68%);
+ animation: halo-breathe 6s ease-in-out infinite; pointer-events: none;
+}
+.emblem { filter: drop-shadow(0 0 14px color-mix(in srgb, var(--glow) 40%, transparent)); }
+.orbit { stroke: color-mix(in srgb, var(--glow) 65%, var(--ink)); }
+.satellite { fill: var(--ink); }
+.track { opacity: .2; }
+.inner { opacity: .24; }
+.loading { width: 24px; height: 3px; overflow: hidden; border-radius: 2px; background: color-mix(in srgb, var(--ink) 15%, transparent); }
+.loading i { display: none; }
+.loading::after { content: ""; width: 16px; height: 3px; flex: none; border-radius: inherit; background: linear-gradient(90deg, transparent, var(--glow), var(--ink)); animation: loading-sweep 1.8s ease-in-out infinite; }
+@keyframes halo-breathe { 50% { opacity: .55; transform: scale(1.15) translateY(6px); } }
+@keyframes loading-sweep { from { transform: translateX(-16px); } to { transform: translateX(24px); } }
+@media (prefers-reduced-motion: reduce) { #stage::after, .loading::after { animation: none; } }

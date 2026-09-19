@@ -2,6 +2,7 @@ import { searchPackageNames } from './package-name-search.mjs';
 import { isTrustedUIURL } from "./trusted-ui-url.mjs";
 import electronUpdater from 'electron-updater';
 import { createAppUpdates } from './app-updates.mjs';
+import { createReleaseHistory } from './release-history.mjs';
 import { createStartupLifecycle } from './startup-lifecycle.mjs';
 import { inspectPreview } from "./preview-inspection.mjs";
 import { createPreviewControl } from './preview-control.mjs';
@@ -485,6 +486,8 @@ function bootstrap() {
     emit:state => emit('halo:app-update', state)});
   handle('halo:check-app-update', () => updates.check(true));
   handle('halo:app-update-state', () => updates.getState());
+  const releaseHistory = createReleaseHistory({ offline: process.env.PI_OFFLINE === '1' });
+  handle('halo:release-history', () => releaseHistory());
   handle('halo:download-app-update', () => updates.download());
   if (app.isPackaged && process.env.PI_OFFLINE !== '1') {
     const firstCheck = setTimeout(() => void updates.check(), 3000);

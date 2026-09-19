@@ -1,5 +1,6 @@
 import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
 import { initAppUpdates } from './app-updates.mjs';
+import { initReleaseHistory } from './release-history.mjs';
 import { initStartupProgress } from './startup.mjs';
 import { createLayoutMotion } from './layout-motion.mjs';
 import { createModalMotion } from './modal-motion.mjs';
@@ -95,6 +96,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireUI();
   initSidebarHeight();
   initAppUpdates();
+  initReleaseHistory();
   wirePi();
   initStartupProgress({ onRetry: restoreInitialWorkspace });
   // Install listeners before notifying main. Core loading runs behind the launch window.
@@ -3629,12 +3631,16 @@ let selectedModelProvider = "";
 async function loadDefaultModels() {
   const list = $("#defModelList");
   if (!list) return;
-  list.innerHTML = `<div class="pkg-empty">读取模型列表…</div>`;
+  const manage = $("#settingsAuth");
+  list.innerHTML = '<div class="model-provider-column"><nav class="model-providers" aria-label="模型供应商"></nav><div class="model-provider-actions"></div></div><div class="provider-models"></div>';
+  list.querySelector('.model-provider-actions').appendChild(manage);
+  const nav=list.querySelector('.model-providers'),panel=list.querySelector('.provider-models');
+  panel.innerHTML = `<div class="pkg-empty">读取模型列表…</div>`;
   const [mr, dr] = await Promise.all([window.halo.listModels(), window.halo.defaultModelGet()]);
   const models = (mr?.data || []).filter((m) => !m.error);
   let cur = dr?.data || "";
   if (!models.length) {
-    list.innerHTML = `<div class="pkg-empty">尚未发现可用模型，请先通过 pi 登录</div>`;
+    panel.innerHTML = `<div class="pkg-empty">尚未发现可用模型，请先管理登录账号</div>`;
     return;
   }
   const groups = new Map();
@@ -3643,8 +3649,6 @@ async function loadDefaultModels() {
     groups.get(m.provider).push(m);
   }
 
-  list.innerHTML='<nav class="model-providers" aria-label="模型供应商"></nav><div class="provider-models"></div>';
-  const nav=list.querySelector('.model-providers'),panel=list.querySelector('.provider-models');
   if(!groups.has(selectedModelProvider)) selectedModelProvider=groups.has(cur.split('/')[0])?cur.split('/')[0]:groups.keys().next().value;
   const buttons=new Map();
   const renderProvider=prov=>{
@@ -3788,49 +3792,52 @@ function renderUsage(d) {
     days.push({ key, label: `${dt.getMonth() + 1}/${dt.getDate()}`, ...(dayMap.get(key) || { calls: 0, tokens: 0, cost: 0, totalTokens: 0 }) });
   }
   const maxDay = Math.max(...days.map((x) => x.totalTokens || 0), 1);
-  const chart = days.map((x) => `
-    <div class="u-bar${x.totalTokens ? "" : " zero"}" style="height:${Math.max((x.totalTokens / maxDay) * 100, x.totalTokens ? 3 : 1.5)}%"
-         title="${x.label} · ${fmtTokens(x.totalTokens)} tokens · ${fmtCost(x.cost)} · ${x.calls} 次"></div>`).join("");
+  const chart = days.map((x) => {
+    const label = `${x.label} · ${fmtTokens(x.totalTokens)} Token · ${fmtCost(x.cost)} · ${x.calls} 次`;
+    return `<div class="usage-day" tabindex="0" aria-label="${esc(label)}" data-tip="${esc(label)}"><i style="height:${(x.totalTokens / maxDay) * 100}%" class="${x.totalTokens ? "" : "zero"}"></i></div>`;
+  }).join("");
+  const parts = [["输入", t.input, "input"], ["输出", t.output, "output"], ["缓存读取", t.cacheRead, "read"], ["缓存写入", t.cacheWrite, "write"]];
+  const partTotal = parts.reduce((sum, [, value]) => sum + (value || 0), 0);
+  const composition = parts.map(([label, value, type]) => `<div class="usage-token-part"><span><i class="usage-swatch ${type}"></i>${label}</span><b>${fmtTokens(value)}</b></div>`).join("");
+  const compositionBar = parts.map(([label, value, type]) => `<i class="${type}" style="width:${partTotal ? (value || 0) / partTotal * 100 : 0}%" title="${label} ${fmtTokens(value)}"></i>`).join("");
 
   /* 模型排行 */
-  const maxModel = Math.max(...(d.models || []).map((m) => m.totalTokens || 0), 1);
-  const modelRows = (d.models || []).map((m) => `
-    <div class="u-row">
-      <div class="u-main">
-        <div class="u-name"><b>${esc(m.key.split("/")[1] || m.key)}</b><small>${esc(m.key)}</small></div>
-        <div class="u-nums">${m.calls} 次 · ${fmtTokens(m.totalTokens)} tok · ${fmtCost(m.cost)}</div>
-      </div>
-      <div class="u-track"><i style="width:${Math.max((m.totalTokens / maxModel) * 100, 2)}%"></i></div>
-      <div class="u-sub">输入 ${fmtTokens(m.input)} · 输出 ${fmtTokens(m.output)} · 缓存 ${fmtTokens(m.cacheRead + m.cacheWrite)}</div>
-    </div>`).join("") || `<div class="pkg-empty">范围内没有模型调用记录</div>`;
+  const models = [...(d.models || [])].sort((a, b) => (b.totalTokens || 0) - (a.totalTokens || 0));
+  const modelTotal = models.reduce((sum, m) => sum + (m.totalTokens || 0), 0);
+  const modelRows = models.map((m) => {
+    const share = modelTotal ? (m.totalTokens || 0) / modelTotal * 100 : 0;
+    return `<tr><td><b title="${esc(m.key)}">${esc(m.key.split("/").slice(1).join("/") || m.key)}</b><small>${esc(m.key.split("/")[0])}</small></td>
+      <td>${(m.calls || 0).toLocaleString()}</td><td title="输入 ${fmtTokens(m.input)} · 输出 ${fmtTokens(m.output)} · 缓存 ${fmtTokens((m.cacheRead || 0) + (m.cacheWrite || 0))}">${fmtTokens(m.totalTokens)}</td>
+      <td><span class="usage-share">${share.toFixed(1)}%<i><em style="width:${share}%"></em></i></span></td><td>${fmtCost(m.cost)}</td></tr>`;
+  }).join("");
 
   /* 项目分布 */
   const projRows = (d.projects || []).map((p) => {
     const name = p.cwd.split(/[\\/]/).filter(Boolean).pop() || p.cwd;
-    return `<div class="u-prow"><span class="u-pname" title="${esc(p.cwd)}">${esc(name)}</span>
-      <span class="u-pnum">${fmtTokens(p.totalTokens)} tok · ${fmtCost(p.cost)}</span></div>`;
+    return `<div class="usage-project"><span title="${esc(p.cwd)}">${esc(name)}</span>
+      <b>${fmtTokens(p.totalTokens)} <small>Token</small></b><b>${fmtCost(p.cost)}</b></div>`;
   }).join("");
 
   box.innerHTML = `
-    <div class="set-sec">
-      <div class="usage-cards">
-        <div class="usage-card"><b>${fmtCost(t.cost)}</b><small>总花费</small></div>
-        <div class="usage-card"><b>${fmtTokens(t.totalTokens)}</b><small>总 tokens</small></div>
-        <div class="usage-card"><b>${t.calls ?? 0}</b><small>调用次数</small></div>
-        <div class="usage-card"><b>${d.sessions ?? 0}</b><small>会话数</small></div>
-      </div>
-      <div class="u-note">输入 ${fmtTokens(t.input)} · 输出 ${fmtTokens(t.output)} · 缓存读 ${fmtTokens(t.cacheRead)} · 缓存写 ${fmtTokens(t.cacheWrite)}</div>
+    <div class="usage-overview">
+      <div class="usage-metric"><span>预估费用 <small>USD</small></span><b>${fmtCost(t.cost)}</b></div>
+      <div class="usage-metric"><span>总 Token</span><b>${fmtTokens(t.totalTokens)}</b></div>
+      <div class="usage-metric"><span>调用次数</span><b>${(t.calls || 0).toLocaleString()}</b></div>
+      <div class="usage-metric"><span>会话数</span><b>${(d.sessions || 0).toLocaleString()}</b></div>
     </div>
-    <div class="set-sec">
-      <h4>每日 tokens <span class="set-count">近 ${range} 天</span></h4>
-      <div class="usage-chart">${chart}</div>
-      <div class="u-axis"><span>${days[0]?.label || ""}</span><span>${days[days.length - 1]?.label || ""}</span></div>
-    </div>
-    <div class="set-sec">
-      <h4>模型排行 <span class="set-count">按 tokens</span></h4>
-      <div class="usage-rows">${modelRows}</div>
-    </div>
-    ${projRows ? `<div class="set-sec"><h4>项目分布</h4><div class="usage-projs">${projRows}</div></div>` : ""}`;
+    <section class="usage-section">
+      <div class="usage-section-head"><h4>用量趋势</h4><span>每日 Token · 近 ${range} 天</span></div>
+      <div class="usage-plot"><div class="usage-scale"><span>${fmtTokens(maxDay === 1 ? 0 : maxDay)}</span><span>${fmtTokens(maxDay === 1 ? 0 : maxDay / 2)}</span><span>0</span></div><div class="usage-bars">${chart}</div></div>
+      <div class="usage-dates"><span>${days[0]?.label || ""}</span><span>${days[Math.floor(range / 2)]?.label || ""}</span><span>${days[range - 1]?.label || ""}</span></div>
+      ${t.totalTokens ? "" : '<p class="usage-empty-note">此时间范围暂无用量记录</p>'}
+      <div class="usage-composition"><div class="usage-composition-bar">${compositionBar}</div><div class="usage-token-parts">${composition}</div></div>
+    </section>
+    <section class="usage-section usage-models">
+      <div class="usage-section-head"><h4>模型用量 <small>${models.length}</small></h4><span>按 Token 排序</span></div>
+      ${modelRows ? `<div class="usage-table-scroll"><table class="usage-table"><thead><tr><th>模型</th><th>调用</th><th>Token</th><th>占比</th><th>预估费用</th></tr></thead><tbody>${modelRows}</tbody></table></div>` : '<p class="usage-empty-note">此时间范围暂无模型调用</p>'}
+    </section>
+    ${projRows ? `<section class="usage-section"><div class="usage-section-head"><h4>项目分布</h4><span>${d.projects.length} 个项目</span></div>${projRows}</section>` : ""}
+    `;
 }
 async function loadInstalled() {
   const box = $("#pkgInstalled");
@@ -3925,18 +3932,56 @@ async function updateAllPkgs() {
 }
 const PAGE_SIZE = 20;
 let marketRequest = 0;
+const marketPages = new Map(), marketPending = new Map();
+const marketKey = (query, type, page) => JSON.stringify([query || '', type, page]);
+function cachedMarketPage(key) {
+  const entry = marketPages.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at > 300000) { marketPages.delete(key); return null; }
+  marketPages.delete(key); marketPages.set(key, entry);
+  return entry.result;
+}
+async function fetchMarketPage(query, type, page) {
+  const key = marketKey(query, type, page), cached = cachedMarketPage(key);
+  if (cached) return cached;
+  if (marketPending.has(key)) return marketPending.get(key);
+  const promise = (async () => {
+    try {
+      const result = await window.halo.pkgSearch({ query: query || '', from: (page - 1) * PAGE_SIZE, size: PAGE_SIZE,
+        type: ['extension', 'skill', 'theme', 'prompt'].includes(type) ? type : '' });
+      if (result?.ok) {
+        marketPages.set(key, { result, at: Date.now() });
+        while (marketPages.size > 60) marketPages.delete(marketPages.keys().next().value);
+      }
+      return result;
+    } catch (error) { return { ok: false, error: error?.message || '网络请求失败' }; }
+  })();
+  marketPending.set(key, promise);
+  try { return await promise; } finally { marketPending.delete(key); }
+}
+async function preloadMarketPages(query, type, page, total, request) {
+  const last = Math.min(page + 5, Math.ceil(total / PAGE_SIZE));
+  for (let next = page + 1; next <= last; next++) {
+    if (request !== marketRequest || query !== S.pkgQuery || type !== S.pkgType) return;
+    // One background request at a time; foreground navigation shares in-flight work.
+    const result = await fetchMarketPage(query, type, next);
+    if (!result?.ok) return; // Keep background failures quiet and retry on navigation.
+  }
+}
 async function loadMarket(page) {
   if (S.pkgType === "installed") return; // 已安装 tab 不需要市场数据（切回时 syncPkgTab 会重新加载）
   if (page) S.pkgPage = page;
   S.pkgPage = S.pkgPage || 1;
-  const request = ++marketRequest, query = S.pkgQuery, type = S.pkgType;
+  const request = ++marketRequest, query = S.pkgQuery, type = S.pkgType, currentPage = S.pkgPage;
   const box = $("#pkgMarket");
-  box.innerHTML = `<div class="pkg-empty">加载中…</div>`;
-  S.pkgItems = [];
-  S.pkgTotal = 0;
-  renderPager();
-  const typeParam = ["extension", "skill", "theme", "prompt"].includes(S.pkgType) ? S.pkgType : "";
-  const r = await window.halo.pkgSearch({ query: S.pkgQuery || "", from: (S.pkgPage - 1) * PAGE_SIZE, size: PAGE_SIZE, type: typeParam });
+  const cached = cachedMarketPage(marketKey(query, type, currentPage));
+  if (!cached) {
+    box.innerHTML = `<div class="pkg-empty">加载中…</div>`;
+    S.pkgItems = [];
+    S.pkgTotal = 0;
+    renderPager();
+  }
+  const r = cached || await fetchMarketPage(query, type, currentPage);
   if (request !== marketRequest || query !== S.pkgQuery || type !== S.pkgType) return;
   if (!r?.ok) {
     box.innerHTML = `<div class="pkg-empty">加载失败：${esc(r?.error || "")}</div>`;
@@ -3972,6 +4017,7 @@ async function loadMarket(page) {
     }).join("");
   }
   renderPager();
+  void preloadMarketPages(query, type, currentPage, S.pkgTotal, request);
 }
 /** 翻页器：页码指示 + 上一/下一页按钮状态 */
 function renderPager() {

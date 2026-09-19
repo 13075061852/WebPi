@@ -1,0 +1,24 @@
+import assert from 'node:assert/strict';
+import { createReleaseHistory } from '../src/main/release-history.mjs';
+const release = { tag_name: 'v1.0.7', published_at: '2026-09-18T09:23:53Z', body: '更新内容' };
+let calls = 0;
+const load = createReleaseHistory({ fetchImpl: async () => {
+  calls++;
+  return { ok: true, json: async () => [release, { ...release, draft: true }, { ...release, prerelease: true }, { ...release, tag_name: '<script>' }] };
+} });
+const [first, second] = await Promise.all([load(), load()]);
+assert.deepEqual(first, second);
+assert.equal(first.length, 1);
+assert.equal(first[0].version, '1.0.7');
+assert.equal(first[0].url, 'https://github.com/13075061852/WebPi/releases/tag/v1.0.7');
+await load(); assert.equal(calls, 1, 'Concurrent requests and cached requests must not repeatedly hit GitHub');
+let attempts = 0;
+const retry = createReleaseHistory({ fetchImpl: async () => (++attempts === 1 ? { ok: false, status: 429 } : { ok: true, json: async () => [release] }) });
+await assert.rejects(retry(), /429/);
+assert.equal((await retry()).length, 1, 'A failure must allow retry');
+await assert.rejects(createReleaseHistory({ offline: true, fetchImpl: () => { throw Error('must not fetch'); } })(), /离线/);
+let pages = 0;
+const paginated = createReleaseHistory({ fetchImpl: async () => ({ ok: true, json: async () => ++pages === 1 ? Array(100).fill(release) : [] }) });
+assert.equal((await paginated()).length, 100);
+assert.equal(pages, 2);
+console.log('PASS release history: official releases, caching, retry, pagination, offline');
