@@ -68,6 +68,7 @@ try {
   assert.equal(state.ready, true);
   assert.ok(bridge.session.sessionId);
   assert.ok(bridge.services.resourceLoader.getSkills().skills.length > 0, 'Bundled Office skills remain discoverable');
+  assert.ok(bridge.services.resourceLoader.getSkills().skills.some(skill => skill.name === 'halo-video-prompt'), 'Video prompt enhancement must be discoverable by the real agent');
   const expectedTools = ['read', process.platform === 'win32' ? 'powershell' : 'bash', 'edit', 'write'];
   assert.deepEqual(bridge.session.getActiveToolNames().filter(name => ['read', 'powershell', 'bash', 'edit', 'write'].includes(name)), expectedTools);
   assert.equal(bridge.services.settingsManager.getGlobalSettings().defaultTools, undefined, 'Windows defaults must not overwrite shared Pi settings');

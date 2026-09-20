@@ -1054,10 +1054,12 @@ async function showTurnArtifacts(turn) {
   }
   scrollDown();
 }
-function collectArtifactResult(turn, toolName, text, toolDurationMs) {
+function collectArtifactResult(turn, toolName, text, toolDurationMs, details) {
   if (!turn || !['image_generate','video_generate','office_document','cloudflare_deploy'].includes(toolName)) return;
   try {
-    const result=JSON.parse(text);
+    let result;
+    try { result = JSON.parse(text); } catch { result = details; }
+    if (!result || typeof result !== 'object') return;
     if (toolName === 'cloudflare_deploy') {
       if (result.deployed && Array.isArray(result.urls)) {
         const urls = (turn.__websiteURLs ||= new Set());
@@ -1471,7 +1473,7 @@ function onToolEnd(ev) {
   for (const c of contents) if (c.type === "text") text += (text ? "\n" : "") + c.text;
   const turn = rec.card.closest('.turn');
   if (!isError) {
-    collectArtifactResult(turn, rec.toolName, text, secs * 1000);
+    collectArtifactResult(turn, rec.toolName, text, secs * 1000, result?.details);
     // The completed file is deliverable now, even if the assistant continues
     // thinking or running unrelated tools before its final response.
     if (turn?.isConnected && ['video_generate','image_generate'].includes(rec.toolName)) {
@@ -1787,7 +1789,7 @@ async function restoreHistory(viewOverride) {
       if (rec) {
         const text = (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
         if (!m.isError) collectArtifactResult(S.turn, rec.toolName, text,
-          m.timestamp && rec.startedAt ? new Date(m.timestamp) - rec.startedAt : undefined);
+          m.timestamp && rec.startedAt ? new Date(m.timestamp) - rec.startedAt : undefined, m.details);
         rec.out.dataset.has = "1";
         rec.out.textContent = text ? trunc(text, 4000) : (m.isError ? "（无输出）" : "（完成）");
         if (!m.isError && AUTO_OPEN_TOOLS.has(rec.toolName) && text.trim()) setToolDetailsOpen(rec.card, true);
@@ -3032,7 +3034,7 @@ async function switchProjectViaAdd(dir) {
 }
 
 /* ---- 项目：一个项目 = 一个文件夹，各自记住上一个对话 ---- */
-function addConversationFold(toggle, children, collapsed, key, name) {
+function addConversationFold(toggle, children, collapsed, key, name, onChange = () => {}) {
   const fold = document.createElement('button');
   fold.className = 'conversation-fold';
   fold.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>';
@@ -3054,6 +3056,7 @@ function addConversationFold(toggle, children, collapsed, key, name) {
     const fromMargin = children.hidden ? '0px' : style.marginTop;
     animation?.cancel();
     if (expand) collapsed.delete(key); else collapsed.add(key);
+    onChange();
     sync();
     children.hidden = false;
     children.inert = !expand;
@@ -3079,6 +3082,15 @@ function addConversationFold(toggle, children, collapsed, key, name) {
 }
 
 const collapsedProjects = new Set();
+try {
+  const saved = JSON.parse(localStorage.getItem('halo-collapsed-projects') || '[]');
+  if (Array.isArray(saved)) for (const cwd of saved) {
+    if (typeof cwd === 'string' && cwd) collapsedProjects.add(normPath(cwd));
+  }
+} catch { /* A damaged or unavailable preference must not prevent startup. */ }
+function saveProjectFolds() {
+  try { localStorage.setItem('halo-collapsed-projects', JSON.stringify([...collapsedProjects])); } catch {}
+}
 let projectListRequest = 0;
 async function loadProjects() {
   const request = ++projectListRequest;
@@ -3096,12 +3108,12 @@ async function loadProjects() {
     $(".project-toggle span", group).textContent = p.name;
     const toggle = $(".project-toggle", group), children = $(".project-conversations", group);
     toggle.title = p.cwd;
-    children.hidden = collapsedProjects.has(p.cwd);
-    addConversationFold(toggle, children, collapsedProjects, p.cwd, p.name);
+    children.hidden = collapsedProjects.has(normPath(p.cwd));
+    addConversationFold(toggle, children, collapsedProjects, normPath(p.cwd), p.name, saveProjectFolds);
     $(".project-remove", group).addEventListener("click", () => removeWorkspaceItem(() => window.halo.projectRemove(p.cwd)));
     $(".project-new", group).addEventListener("click", async () => {
       if (!p.active) { await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
-      collapsedProjects.delete(p.cwd); await newSession(); await loadProjects(); $("#input").focus();
+      collapsedProjects.delete(normPath(p.cwd)); saveProjectFolds(); await newSession(); await loadProjects(); $("#input").focus();
     });
     if (!p.sessions?.length) children.innerHTML = '<div class="server-conversation-empty">暂无对话，点击右上角新建</div>';
     for (const session of p.sessions || []) {

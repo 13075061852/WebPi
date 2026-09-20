@@ -6,6 +6,30 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
   const nav = get('releaseHistoryNav');
   const repo = 'https://github.com/13075061852/WebPi';
   let releases = bundledReleases, current = '', busy = false;
+  let scrollFrame = null;
+  const reducedMotion = () => list.ownerDocument.defaultView.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function stopScroll() {
+    if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+    scrollFrame = null;
+  }
+  function scrollToEntry(entry) {
+    stopScroll();
+    const start = list.scrollTop;
+    const target = Math.max(0, Math.min(list.scrollHeight - list.clientHeight,
+      entry === list.firstElementChild ? 0 : start + entry.getBoundingClientRect().top - list.getBoundingClientRect().top));
+    highlight(entry.dataset.version);
+    if (reducedMotion() || Math.abs(target - start) < 1) { list.scrollTop = target; return; }
+    const started = performance.now();
+    const step = now => {
+      const progress = Math.min(1, (now - started) / 360);
+      list.scrollTop = start + (target - start) * (1 - Math.pow(1 - progress, 3));
+      scrollFrame = progress < 1 ? requestAnimationFrame(step) : null;
+    };
+    scrollFrame = requestAnimationFrame(step);
+  }
+  for (const event of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+    list.addEventListener(event, () => { stopScroll(); syncPosition(); }, { passive: true });
+  }
   const node = (tag, text, className) => {
     const element = list.ownerDocument.createElement(tag);
     if (text !== undefined) element.textContent = text;
@@ -22,12 +46,16 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
     for (const button of nav.children) {
       const active = button.dataset.version === version;
       button.classList.toggle('active', active);
-      if (active) button.setAttribute('aria-current', 'location');
+      if (active) {
+        button.setAttribute('aria-current', 'location');
+        nav.style.setProperty('--release-selection-y', `${button.offsetTop}px`);
+        nav.style.setProperty('--release-selection-height', `${button.offsetHeight}px`);
+      }
       else button.removeAttribute('aria-current');
     }
   }
   function syncPosition() {
-    if (!list.clientHeight) return;
+    if (!list.clientHeight || scrollFrame !== null) return;
     const top = list.getBoundingClientRect().top;
     let active = list.firstElementChild;
     for (const entry of list.children) {
@@ -38,7 +66,12 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
     highlight(active?.dataset.version);
   }
   list.addEventListener('scroll', syncPosition, { passive: true });
+  new ResizeObserver(() => {
+    const active = nav.querySelector('[aria-current]');
+    if (active) highlight(active.dataset.version);
+  }).observe(nav);
   function render() {
+    stopScroll();
     const previousTop = list.scrollTop;
     list.replaceChildren(...releases.map(release => {
       const article = node('article', undefined, 'release-entry');
@@ -78,9 +111,7 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
       button.onclick = () => {
         const entry = [...list.children].find(item => item.dataset.version === release.version);
         if (!entry) return;
-        list.scrollTop = entry === list.firstElementChild ? 0
-          : list.scrollTop + entry.getBoundingClientRect().top - list.getBoundingClientRect().top;
-        highlight(release.version);
+        scrollToEntry(entry);
       };
       return button;
     }));

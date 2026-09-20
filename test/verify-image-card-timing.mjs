@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {artifactPath} from '../src/renderer/js/artifacts.mjs';
+import {artifactPath, replyArtifacts} from '../src/renderer/js/artifacts.mjs';
+const delivered = 'C:/Users/test/My Pictures/output/元素周期表-插画版.png';
+assert.deepEqual(replyArtifacts('已生成：**' + delivered.replaceAll('/', '\\') + '**（1536×1024）', 'C:/project'), [delivered]);
+assert.deepEqual(replyArtifacts('已生成：\n' + delivered + '\n', 'C:/project'), [delivered]);
+assert.deepEqual(replyArtifacts('[' + '图片](' + delivered + ')\n**' + delivered + '**', 'C:/project'), [delivered]);
+assert.deepEqual(replyArtifacts('https://example.com/output/picture.png', 'C:/project'), []);
+assert.deepEqual(replyArtifacts('**/home/test/output/海报.png**', '/home/test'), ['/home/test/output/海报.png']);
 const source=fs.readFileSync('src/renderer/js/app.js','utf8');
 const code=source.slice(source.indexOf('function updateImageArtifactCard('),source.indexOf('async function showTurnArtifacts('));
 const context=vm.createContext({artifactPath,normPath:p=>p.toLowerCase(),formatDuration:s=>s+'秒',document:{createElement:()=>({})}});

@@ -22,6 +22,13 @@ export function replyArtifacts(text, cwd) {
     const p=artifactPath(value,cwd);
     if(p)files.set(p.toLowerCase(),p);
   }
+  // Models also deliver unlinked absolute paths, often wrapped in bold text.
+  // Validate candidates through artifactFiles before displaying any cards.
+  const barePath = /(?:^|[\s*`("'：])((?:[a-z]:[\\/]|\/(?!\/))[^\r\n<>|"*`?]+?\.(?:pdf|docx?|xlsx?|pptx?|png|jpe?g|webp|gif|svg|csv|html?|md|txt|zip|mp4|webm))(?=$|[\s*`"')（），。；,;])/gim;
+  for (const match of text.matchAll(barePath)) {
+    const p = artifactPath(match[1], cwd);
+    if (p) files.set(p.toLowerCase(), p);
+  }
   return [...files.values()];
 }
 

@@ -2295,17 +2295,20 @@ body.focus-mode #btnFocus { color: var(--acc); }
 #setPane-history .set-body { display: flex; flex-direction: column; overflow: hidden; }
 #setPane-history .release-repository, #setPane-history .release-history-meta { flex: none; }
 .release-history-layout { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 20px; flex: 1; min-height: 0; }
-#releaseHistoryNav { display: flex; flex-direction: column; gap: 5px; overflow-y: auto; min-height: 0; padding-right: 12px; border-right: 1px solid var(--hair); }
-.release-nav-item { flex: none; text-align: left; border-radius: 8px; padding: 10px; color: var(--txt-dim); }
+#releaseHistoryNav { position: relative; isolation: isolate; display: flex; flex-direction: column; gap: 5px; overflow-y: auto; min-height: 0; padding-right: 12px; border-right: 1px solid var(--hair); }
+#releaseHistoryNav::before { content: ''; position: absolute; z-index: -1; left: 0; right: 12px; top: 0; height: var(--release-selection-height, 0px); transform: translateY(var(--release-selection-y, 0px)); border-radius: 8px; background: color-mix(in srgb, #8c88d3 12%, transparent); transition: transform 360ms cubic-bezier(.2,.7,.2,1), height 200ms ease; pointer-events: none; }
+.release-nav-item { flex: none; text-align: left; border-radius: 8px; padding: 10px; color: var(--txt-dim); transition: color 180ms ease; }
 .release-nav-item b { display: block; font-size: 12px; font-weight: 500; }
 .release-nav-item small { display: block; margin-top: 5px; font-size: 10px; }
 .release-nav-item:hover { background: var(--bg0); color: var(--txt); }
-.release-nav-item.active { background: color-mix(in srgb, #8c88d3 12%, transparent); color: var(--txt); }
+.release-nav-item.active { background: transparent; color: var(--txt); }
 .release-nav-item.active b { color: #8c88d3; font-weight: 600; }
 #releaseHistoryList { overflow-y: auto; min-height: 0; min-width: 0; padding: 4px 12px 0 0; scrollbar-gutter: stable; overscroll-behavior: contain; }
+@media (prefers-reduced-motion: reduce) { #releaseHistoryNav::before, .release-nav-item { transition: none; } }
 @media (max-width: 700px) {
   .release-history-layout { grid-template-columns: 86px minmax(0, 1fr); gap: 12px; }
   #releaseHistoryNav { padding-right: 6px; }
+  #releaseHistoryNav::before { right: 6px; }
   .release-nav-item { padding: 8px 6px; }
 }
 .release-entry { position: relative; margin-left: 5px; padding: 0 0 28px 24px; border-left: 1px solid var(--hair-2); }
@@ -2669,7 +2672,9 @@ body:not(.focus-mode) #layout:has(#pvBody.dev-mobile) { grid-template-columns: v
 /* Sidebar and chat already supply the translucent surface underneath their headers. */
 :root[data-wallpaper]:not([data-wallpaper=""]) :is(#sideNav, #chatHead) { background: transparent; }
 :root[data-wallpaper]:not([data-wallpaper=""]) :is(#sidebar,#chat) { backdrop-filter: blur(calc(12px * var(--wallpaper-cover, .65))); }
-:root[data-wallpaper]:not([data-wallpaper=""]) .input-shell { background: var(--panel); }
+:root[data-wallpaper]:not([data-wallpaper=""]) .input-shell {
+  background: color-mix(in srgb, var(--panel) calc(var(--wallpaper-cover, .65) * 100%), transparent);
+}
 .wallpaper-heading { margin-top: 28px; }
 .wallpaper-choice { min-width: 0; text-align: left; }
 .wallpaper-choice small { display: block; margin-top: 5px; font-size: 10px; color: var(--txt-dim); }
