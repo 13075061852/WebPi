@@ -1,5 +1,12 @@
 import { createDeviceMorph } from './device-morph.mjs';
 
+function within(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Preview layout motion timed out')), ms);
+    Promise.resolve(promise).then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
 // Animate composed snapshots. The embedded page only receives its final viewport.
 export function createLayoutMotion({ setPaused }) {
   const root = document.documentElement;
@@ -50,7 +57,7 @@ export function createLayoutMotion({ setPaused }) {
       maskFades = fading.map(mask => mask.animate({ opacity: [1, 0] }, { duration: 120, easing: 'ease-out', fill: 'both' }));
       const hidden = () => { if (document.hidden) maskFades.forEach(animation => animation.cancel()); };
       document.addEventListener('visibilitychange', hidden);
-      try { await Promise.allSettled(maskFades.map(animation => animation.finished)); }
+      try { await within(Promise.allSettled(maskFades.map(animation => animation.finished)), 700).catch(() => {}); }
       finally { document.removeEventListener('visibilitychange', hidden); }
     }
     // A new device choice reverses the reveal and keeps the intermediate page covered.
@@ -62,13 +69,13 @@ export function createLayoutMotion({ setPaused }) {
   async function drain() {
     running = true;
     try {
-      await setPaused(true);
+      await within(setPaused(true), 350).catch(() => {});
       while (pending.length) {
         const changes = pending.splice(0);
         if (masks.size || changes.some(item => item.maskPreview)) coverPreview();
         if (document.hidden || !document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) {
           changes.forEach(item => item.change());
-          await setPaused(true);
+          await within(setPaused(true), 350).catch(() => {});
           if (!pending.length) await revealPreview();
           continue;
         }
@@ -84,8 +91,10 @@ export function createLayoutMotion({ setPaused }) {
         const motionOptions = { duration: 280, easing: deviceMorph ? 'cubic-bezier(.4,0,.2,1)' : 'cubic-bezier(.22,.68,0,1)', fill: 'both' };
         const restoreViewports = holdViewports();
         root.classList.toggle('layout-device-held', !!before.device && !deviceMorph);
-        let after;
+        let after, committed = false;
         const update = () => {
+          if (committed) return;
+          committed = true;
           changes.forEach(item => item.change());
           after = measure(!!deviceMorph, !previewFold);
           root.classList.toggle('layout-sidebar-enter', !before.sidebar && !!after.sidebar);
@@ -98,7 +107,10 @@ export function createLayoutMotion({ setPaused }) {
         if (deviceMorph) window.addEventListener('resize', resize, { once: true });
         document.addEventListener('visibilitychange', hidden);
         try {
-          await transition.ready;
+          // Keep this await on the native promise: another microtask between
+          // readiness and animation replacement exposes cancelled snapshots.
+          const readyTimer = setTimeout(() => transition.skipTransition(), 1800);
+          try { await transition.ready; } finally { clearTimeout(readyTimer); }
           if (previewFold && !!before.center !== !!after.center) {
             const rect = before.center || after.center;
             const closing = !!before.center;
@@ -147,35 +159,36 @@ export function createLayoutMotion({ setPaused }) {
           });
           if (document.hidden) {
             resize();
-            await transition.updateCallbackDone.catch(() => {});
+            await within(transition.updateCallbackDone, 800).catch(() => {});
             continue;
           }
           for (const animation of motions) if (animation.playState === 'paused') animation.play();
           if (deviceMorph) {
-            await motionsFinished;
+            await within(motionsFinished, 1500);
             restoreViewports();
-            await setPaused(true);
+            await within(setPaused(true), 350).catch(() => {});
           } else if (before.device && after.device) {
             // Keep the old texture over the live guest until motion has finished.
             // Resizing a busy canvas must not compete with the sliding animation.
             const hold = host.animate({ opacity: [1, 1] }, { duration: 10000, fill: 'both', pseudoElement: '::view-transition-old(layout-device)' });
             temporary.push(hold);
-            await motionsFinished;
+            await within(motionsFinished, 1500);
             restoreViewports();
-            await setPaused(true);
+            await within(setPaused(true), 350).catch(() => {});
             if (!masks.size && !document.hidden) {
               const reveal = host.animate({ opacity: [0, 1] }, { duration: 100, fill: 'forwards', pseudoElement: '::view-transition-new(layout-device)' });
               temporary.push(reveal);
-              await reveal.finished.catch(() => {});
+              await within(reveal.finished, 700).catch(() => {});
             }
             hold.cancel();
           }
-          await transition.finished;
+          await within(transition.finished, 1800);
         } catch {
           // A window resize or another native transition can skip the animation;
           // the requested state update must still complete exactly once.
           transition.skipTransition();
-          await transition.updateCallbackDone.catch(() => {});
+          await within(transition.updateCallbackDone, 800).catch(() => {});
+          update();
         } finally {
           window.removeEventListener('resize', resize);
           document.removeEventListener('visibilitychange', hidden);
@@ -185,7 +198,7 @@ export function createLayoutMotion({ setPaused }) {
         }
         if (!pending.length && masks.size) {
           // The actual viewport and its first paint must settle before uncovering it.
-          await setPaused(true);
+          await within(setPaused(true), 350).catch(() => {});
           await revealPreview();
         }
       }
@@ -200,12 +213,15 @@ export function createLayoutMotion({ setPaused }) {
       void setPaused(false);
     }
   }
-  return (change, { maskPreview = false, previewFold = false } = {}) => {
+  return (change, { maskPreview = false, previewFold = false, device = false } = {}) => {
     if (maskPreview) {
       maskFades.forEach(animation => animation.cancel());
       maskFades = [];
     }
-    pending.push({ change, maskPreview, previewFold });
+    if (device) {
+      for (let i = pending.length - 1; i >= 0; i--) if (pending[i].device) pending.splice(i, 1);
+    }
+    pending.push({ change, maskPreview, previewFold, device });
     if (!running) void drain();
   };
 }

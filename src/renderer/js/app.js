@@ -13,6 +13,7 @@ import { videoBalanceText } from "./video-balance.mjs";
 import { initProjectRuns } from './project-runs.mjs';
 import { initSidebarHeight } from './sidebar-height.mjs';
 import { OutputRate } from './output-rate.mjs';
+import { createQuotaRefreshQueue } from './quota-refresh.mjs';
 import { toolIcon, thinkingIcon } from './tool-icons.mjs';
 import { wireToolDetails, setToolDetailsOpen } from './tool-details.mjs';
 import { TurnCost } from './turn-cost.mjs';
@@ -72,7 +73,7 @@ const S = {
   selectedFile: null,
   previewFile: null,
   treeTimer: null,
-  quota: { provider: null, data: null },   // 当前模型剩余额度（每轮对话结束动态刷新）
+  quota: { provider: null, data: null },   // 当前模型剩余额度（每个工具步骤结束后动态刷新）
   creating: null,             // { parent: string|null, kind: "file"|"dir" } 行内新建状态
   sessionSwitchSeq: 0,        // 丢弃快速切换产生的过期恢复结果
   switchingSession: false,   // 切换期间由历史快照接管，避免旧会话事件串入新视图
@@ -147,6 +148,7 @@ function restoreInitialWorkspace() {
     if (!state?.ready) { S.pendingRestore = true; return; }
     // Restore once even if a ready event races the initial state request.
     applyState(state);
+    void loadModels().catch(() => {});
     await Promise.all([loadSessions(), loadResources()]);
     await restoreWorkspace();
     await Promise.all([loadTree(true), loadProjects()]);
@@ -519,7 +521,7 @@ function applyState(st) {
   renderStats(st.usage);
   for (const label of $$('.turn-cost')) {
     const cost = label.closest('.turn')?.__turnCost;
-    if (cost) { const value = cost.format(st.billingFx); label.textContent = value.text; label.title = value.title; }
+    if (cost) { const value = cost.format(st.billingFx, S.models); label.textContent = value.text; label.title = value.title; }
   }
 
   const ready = !!st.ready;
@@ -539,8 +541,12 @@ function applyState(st) {
   }
 }
 
-/* 当前模型的剩余额度：切模型 / 每轮对话结束时刷新（force 跳过主进程防抖缓存） */
-let quotaFetching = false;
+/* 当前模型的剩余额度：切模型 / 每个工具步骤结束时刷新（force 跳过主进程缓存） */
+const quotaRefresh = createQuotaRefreshQueue({
+  request: (provider, force) => window.halo.modelQuota(provider, force).catch(() => null),
+  currentProvider: () => S.state?.model?.provider || null,
+  apply: (provider, data) => { S.quota = { provider, data }; renderQuotaChip(); },
+});
 let videoBalanceVersion = 0;
 async function loadVideoBalance() {
   const el = $('#ctxVideoQuota');
@@ -556,22 +562,11 @@ async function loadVideoBalance() {
       : reply?.error || '视频余额查询失败，点击查看消耗记录';
   } catch { if (version === videoBalanceVersion) el.textContent = '视频 查询失败'; }
 }
-async function loadQuota(provider, force = false) {
+function loadQuota(provider, force = false) {
   if (!provider) return;
   if (S.quota.provider === provider && !force) return;
   if (!window.halo?.modelQuota) return;
-  if (quotaFetching) return; // 已有请求在途：本轮结束时会再次刷新，无需并发
-  quotaFetching = true;
-  try {
-    const r = await window.halo.modelQuota(provider, force).catch(() => null);
-    if (!r?.ok) return;
-    // 过程中模型又切了：丢弃过期结果
-    if ((S.state?.model?.provider || null) !== provider) return;
-    S.quota = { provider, data: r.data };
-    renderQuotaChip();
-  } finally {
-    quotaFetching = false;
-  }
+  return quotaRefresh.enqueue(provider, force);
 }
 
 function renderQuotaChip() {
@@ -588,7 +583,7 @@ function renderQuotaChip() {
     el.classList.add("kind-plain");
     $("#ctxQuotaBar").style.width = "100%";
     $("#ctxQuotaText").textContent = `${q.label} ${(q.value ?? 0).toLocaleString()}`;
-    el.title = `${q.label}余额（AutoClaw 积分制，每轮对话后刷新）`;
+    el.title = `${q.label}余额（每步操作后刷新）`;
     return;
   }
   if (q?.kind === "balance" && !q.error) {
@@ -597,7 +592,7 @@ function renderQuotaChip() {
     const sym = q.currency === "CNY" ? "¥" : q.currency === "USD" ? "$" : "";
     $("#ctxQuotaBar").style.width = "100%";
     $("#ctxQuotaText").textContent = `${sym}${(q.value ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    el.title = `${q.label}（每轮对话后刷新）${q.voucher > 0 ? ` · 代金券 ${sym}${q.voucher.toLocaleString()}` : ""}`;
+    el.title = `${q.label}（每步操作后刷新）${q.voucher > 0 ? ` · 代金券 ${sym}${q.voucher.toLocaleString()}` : ""}`;
     return;
   }
   if (q?.kind === "windows" && Array.isArray(q.windows) && q.windows.length) {
@@ -613,7 +608,7 @@ function renderQuotaChip() {
       : "";
     $("#ctxQuotaText").textContent = [...parts.map((p) => p.text), ...(resetLabel ? [resetLabel] : [])].join(" · ");
     el.classList.toggle("low", tight.remaining < 0.15);
-    el.title = `订阅额度 · ${parts.map((p) => p.title).join("，")}（每轮对话后刷新）`;
+    el.title = `订阅额度 · ${parts.map((p) => p.title).join("，")}（每步操作后刷新）`;
     if (resetLabel) el.title += ` · ${resetLabel}${q.resetCredits == null ? "（暂未获取）" : "（剩余可用次数）"}`;
     return;
   }
@@ -751,6 +746,7 @@ const refreshSessionsDebounced = debounce(() => { try { loadSessions(); refreshS
 
 let pendingSessionEvents = [];
 let restoredEventSeq = 0;
+const quotaRefreshedTools = new Set();
 function handlePiEvent(event, sessionId, seq) {
   if (!event) return;
   if (S.switchingSession) {
@@ -789,9 +785,16 @@ function handlePiEvent(event, sessionId, seq) {
 
       case "tool_execution_start": onToolStart(event); break;
       case "tool_execution_update": onToolUpdate(event); break;
-      case "tool_execution_end": onToolEnd(event); break;
+      case "tool_execution_end":
+        onToolEnd(event);
+        if (!event.toolCallId || !quotaRefreshedTools.has(event.toolCallId)) {
+          if (event.toolCallId) quotaRefreshedTools.add(event.toolCallId);
+          loadQuota(S.state?.model?.provider, true);
+        }
+        break;
 
       case "agent_start":
+        quotaRefreshedTools.clear();
         S.retrying = null;
         S.streamingTool = null;
         S.agentStartedAt = Date.now();
@@ -826,8 +829,9 @@ function handlePiEvent(event, sessionId, seq) {
         finalizeTurn();
         refreshState();
         loadSessions();
-        // 每轮对话结束：立即刷新额度（不再依赖定时轮询）
+        // 没有工具步骤的回合也刷新；补齐最后一步可能尚未结算的额度。
         loadQuota(S.state?.model?.provider, true);
+        quotaRefreshedTools.clear();
         break;
 
       case "queue_update": {
@@ -1111,7 +1115,7 @@ function finalizeTurn() {
     group.innerHTML = `
       <summary title="展开执行过程 · ${processNodes.length} 个步骤${errors ? ` · ${errors} 个失败` : ""}">
         <span class="process-label">${durationLabel}${turn.__outputRate?.average() ? ` · ${turn.__outputRate.average()}` : ''}</span>
-        ${turn.__turnCost ? `<span class="turn-cost" title="${esc(turn.__turnCost.format(S.state?.billingFx).title)}">${esc(turn.__turnCost.format(S.state?.billingFx).text)}</span>` : ''}
+        ${turn.__turnCost ? `<span class="turn-cost" title="${esc(turn.__turnCost.format(S.state?.billingFx, S.models).title)}">${esc(turn.__turnCost.format(S.state?.billingFx, S.models).text)}</span>` : ''}
         <svg class="process-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>
       </summary>
       <div class="process-body"></div>`;
@@ -2139,6 +2143,10 @@ async function loadModels() {
   S.models = (r?.data || []).filter((m) => !m.error);
   S.defaultModel = dr?.data || "";
   renderModelList("");
+  for (const label of $$('.turn-cost')) {
+    const cost = label.closest('.turn')?.__turnCost;
+    if (cost) { const value = cost.format(S.state?.billingFx, S.models); label.textContent = value.text; label.title = value.title; }
+  }
 }
 function renderModelList(q) {
   const list = $("#modelList");
@@ -2457,7 +2465,7 @@ function wireUI() {
 
   wireCenter();
 
-  // 额度：初始拉取；此后在每轮对话结束（agent_settled）时动态刷新
+  // 额度：初始拉取；此后在每个工具步骤结束及 agent_settled 时刷新
   if (S.state?.model?.provider) loadQuota(S.state.model.provider, true);
 }
 
@@ -2477,14 +2485,16 @@ function wireCenter() {
 
   // 预览设备切换：电脑 / 平板 / 手机
   const devSize = { desktop: "100%", tablet: "768px", mobile: "390px" };
+  let requestedDevice = currentPreviewDevice();
   $$(".pvdev").forEach((b) => b.addEventListener("click", () => {
     const body = $("#pvBody");
-    if (!layoutMotionPaused && body.classList.contains('dev-' + b.dataset.dev)) return;
+    if (requestedDevice === b.dataset.dev && body.classList.contains('dev-' + b.dataset.dev)) return;
+    requestedDevice = b.dataset.dev;
     applyPreviewLayout(() => {
       $$(".pvdev").forEach((x) => x.classList.toggle("active", x === b));
       body.classList.remove("dev-desktop", "dev-tablet", "dev-mobile");
       body.classList.add("dev-" + b.dataset.dev);
-    }, { maskPreview: true });
+    }, { maskPreview: true, device: true });
     window.halo.previewTouch?.(b.dataset.dev !== "desktop"); // 平板/手机模式：隐藏滚动条 + 触摸式拖动
     const size = $("#pvDevSize");
     if (size) size.textContent = devSize[b.dataset.dev] || "100%";
@@ -3411,6 +3421,7 @@ async function switchAccount(providerId, accountId) {
   const strip = $(`[data-acc-strip="${CSS.escape(providerId)}"]`);
   if (strip?.classList.contains("busy")) return;
   strip?.classList.add("busy");
+  quotaRefresh.invalidate();
   S.quota = { provider: providerId, data: null }; // 切换中先置空，避免闪烁旧账户额度
   renderQuotaChip();
   try {
@@ -3746,13 +3757,13 @@ async function openUsageDetails() {
   const d = result.data, today = d.today || {}, rows = d.sessionDetails || [];
   body.innerHTML = '<div class="usage-summary-heading"><b>今日用量</b><span>'+esc(today.date || '')+'</span></div><div class="usage-cards">' +
     '<div class="usage-card"><small>Token</small><b>'+fmtTokens(today.totalTokens || 0)+'</b></div>' +
-    '<div class="usage-card" title="按本地记录估算，非实际扣款；订阅模型可能显示为 0"><small>预估费用 · USD</small><b>'+fmtCost(today.cost || 0)+'</b></div></div>' +
-    '<div class="usage-history-heading"><b>历史记录 <span>'+rows.length+'</span></b><span>累计预估 <strong>'+fmtCost(d.totals?.cost || 0)+'</strong></span></div><div id="usageSessionRows"></div>';
+    '<div class="usage-card" title="按当前模型单价估算；订阅模型显示等效价格，并非实际扣款"><small>预估费用 · USD</small><b>'+fmtUsageCost(today)+'</b></div></div>' +
+    '<div class="usage-history-heading"><b>历史记录 <span>'+rows.length+'</span></b><span>累计预估 <strong>'+fmtUsageCost(d.totals)+'</strong></span></div><div id="usageSessionRows"></div>';
   const list = $("#usageSessionRows");
   if (!rows.length) list.textContent = "暂无用量记录";
   for (const r of rows) {
     const row = document.createElement("div"); row.className = "usage-session-row";
-    row.innerHTML = '<div><b></b><small></small></div><div class="usage-session-numbers"><strong>'+fmtCost(r.cost || 0)+'</strong><small>'+fmtTokens(r.totalTokens || 0)+' Token</small></div>';
+    row.innerHTML = '<div><b></b><small></small></div><div class="usage-session-numbers"><strong>'+fmtUsageCost(r)+'</strong><small>'+fmtTokens(r.totalTokens || 0)+' Token</small></div>';
     $("b", row).textContent = r.name;
     $("b", row).title = r.name;
     $("small", row).textContent = (r.cwd.split(/[\\/]/).pop() || "未知项目") + " · " + new Date(r.modified).toLocaleDateString();
@@ -3766,6 +3777,11 @@ function fmtCost(n) {
   if (n >= 100) return "$" + n.toFixed(0);
   if (n >= 1) return "$" + n.toFixed(2);
   return "$" + n.toFixed(4);
+}
+function fmtUsageCost(usage) {
+  const priced = fmtCost(usage?.cost || 0);
+  if (!usage?.unpriced) return priced;
+  return usage.cost > 0 ? `${priced} · 部分未定价` : '价格未提供';
 }
 async function loadUsage(force = false) {
   const box = $("#usageContent");
@@ -3805,7 +3821,7 @@ function renderUsage(d) {
   }
   const maxDay = Math.max(...days.map((x) => x.totalTokens || 0), 1);
   const chart = days.map((x) => {
-    const label = `${x.label} · ${fmtTokens(x.totalTokens)} Token · ${fmtCost(x.cost)} · ${x.calls} 次`;
+    const label = `${x.label} · ${fmtTokens(x.totalTokens)} Token · ${fmtUsageCost(x)} · ${x.calls} 次`;
     return `<div class="usage-day" tabindex="0" aria-label="${esc(label)}" data-tip="${esc(label)}"><i style="height:${(x.totalTokens / maxDay) * 100}%" class="${x.totalTokens ? "" : "zero"}"></i></div>`;
   }).join("");
   const parts = [["输入", t.input, "input"], ["输出", t.output, "output"], ["缓存读取", t.cacheRead, "read"], ["缓存写入", t.cacheWrite, "write"]];
@@ -3820,19 +3836,19 @@ function renderUsage(d) {
     const share = modelTotal ? (m.totalTokens || 0) / modelTotal * 100 : 0;
     return `<tr><td><b title="${esc(m.key)}">${esc(m.key.split("/").slice(1).join("/") || m.key)}</b><small>${esc(m.key.split("/")[0])}</small></td>
       <td>${(m.calls || 0).toLocaleString()}</td><td title="输入 ${fmtTokens(m.input)} · 输出 ${fmtTokens(m.output)} · 缓存 ${fmtTokens((m.cacheRead || 0) + (m.cacheWrite || 0))}">${fmtTokens(m.totalTokens)}</td>
-      <td><span class="usage-share">${share.toFixed(1)}%<i><em style="width:${share}%"></em></i></span></td><td>${fmtCost(m.cost)}</td></tr>`;
+      <td><span class="usage-share">${share.toFixed(1)}%<i><em style="width:${share}%"></em></i></span></td><td>${fmtUsageCost(m)}</td></tr>`;
   }).join("");
 
   /* 项目分布 */
   const projRows = (d.projects || []).map((p) => {
     const name = p.cwd.split(/[\\/]/).filter(Boolean).pop() || p.cwd;
     return `<div class="usage-project"><span title="${esc(p.cwd)}">${esc(name)}</span>
-      <b>${fmtTokens(p.totalTokens)} <small>Token</small></b><b>${fmtCost(p.cost)}</b></div>`;
+      <b>${fmtTokens(p.totalTokens)} <small>Token</small></b><b>${fmtUsageCost(p)}</b></div>`;
   }).join("");
 
   box.innerHTML = `
     <div class="usage-overview">
-      <div class="usage-metric"><span>预估费用 <small>USD</small></span><b>${fmtCost(t.cost)}</b></div>
+      <div class="usage-metric" title="按当前模型单价估算；订阅模型显示等效价格，并非实际扣款"><span>预估费用 <small>USD</small></span><b>${fmtUsageCost(t)}</b></div>
       <div class="usage-metric"><span>总 Token</span><b>${fmtTokens(t.totalTokens)}</b></div>
       <div class="usage-metric"><span>调用次数</span><b>${(t.calls || 0).toLocaleString()}</b></div>
       <div class="usage-metric"><span>会话数</span><b>${(d.sessions || 0).toLocaleString()}</b></div>

@@ -1,5 +1,5 @@
 const domestic = /^(deepseek|moonshotai|minimax|zai|z-ai|zhipu|dashscope|alibaba|qwen|siliconflow|volcengine|doubao|baidu|tencent)(-|$)/i;
-const subscription = /^(openai-codex|github-copilot|google-gemini-cli|google-antigravity)$/;
+import { estimateSubscriptionCost, isSubscriptionProvider } from '../../shared/subscription-cost.mjs';
 
 // Official CNY / million tokens, verified 2026-09-18:
 // https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
@@ -25,10 +25,16 @@ export class TurnCost {
     const key = JSON.stringify([message.timestamp, message.provider, message.model, message.usage, message.content]);
     this.messages.set(key, message);
   }
-  format(fx) {
-    let cny = 0, usd = 0, hasCny = false, hasUsd = false, missing = false, subscribed = false, converted = false;
+  format(fx, models = []) {
+    let cny = 0, usd = 0, subscriptionUsd = 0, hasCny = false, hasUsd = false, hasSubscriptionUsd = false, missing = false, subscriptionMissing = false, converted = false;
     for (const m of this.messages.values()) {
-      if (subscription.test(m.provider || '')) { subscribed = true; continue; }
+      if (isSubscriptionProvider(m.provider)) {
+        const model = models.find((item) => item.provider === m.provider && item.id === m.model);
+        const amount = estimateSubscriptionCost(model, m.usage);
+        if (amount == null) subscriptionMissing = true;
+        else { subscriptionUsd += amount; hasSubscriptionUsd = true; }
+        continue;
+      }
       const native = deepseekCost(m);
       if (native != null) { cny += native; hasCny = true; continue; }
       const amount = m.usage?.cost?.total;
@@ -41,10 +47,11 @@ export class TurnCost {
     }
     const money = (n, symbol) => n > 0 && n < .0001 ? `<${symbol}0.0001` : symbol + n.toFixed(4);
     const parts = [hasCny && money(cny, '¥'), hasUsd && money(usd, '$')].filter(Boolean);
-    if (subscribed) parts.push('订阅用量');
+    if (hasSubscriptionUsd) parts.push(`${money(subscriptionUsd, '$')} 订阅等效`);
+    if (subscriptionMissing) parts.push('订阅价格未提供');
     if (missing) parts.push('部分费用未提供');
-    return { text: parts.length ? (hasCny || hasUsd ? '约 ' : '') + parts.join(' + ') : '费用未提供',
-      title: '本轮模型调用预估费用（含缓存与思考输出），不含图片、视频等工具费用；以平台账单为准。' +
+    return { text: parts.length ? (hasCny || hasUsd || hasSubscriptionUsd ? '约 ' : '') + parts.join(' + ') : '费用未提供',
+      title: '本轮模型调用按当前模型单价预估（含缓存与思考输出）；订阅等效费用并非实际扣款。不含图片、视频等工具费用；以平台账单为准。' +
         (converted ? ` 人民币折算汇率：1 USD = ${fx.rate} CNY（${fx.date}）。` : '') };
   }
 }

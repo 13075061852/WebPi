@@ -189,7 +189,13 @@ function bootstrap() {
       const frames = mainWin.webContents.mainFrame.frames.filter(frame => frame.url.startsWith('halo-preview://local/'));
       const guests = [...previewGuests].filter(guest => !guest.isDestroyed());
       const script = `(${PREVIEW_MOTION})(${previewMotionPaused}, ${settle === true})`;
-      await Promise.allSettled([...frames, ...guests].map(target => target.executeJavaScript(script)));
+      await Promise.allSettled([...frames, ...guests].map(target => {
+        let timer;
+        return Promise.race([
+          Promise.resolve().then(() => target.executeJavaScript(script)),
+          new Promise(resolve => { timer = setTimeout(resolve, 450); }),
+        ]).finally(() => clearTimeout(timer));
+      }));
     });
     return previewMotionWork;
   }

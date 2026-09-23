@@ -270,6 +270,21 @@ try {
   await evaluate('document.querySelector(".image-viewer").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))');
   assert.equal(await evaluate('document.querySelector(".image-viewer")?.open'),true,'Escape must play the close animation before removing the dialog');
   await waitFor(()=>evaluate('!document.querySelector(".image-viewer")'),'Image viewer failed to close');
+  // A busy preview can leave its pause IPC unresolved. Device choices still need
+  // to commit, and rapid clicks should settle on the last requested mode.
+  const stalledMotion = await evaluate(`(async()=>{
+    const {createLayoutMotion}=await import('./js/layout-motion.mjs');
+    const motion=createLayoutMotion({setPaused:()=>new Promise(()=>{})});
+    const body=document.querySelector('#pvBody');
+    for(const device of ['tablet','mobile','desktop']) motion(()=>{body.dataset.stalledDevice=device},{device:true,maskPreview:true});
+    const end=Date.now()+5500;
+    while(Date.now()<end){
+      if(body.dataset.stalledDevice==='desktop'&&!document.documentElement.classList.contains('layout-motion')&&!document.querySelector('.device-switch-mask')) return body.dataset.stalledDevice;
+      await new Promise(resolve=>setTimeout(resolve,40));
+    }
+    return {device:body.dataset.stalledDevice,mask:!!document.querySelector('.device-switch-mask'),motion:document.documentElement.classList.contains('layout-motion')};
+  })()`);
+  assert.equal(stalledMotion,'desktop','Unresponsive preview pause must not block device choices');
   await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   await evaluate('document.querySelector("#btnThink").click()');
   assert.equal(await evaluate('document.querySelector("#thinkModal").getAnimations().length'),0);

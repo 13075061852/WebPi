@@ -10,7 +10,7 @@ const tests = [
   'verify-release-workflow',
   'verify-release-history',
   'verify-app-updates', 'verify-image-generation', 'verify-image-card-timing',
-  'verify-turn-cost',
+  'verify-turn-cost', 'verify-subscription-usage', 'verify-quota-refresh',
   'verify-context-rate', 'verify-compaction-feedback',
   'verify-package-search',
   'verify-icon-library',

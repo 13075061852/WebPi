@@ -1,15 +1,38 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'" />
-<title>Pi Halo</title><script src="js/theme-catalog.js"></script><script src="js/theme.js"></script><link rel="stylesheet" href="css/theme-scenic.css" /><link rel="stylesheet" href="css/theme-collection.css" /><link rel="stylesheet" href="css/splash.css" /></head>
-<body><main id="stage">
-<div class="brand"><span>PI HALO</span><span>星环</span></div>
-<div class="identity">
-<svg class="emblem" viewBox="0 0 120 120" aria-hidden="true">
-<circle class="track" cx="60" cy="60" r="45"/>
-<g class="orbit"><path d="M60 15a45 45 0 0 1 45 45"/><circle class="satellite" cx="105" cy="60" r="3"/></g>
-<circle class="inner" cx="60" cy="60" r="35"/>
-<path class="mark" d="M40 44h40M49 44l-3 32m24-32v26q0 7 8 5"/>
-</svg><h1>让想法，即刻启程。</h1><p>你的智能工作空间</p></div>
-<footer><div><div class="status-line"><span id="status" role="status">加载主界面</span><span id="elapsed">0 秒</span></div><p id="startupDetail">正在准备窗口和交互控件</p></div><span class="loading" aria-hidden="true"><i></i><i></i><i></i></span></footer>
-</main><script src="js/splash.js"></script></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'" />
+  <title>Pi Halo</title>
+  <script src="js/theme-catalog.js"></script>
+  <script src="js/theme.js"></script>
+  <link rel="stylesheet" href="css/theme-scenic.css" />
+  <link rel="stylesheet" href="css/theme-collection.css" />
+  <link rel="stylesheet" href="css/splash.css" />
+</head>
+<body>
+  <main id="stage" aria-label="Pi Halo 启动中">
+    <header class="brand"><span>PI HALO</span><span>星环</span></header>
+    <section class="identity" aria-labelledby="heroTitle">
+      <svg class="emblem" viewBox="0 0 120 120" aria-hidden="true">
+        <circle class="aura" cx="60" cy="60" r="48" />
+        <circle class="track" cx="60" cy="60" r="43" />
+        <circle class="inner" cx="60" cy="60" r="33" />
+        <g class="orbit orbit-one"><path d="M60 17a43 43 0 0 1 43 43" /><circle cx="103" cy="60" r="2.8" /></g>
+        <g class="orbit orbit-two"><path d="M60 27a33 33 0 0 1 33 33" /><circle cx="93" cy="60" r="1.6" /></g>
+        <path class="mark" d="M39 44h42M49 44l-3 32m24-32v26q0 7 8 5" />
+      </svg>
+      <h1 id="heroTitle">让想法，即刻启程。</h1>
+      <p>你的智能工作空间</p>
+    </section>
+    <footer>
+      <div class="status-copy">
+        <div class="status-line"><strong id="status" role="status">加载主界面</strong><span id="elapsed">0 秒</span></div>
+        <p id="startupDetail">正在准备窗口和交互控件</p>
+      </div>
+      <span class="loading" aria-hidden="true"></span>
+    </footer>
+  </main>
+  <script src="js/splash.js"></script>
+</body>
+</html>

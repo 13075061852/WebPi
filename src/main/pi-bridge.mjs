@@ -12,6 +12,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { ProjectRuns } from './project-runs.mjs';
 import { refreshBillingFx } from './billing-fx.mjs';
+import { estimateSubscriptionCost, isSubscriptionProvider } from '../shared/subscription-cost.mjs';
 import { presentConversations, renameConversation } from './conversation-meta.mjs';
 import { imageTool, resolveImageCredential } from "./image-generation.mjs";
 import { videoTool } from "./video-generation.mjs";
@@ -950,6 +951,7 @@ async _doStart() {
           name: m.name || m.id,
           contextWindow: m.contextWindow,
           reasoning: !!m.reasoning,
+          cost: m.cost || null,
         });
       }
     } catch (e) {
@@ -1488,13 +1490,14 @@ async _doStart() {
     const byDay = new Map();     // YYYY-MM-DD -> 聚合
     const byProject = new Map(); // cwd -> 聚合
     let sessions = 0;
-    const emptyAgg = () => ({ calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 });
-    const add = (map, key, u) => {
+    const emptyAgg = () => ({ calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, unpriced: 0 });
+    const add = (map, key, u, amount) => {
       const a = map.get(key) || emptyAgg();
       a.calls++; a.input += u.input || 0; a.output += u.output || 0;
       a.cacheRead += u.cacheRead || 0; a.cacheWrite += u.cacheWrite || 0;
       a.totalTokens += u.totalTokens || (u.input || 0) + (u.output || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
-      a.cost += u.cost?.total || 0;
+      if (amount == null) a.unpriced++;
+      else a.cost += amount;
       map.set(key, a);
     };
     const scan = async (dir) => {
@@ -1525,12 +1528,16 @@ async _doStart() {
           const ts = Date.parse(obj.timestamp || "");
           if (!Number.isFinite(ts) || ts < since) continue;
           if (!counted) { sessions++; counted = true; }
-          add(byModel, `${m.provider || "?"}/${m.model || "?"}`, m.usage);
-          add(byDay, localDate(ts), m.usage);
-          add(usageBySession, "total", m.usage);
-          if (localDate(ts) === todayKey) add(usageBySession, "today", m.usage);
+          const model = isSubscriptionProvider(m.provider) ? this.modelRuntime?.getModel(m.provider, m.model) : null;
+          const amount = isSubscriptionProvider(m.provider)
+            ? estimateSubscriptionCost(model, m.usage)
+            : (m.usage.cost?.total || 0);
+          add(byModel, `${m.provider || "?"}/${m.model || "?"}`, m.usage, amount);
+          add(byDay, localDate(ts), m.usage, amount);
+          add(usageBySession, "total", m.usage, amount);
+          if (localDate(ts) === todayKey) add(usageBySession, "today", m.usage, amount);
           if (obj.timestamp > modified) modified = obj.timestamp;
-          add(byProject, cwd || "未知项目", m.usage);
+          add(byProject, cwd || "未知项目", m.usage, amount);
         }
         if (counted) sessionDetails.push({ file: full, cwd, name: title || "未命名会话", modified, ...usageBySession.get("total"), today: usageBySession.get("today") || emptyAgg() });
       }
@@ -1546,7 +1553,7 @@ async _doStart() {
     const totals = [...byModel.values()].reduce((s, a) => ({
       calls: s.calls + a.calls, input: s.input + a.input, output: s.output + a.output,
       cacheRead: s.cacheRead + a.cacheRead, cacheWrite: s.cacheWrite + a.cacheWrite,
-      totalTokens: s.totalTokens + a.totalTokens, cost: s.cost + a.cost,
+      totalTokens: s.totalTokens + a.totalTokens, cost: s.cost + a.cost, unpriced: s.unpriced + a.unpriced,
     }), emptyAgg());
     totals.cost = r4(totals.cost);
     sessionDetails.sort((a, b) => b.modified.localeCompare(a.modified));
@@ -1788,7 +1795,7 @@ async _doStart() {
     return null;
   }
 
-  /** 当前 provider 的剩余额度；内存缓存仅作防抖，force=true 跳过（每轮对话结束/切换账户后强制拉新） */
+  /** 当前 provider 的剩余额度；内存缓存仅作防抖，force=true 跳过（每步操作结束/切换账户后强制拉新） */
   modelQuota(provider, force = false) {
     return this.#queueAccountOperation(provider, () => this.#modelQuota(provider, force));
   }
