@@ -59,6 +59,12 @@ try {
     return response.result?.result?.value;
   };
   await waitFor(async () => (await evaluate('window.halo?.startupState().then(r=>r.data)'))?.ready, 'Startup did not finish');
+  // Hosted Windows runners may disable animations or leave the window occluded.
+  // This test exercises the animated path explicitly; reduced-motion behavior is separate.
+  await send('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
+  await send('Page.bringToFront');
+  await send('Emulation.setFocusEmulationEnabled', {enabled:true});
+  await waitFor(() => evaluate('!document.hidden && !matchMedia("(prefers-reduced-motion: reduce)").matches'), 'Animated test page must be visible with motion enabled');
   const previewFile = process.argv.find(value => value.startsWith('--preview-file='))?.slice('--preview-file='.length);
   const html = previewFile ? fs.readFileSync(previewFile, 'utf8') : '<!doctype html><style>body{margin:0;background:#17242e;color:white}canvas{width:100%;height:100%}</style><canvas></canvas><script>const c=document.querySelector("canvas"),ctx=c.getContext("2d");let frame=0;function resize(){c.width=innerWidth;c.height=innerHeight}onresize=resize;resize();function draw(){frame++;ctx.fillStyle="#17242e";ctx.fillRect(0,0,c.width,c.height);for(let i=0;i<3500;i++){ctx.fillStyle="hsl("+(i+frame)%360+" 70% 50%)";ctx.fillRect((i*17+frame)%c.width,(i*31)%c.height,7,7)}requestAnimationFrame(draw)}draw();</script>';
   const probeScript = '<script>window.__motionProbe={id:Math.random(),resizes:0,frames:0};addEventListener("resize",()=>__motionProbe.resizes++);function probeFrame(){__motionProbe.frames++;requestAnimationFrame(probeFrame)}requestAnimationFrame(probeFrame);addEventListener("message",e=>{if(e.data==="motion-probe")parent.postMessage({type:"motion-probe",...__motionProbe,width:innerWidth,height:innerHeight},"*")});</script>';
