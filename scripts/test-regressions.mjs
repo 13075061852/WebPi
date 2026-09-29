@@ -17,7 +17,7 @@ const tests = [
   'verify-project-fast-start',
   'verify-env-proxy', 'verify-pi-command', 'verify-bundled-pi', 'verify-environment-detection', 'verify-environment-manager', 'verify-video-generation',
   'verify-video-domestic', 'verify-video-international', 'verify-video-platforms', 'verify-video-apimart', 'verify-video-pricing', 'verify-video-workflow', 'verify-video-billing', 'verify-video-confirmations',
-  'verify-session-integrity', 'verify-conversation-meta', 'verify-conversation-switch', 'verify-project-runs', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-server-delete',
+  'verify-session-integrity', 'verify-conversation-meta', 'verify-conversation-switch', 'verify-project-runs', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-server-tools', 'verify-server-delete',
   'verify-composer-events', 'verify-queue-images', 'verify-office-protocol', 'verify-ipc-sender',
   'verify-session-queue', 'verify-preview-races', 'verify-preview-refresh', 'verify-preview-motion',
   'verify-preview-file', 'verify-preview-inspection', 'verify-workspace-path',

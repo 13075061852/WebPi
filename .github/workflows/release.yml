@@ -94,6 +94,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node test/e2e/e2e-packaged-proxy.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node test/e2e/e2e-ui-motion.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain verified installer for upload-only retries
         uses: actions/upload-artifact@v4
         with:

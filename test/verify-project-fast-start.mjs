@@ -14,8 +14,9 @@ const command = process.platform === 'win32' ? `& '${process.execPath.replaceAll
 const url = `http://127.0.0.1:${port}/base/`;
 const saved = new Map(), managers = [];
 let analyses = 0;
+// Exercise the production readiness window; Windows ConPTY startup can exceed 1.5 seconds.
 const make = () => {
-  const manager = new ProjectRuns({fastWaitMs:1500, readRecipe:cwd=>saved.get(cwd), saveRecipe:(cwd,r)=>saved.set(cwd,structuredClone(r)),
+  const manager = new ProjectRuns({readRecipe:cwd=>saved.get(cwd), saveRecipe:(cwd,r)=>saved.set(cwd,structuredClone(r)),
     analyze: async run => {
       analyses++;
       await manager.launch(run,{command,label:'test frontend'});
@@ -34,7 +35,7 @@ try {
   assert.equal([...saved.values()][0].services[0].command,command);
   await first.stop(firstRun.id);
   const second=make(); const secondRun=await start(second);
-  assert.equal(analyses,1,'Saved startup must not invoke AI');
+  assert.equal(analyses,1,'Saved startup must not invoke AI: '+secondRun.fastError+' '+secondRun.log);
   assert.equal(secondRun.urls[0],url); await second.stop(secondRun.id);
   const recipe=[...saved.values()][0]; recipe.services[0].command=process.platform==='win32'?'exit 7':'exit 7';
   const third=make(); const repaired=await start(third);
@@ -47,7 +48,7 @@ try {
   console.log('PASS real managed server: learn startup, persistent reuse without AI, failed command cleanup/fallback, relearn and cancel');
 } finally {
   await Promise.all(managers.map(manager=>manager.dispose()));
-  fs.rmSync(root,{recursive:true,force:true});
+  fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:200});
 }
 // node-pty's Windows native handles can keep the test host alive after all trees stop.
 process.exit(0);
