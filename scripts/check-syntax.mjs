@@ -1,7 +1,8 @@
 // Syntax check every JS/MJS/CJS source file via `node --check` (CI smoke gate).
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,18 +23,22 @@ const walk = (dir) => {
 walk(ROOT);
 
 let failed = 0;
-for (const f of files) {
-  try {
-    // app.js is loaded with type="module" in index.html despite the CommonJS package.
-    const browserModule = f === path.join(ROOT, 'src', 'renderer', 'js', 'app.js');
-    execFileSync(process.execPath, browserModule ? ['--check', '--input-type=module'] : ['--check', f], {
-      stdio:'pipe', ...(browserModule ? {input:readFileSync(f,'utf8')} : {})
-    });
-  } catch (e) {
-    failed++;
-    console.log(`FAIL ${path.relative(ROOT, f)}`);
-    console.log(String(e.stderr || e.message).split("\n").slice(0, 4).join("\n"));
+let next = 0;
+await Promise.all(Array.from({length:Math.min(4,availableParallelism())},async()=>{
+  while (next < files.length) {
+    const f=files[next++];
+    try {
+      const browserModule=f===path.join(ROOT,'src','renderer','js','app.js');
+      // Use stdin only for the renderer module in this CommonJS package.
+      await new Promise((resolve,reject)=>{
+        const child=execFile(process.execPath,browserModule?['--check','--input-type=module']:['--check',f],{windowsHide:true},error=>error?reject(error):resolve());
+        if(browserModule)child.stdin.end(readFileSync(f,'utf8'));
+      });
+    } catch(error) {
+      failed++;
+      console.log(`FAIL ${path.relative(ROOT,f)}\n${String(error.stderr || error.message).split('\n').slice(0,4).join('\n')}`);
+    }
   }
-}
+}));
 console.log(`checked ${files.length} files, ${failed} failed`);
 process.exit(failed ? 1 : 0);
