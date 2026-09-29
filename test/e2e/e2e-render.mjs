@@ -4,15 +4,25 @@
  * Verifies the full renderer pipeline without depending on network/model access.
  */
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import net from 'node:net';
 
-const PORT = 9333;
+const probe = net.createServer();
+await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+const PORT = probe.address().port;
+await new Promise(resolve => probe.close(resolve));
+const fixture = mkdtempSync(path.join(tmpdir(), 'halo-render-'));
+const profile = path.join(fixture, 'profile'), workspace = path.join(fixture, 'workspace'), agent = path.join(fixture, 'agent');
+for (const dir of [profile, workspace, agent]) mkdirSync(dir);
+writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({ cwd:workspace, projects:[{cwd:workspace}] }));
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL|ELECTRON_RUN_AS_NODE)/i.test(key)));
+Object.assign(env, { USERPROFILE:fixture, HOME:fixture, APPDATA:path.join(fixture,'roaming'), LOCALAPPDATA:path.join(fixture,'local'), PI_CODING_AGENT_DIR:agent, PI_OFFLINE:'1' });
 const electron = spawn(
   process.platform === "win32" ? "node_modules/electron/dist/electron.exe" : "node_modules/.bin/electron",
-  [".", `--remote-debugging-port=${PORT}`, `--user-data-dir=${mkdtempSync(path.join(tmpdir(), 'halo-render-'))}`],
-  { stdio: ["ignore", "pipe", "pipe"] }
+  [".", `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`],
+  { env, windowsHide:true, stdio: ["ignore", "pipe", "pipe"] }
 );
 electron.stderr.on("data", () => {});
 electron.on("exit", (c) => console.log("electron exited", c));
@@ -118,7 +128,8 @@ await evalJS(`(async () => {
       stopReason: "endTurn", usage: { input: 1200, output: 340, cacheRead: 8200, cacheWrite: 260, cost: { total: 0.0123 } } } });
   d({ type: "agent_end", messages: [], willRetry: false });
   d({ type: "agent_settled" });
-  d({ type: "queue_update", steering: ["把发送按钮改成渐变色"], followUp: [] });
+  d({ type: "queue_update", steering: ["把发送按钮改成渐变色"], followUp: [""],
+    steeringAttachments: [["参考图.png"]], followUpAttachments: [["截图.png"]] });
 })()`);
 await sleep(600);
 await screenshot("test/shot-happy.png");
@@ -131,10 +142,12 @@ const domCheck = await evalJS(`({
   toolCards: document.querySelectorAll("#messages .tool").length,
   toolDone: !!document.querySelector("#messages .tool.done"),
   queueChips: document.querySelectorAll("#queueRow .queue-chip").length,
+  queueImages: document.querySelector("#queueRow")?.textContent.includes("参考图.png") &&
+    document.querySelector("#queueRow")?.textContent.includes("截图.png"),
   stats: document.querySelector("#chatStats")?.textContent || "",
 })`);
 console.log("dom check:", JSON.stringify(domCheck));
-if (!domCheck.turns || !domCheck.mdText.includes("项目结构") || !domCheck.hasBold || !domCheck.toolCards || !domCheck.toolDone || !domCheck.queueChips || !domCheck.stats) {
+if (!domCheck.turns || !domCheck.mdText.includes("项目结构") || !domCheck.hasBold || !domCheck.toolCards || !domCheck.toolDone || domCheck.queueChips !== 2 || !domCheck.queueImages || !domCheck.stats) {
   console.log("DOM VERIFY FAILED");
   electron.kill();
   process.exit(1);
@@ -214,6 +227,32 @@ for (const theme of ['light', 'dark']) {
   if (!valid) { electron.kill(); throw new Error('Markdown preview regression'); }
   await screenshot('test/shot-document-' + theme + '.png');
 }
+await evalJS(`document.querySelector('#btnSettings').click(); document.querySelector('[data-pane="proxy"].set-nav').click();`);
+await sleep(300);
+// Replace form listeners with a fixture: UI tests must never modify the host system proxy.
+await evalJS(`(async () => {
+  const old = document.querySelector('#proxyForm'); old.replaceWith(old.cloneNode(true));
+  window.__proxyFixture = {mode:'direct',port:7890,system:{flags:1,server:''}};
+  const {initProxySettings} = await import('./js/proxy-settings.mjs');
+  const controller = initProxySettings({api:{
+    proxyGet:async()=>({ok:true,data:window.__proxyFixture}),
+    proxySet:async(value)=>({ok:true,data:window.__proxyFixture={...value,port:Number(value.port),system:{flags:value.mode==='proxy'?3:1,server:value.mode==='proxy'?'127.0.0.1:'+value.port:''}}})
+  }});
+  await controller.refresh();
+})()`);
+await evalJS(`document.querySelector('#proxyPort').value='65534'; document.querySelector('#proxyApply').click();`);
+await sleep(400);
+const proxyState = await evalJS('window.__proxyFixture');
+if (proxyState?.mode !== 'proxy' || proxyState.port !== 65534) { electron.kill(); throw Error('Proxy UI did not apply'); }
+for (const theme of ['light', 'dark']) {
+  await evalJS(`document.documentElement.dataset.theme='${theme}'`);
+  await sleep(350);
+  await screenshot('test/shot-proxy-' + theme + '.png');
+}
+await evalJS(`document.querySelector('#proxyReset').click()`);
+await sleep(400);
+if (await evalJS('window.__proxyFixture.mode') !== 'direct') { electron.kill(); throw Error('Proxy reset failed'); }
+console.log('PASS proxy settings UI applies a port and restores direct');
 ws.close();
 electron.kill();
 process.exit(0);

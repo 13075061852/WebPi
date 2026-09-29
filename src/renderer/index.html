@@ -290,6 +290,10 @@
         <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4M7 8l3 3-3 3M13 14h4"/></svg>
         环境配置
       </button>
+      <button class="set-nav" data-pane="proxy">
+        <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18"/></svg>
+        代理配置
+      </button>
       <button class="set-nav" data-pane="appearance">
         <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18Z"/></svg>
         主题搭配
@@ -363,13 +367,27 @@
               <label>分辨率<select id="videoResolution"></select></label>
               <label>时长<select id="videoDuration"></select></label>
               <label>画面比例<select id="videoRatio"></select></label>
-              <label>网络<select id="videoNetwork"><option value="system">跟随全局</option><option value="direct">直连</option><option value="proxy">使用全局代理</option></select></label>
+              <label>网络<select id="videoNetwork" disabled title="在设置的代理配置中统一切换"><option value="system">跟随全局代理配置</option></select></label>
             </div>
             <div class="video-estimate" role="status" aria-live="polite"><div class="video-estimate-heading"><span>预估费用</span><strong id="videoEstimateValue">—</strong></div><div id="videoEstimateDetail" class="video-estimate-detail"></div></div>
             <div class="video-config-actions"><button id="videoClearKey" type="button" class="mini-btn danger" hidden>移除密钥</button><button id="videoTest" type="button" class="mini-btn">测试连接</button><button id="videoSave" type="submit" class="mini-btn accent">保存</button></div>
             <p id="videoSettingsResult" role="status" aria-live="polite" hidden></p>
           </form>
           </div>
+        </div>
+      </div>
+      <div class="set-pane" id="setPane-proxy">
+        <div class="settings-title"><h3>代理配置</h3></div>
+        <div class="set-body">
+          <form id="proxyForm" class="proxy-card">
+            <div class="proxy-heading"><h4>Windows 系统代理</h4><span id="proxyStatus" role="status">正在读取…</span></div>
+            <div class="proxy-controls"><div class="proxy-endpoint"><label for="proxyPort">端口</label>
+            <div class="proxy-address"><span>127.0.0.1</span><span>:</span><input id="proxyPort" type="number" inputmode="numeric" min="1" max="65535" step="1" required value="7890" title="HTTP 或混合代理端口" /></div>
+            </div>
+            <div class="proxy-actions"><button id="proxyReset" type="button" class="mini-btn">恢复直连</button><button id="proxyApply" type="submit" class="mini-btn accent">启用代理</button></div>
+            </div>
+            <p id="proxyResult" role="status" aria-live="polite"></p>
+          </form>
         </div>
       </div>
       <div class="set-pane" id="setPane-environment">

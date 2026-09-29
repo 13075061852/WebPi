@@ -172,7 +172,7 @@ export function initVideoSettings({ root = document, api = window.halo, onSaved 
     get('videoProviderName').textContent = spec.name;
     options('videoModel', spec.models, values.model, spec.defaults.model);
     updateModelOptions(values);
-    get('videoNetwork').value = ['system', 'direct', 'proxy'].includes(values.network) ? values.network : 'system';
+    get('videoNetwork').value = 'system';
     // A password draft belongs only to the provider that received the input.
     get('videoApiKey').value = drafts.get(provider)?.apiKey || '';
     get('videoApiKey').placeholder = saved.hasApiKey ? '已保存，输入可替换' : 'API Key';

@@ -3,6 +3,7 @@ import { Agent, EnvHttpProxyAgent } from 'undici';
 let directDispatcher;
 const proxyDispatchers = new Map();
 export function videoDispatcher(network = 'system', env = process.env) {
+  if (env.HALO_PROXY_MODE === 'proxy' || env.HALO_PROXY_MODE === 'direct') return undefined;
   if (network === 'system') return undefined;
   if (network === 'direct') return directDispatcher ||= new Agent();
   if (network !== 'proxy') throw Error('无效的连接方式');

@@ -11,7 +11,7 @@ function extract(start, end) {
 }
 function node() {
   return { style: {}, classList: { add() {}, remove() {}, contains() { return false; } },
-    appendChild() {}, addEventListener() {}, value: '', scrollHeight: 24, innerHTML: '' };
+    appendChild() {}, addEventListener() {}, focus() {}, value: '', scrollHeight: 24, innerHTML: '' };
 }
 function harness() {
   const input = node(), attachments = node(), messages = node(), calls = [], rows = [], order = [], notices = [];
@@ -25,7 +25,7 @@ function harness() {
     $$: () => [], document: { createElement: node },
     window: { __piDebug: { ignored: 0 }, halo: Object.fromEntries(['prompt', 'steer', 'followUp', 'projectAdd'].map(method => [method, (...args) => invoke(method, ...args)])) },
     currentPreviewContext: () => null, toPiImage: img => ({ type: 'image', mimeType: img.mediaType, data: img.data }),
-    esc: x => x, trunc: x => x, openImagePreview() {},
+    esc: x => x, trunc: x => x, openImagePreview() {}, closeMentions() {},
     renderUserMsg: (text, images) => { rows.push({ text: userMessageText(text), images }); order.push('user'); },
     finalizeMessage: () => order.push('message-end'), finalizeTurn: () => order.push('turn-end'),
     ensureTurn: () => { order.push('turn-start'); return {}; }, collapseThink() {},
@@ -38,6 +38,7 @@ function harness() {
   });
   for (const [start, end] of [
     ['async function send(', '\nfunction renderUserMsg('],
+    ['function appendFileMention(', '\nfunction handleMentionKey('],
     ['function onMessageStart(', '\nfunction onMessageUpdate('],
     ['async function retryLast()', '\n/* ---- tool timeline'],
     ['function renderAttachments()', '\n/* ---- project'],
@@ -51,6 +52,16 @@ function harness() {
   return { context, input, S, calls, rows, order, notices, draft };
 }
 const image = { name: 'A.png', mediaType: 'image/png', data: 'AAAA' };
+{
+  const h = harness();
+  h.context.appendFileMention('C:\\work\\report.pdf');
+  assert.equal(h.input.value, '@"C:/work/report.pdf" ');
+  h.S.streaming = true;
+  const pending = h.context.send();
+  assert.equal(h.calls[0].method, 'steer');
+  assert.equal(h.calls[0].args[0], '@"C:/work/report.pdf"');
+  h.calls[0].resolve({ ok:true }); await pending;
+}
 
 // Rejected sends restore an untouched draft, but never newer text/images or a different view.
 for (const scenario of ['untouched', 'new-text', 'new-image', 'edited-then-cleared', 'other-session', 'switch-back']) {
@@ -104,9 +115,19 @@ for (const scenario of ['untouched', 'new-text', 'new-image', 'edited-then-clear
   h.S.streaming = true; h.draft('rejected queue');
   const rejected = h.context.send('followUp'); h.calls.at(-1).resolve({ ok: false, error: 'queue rejected' }); await rejected;
   assert.equal(h.input.value, 'rejected queue'); assert.equal(h.rows.length, 3);
-  h.draft('image draft', [image]); await h.context.send();
-  assert.equal(h.input.value, 'image draft'); assert.equal(h.S.images.length, 1);
-  assert.equal(h.calls.length, 4, 'queued attachments must not silently disappear');
+  h.draft('image draft', [image]);
+  const queuedImage = h.context.send();
+  assert.equal(h.calls.length, 5, 'queued image must reach the IPC bridge');
+  assert.equal(h.calls.at(-1).method, 'steer');
+  assert.equal(h.calls.at(-1).args[1].images[0].mimeType, 'image/png');
+  assert.equal(h.calls.at(-1).args[1].names[0], 'A.png');
+  h.calls.at(-1).resolve({ ok: true }); await queuedImage;
+  h.draft('', [image]);
+  const followUpImage = h.context.send('followUp');
+  assert.equal(h.calls.at(-1).method, 'followUp');
+  assert.equal(h.calls.at(-1).args[1].images[0].data, image.data);
+  h.calls.at(-1).resolve({ ok: true }); await followUpImage;
+  assert.equal(h.S.images.length, 0);
 }
 
 // Expanded skills and user image blocks render the same way after snapshot restore.

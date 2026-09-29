@@ -7,6 +7,8 @@ const listen = (channel) => (cb) => {
 };
 
 contextBridge.exposeInMainWorld("halo", {
+  proxyGet: () => ipcRenderer.invoke('halo:proxy-get'),
+  proxySet: config => ipcRenderer.invoke('halo:proxy-set', config),
   checkAppUpdate: () => ipcRenderer.invoke('halo:check-app-update'),
   appUpdateState: () => ipcRenderer.invoke('halo:app-update-state'),
   releaseHistory: () => ipcRenderer.invoke('halo:release-history'),
@@ -52,8 +54,8 @@ contextBridge.exposeInMainWorld("halo", {
   videoModelPrices: input => ipcRenderer.invoke('halo:video-model-prices', input),
   init: (cwd) => ipcRenderer.invoke("halo:init", cwd),
   prompt: (text, opts) => ipcRenderer.invoke("halo:prompt", text, opts),
-  steer: (text) => ipcRenderer.invoke("halo:steer", text),
-  followUp: (text) => ipcRenderer.invoke("halo:followUp", text),
+  steer: (text, attachments) => ipcRenderer.invoke("halo:steer", text, attachments),
+  followUp: (text, attachments) => ipcRenderer.invoke("halo:followUp", text, attachments),
   abort: () => ipcRenderer.invoke("halo:abort"),
   compact: (instructions) => ipcRenderer.invoke("halo:compact", instructions),
   listModels: () => ipcRenderer.invoke("halo:list-models"),
@@ -104,6 +106,7 @@ contextBridge.exposeInMainWorld("halo", {
   projectsList: () => ipcRenderer.invoke("halo:projects-list"),
   projectSwitch: (cwd) => ipcRenderer.invoke("halo:project-switch", { cwd }),
   droppedFilePath: (file) => webUtils.getPathForFile(file),
+  droppedFileInfo: (file) => ipcRenderer.invoke('halo:dropped-file-info', webUtils.getPathForFile(file)),
   projectAdd: (dir) => ipcRenderer.invoke("halo:project-add", { dir }),
   projectRemove: (cwd) => ipcRenderer.invoke("halo:project-remove", { cwd }),
   agentDefaultGet: () => ipcRenderer.invoke("halo:agent-default-get"),

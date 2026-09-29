@@ -29,6 +29,7 @@
     "appId": "com.pihalo.app",
     "productName": "Pi Halo",
     "asarUnpack": [
+      "src/main/windows-proxy.ps1",
       "node_modules/**"
     ],
     "beforePack": "./build/prepare-package.cjs",

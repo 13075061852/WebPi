@@ -1,5 +1,6 @@
 import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
 import { initAppUpdates } from './app-updates.mjs';
+import { initProxySettings } from './proxy-settings.mjs';
 import { initReleaseHistory } from './release-history.mjs';
 import { initStartupProgress } from './startup.mjs';
 import { createLayoutMotion } from './layout-motion.mjs';
@@ -29,6 +30,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 let environmentSettings;
 let videoSettings;
+let proxySettings;
 
 /* ---- 渲染层常量（与主进程 LIMITS 对应，收敛魔法数字） ---- */
 const CONFIRM_RESET_MS = 2600;        // 两步删除确认：未二次确认时恢复的毫秒数
@@ -59,7 +61,7 @@ const S = {
   assistantText: "",
   thinking: null,
   toolCards: new Map(),       // toolCallId -> {card, outEl, descEl, path, startedAt, toolName}
-  queued: { steering: [], followUp: [] },
+  queued: { steering: [], followUp: [], steeringAttachments: [], followUpAttachments: [] },
   pkgQuery: "", pkgType: "all", pkgPage: 1, pkgItems: [], pkgTotal: 0, pkgLoaded: false, pkgInstalledList: [],
   previewMode: "render", // 预览模式：render（渲染页面）| source（源代码）
   sessions: [],
@@ -97,6 +99,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireUI();
   initSidebarHeight();
   initAppUpdates();
+  proxySettings = initProxySettings();
   initReleaseHistory();
   wirePi();
   initStartupProgress({ onRetry: restoreInitialWorkspace });
@@ -836,7 +839,8 @@ function handlePiEvent(event, sessionId, seq) {
 
       case "queue_update": {
         const had = S.queued.steering.length + S.queued.followUp.length;
-        S.queued = { steering: event.steering || [], followUp: event.followUp || [] };
+        S.queued = { steering: event.steering || [], followUp: event.followUp || [],
+          steeringAttachments: event.steeringAttachments || [], followUpAttachments: event.followUpAttachments || [] };
         renderQueue();
         if (S.queued.steering.length > had) toast("已入队引导消息", "ok");
         break;
@@ -1520,8 +1524,8 @@ function onToolEnd(ev) {
 function renderQueue() {
   const row = $("#queueRow");
   const items = [
-    ...S.queued.steering.map((t) => ({ t, k: "引导" })),
-    ...S.queued.followUp.map((t) => ({ t, k: "追加" })),
+    ...S.queued.steering.map((t, index) => ({ t, k: "引导", names: S.queued.steeringAttachments?.[index] || [] })),
+    ...S.queued.followUp.map((t, index) => ({ t, k: "追加", names: S.queued.followUpAttachments?.[index] || [] })),
   ];
   row.hidden = items.length === 0;
   row.setAttribute("aria-label", `等待消息，共 ${items.length} 条`);
@@ -1529,11 +1533,11 @@ function renderQueue() {
     `<details class="queue-chip">
       <summary title="点击展开完整消息">
         <svg class="queue-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 4v8a2 2 0 0 0 2 2h8m-3-3 3 3-3 3M9 5h6M9 8h4"/></svg>
-        <span class="queue-text">${esc(i.t)}</span>
-        <small>${i.k === "引导" ? "调整方向" : "等待执行"}</small>
+        <span class="queue-text">${esc(i.t || (i.names.length ? `图片 ${i.names.length} 张` : "等待执行"))}</span>
+        <small>${i.names.length ? `图片 ${i.names.length} 张 · ` : ""}${i.k === "引导" ? "调整方向" : "等待执行"}</small>
         <svg class="queue-expand" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>
       </summary>
-      <div class="queue-detail">${esc(i.t)}</div>
+      <div class="queue-detail">${esc(i.t)}${i.names.length ? `${i.t ? "\n" : ""}${esc(i.names.map((name) => `图片：${name}`).join("\n"))}` : ""}</div>
     </details>`).join("");
 }
 
@@ -1628,6 +1632,12 @@ function insertMention(index) {
   input.setRangeText('@"' + path + '" ', mentionStart, input.selectionStart, "end");
   closeMentions(); autoGrow(); input.focus();
 }
+function appendFileMention(path) {
+  const input = $('#input');
+  const reference = `@"${path.replace(/\\/g, '/')}"`;
+  input.value += `${input.value && !/\s$/.test(input.value) ? ' ' : ''}${reference} `;
+  closeMentions(); autoGrow(); input.focus();
+}
 function handleMentionKey(e) {
   if ($("#mentionMenu").hidden || e.isComposing) return false;
   if (!["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(e.key)) return false;
@@ -1683,7 +1693,6 @@ async function send(queueMode = "steer") {
   const queued = S.streaming;
   if (queued) {
     if (text.startsWith("/")) return toast("任务进行中，命令暂不可用", "err");
-    if (S.images.length) return toast("图片附件请在当前任务结束后发送，草稿已保留", "");
   }
 
   if (!S.state?.ready) return toast("核心尚未就绪，请稍候", "err");
@@ -1713,7 +1722,8 @@ async function send(queueMode = "steer") {
 
   try {
     const result = queued
-      ? await window.halo[queueMode === "followUp" ? "followUp" : "steer"](text)
+      ? await window.halo[queueMode === "followUp" ? "followUp" : "steer"](text,
+        sentImages.length ? { images: sentImages.map(toPiImage), names: sentImages.map((image) => image.name) } : undefined)
       : await window.halo.prompt(text, { preview: currentPreviewContext(), ...(sentImages.length ? { images: sentImages.map(toPiImage) } : {}) });
     if (result?.ok === false) throw new Error(result.error || "指令执行失败");
   } catch (e) {
@@ -2088,7 +2098,7 @@ function clearChat() {
   S.retrying = null;
   S.lastUserPrompt = null;
   S.activity = [];
-  S.queued = { steering: [], followUp: [] };
+  S.queued = { steering: [], followUp: [], steeringAttachments: [], followUpAttachments: [] };
   renderQueue();
   setStreamingUI(false);
 }
@@ -2271,6 +2281,7 @@ function wireUI() {
     document.querySelectorAll("#settingsModal .set-pane").forEach((p) => p.classList.toggle("active", p.id === "setPane-" + b.dataset.pane));
     if (b.dataset.pane === "usage") loadUsage(); // 打开面板时刷新统计
     if (b.dataset.pane === "environment") void environmentSettings?.refresh();
+    if (b.dataset.pane === "proxy") void proxySettings?.refresh();
     if (b.dataset.pane === "video") void videoSettings?.refresh();
     if (b.dataset.pane === "login") void loadDefaultModels();
   }));
@@ -2439,8 +2450,17 @@ function wireUI() {
     clearProjectDrag();
     if (projectDropBusy) return toast('正在添加项目，请稍候', 'err');
     // Read DataTransfer before the first await; browsers clear it after dispatch.
-    const dirs = [...new Set(Array.from(e.dataTransfer.files, file => window.halo.droppedFilePath(file)).filter(Boolean))];
-    if (!dirs.length) return toast('请从文件管理器拖入项目文件夹', 'err');
+    const dropped = Array.from(e.dataTransfer.files);
+    const entries = (await Promise.all(dropped.map(async file => ({ file,
+      info: (await window.halo.droppedFileInfo(file).catch(() => null))?.data || null })))).filter(entry => entry.info);
+    if (!entries.length) return toast('无法读取拖入的文件或文件夹', 'err');
+    const dirs = [...new Set(entries.filter(entry => entry.info.directory).map(entry => entry.info.path))];
+    for (const { file, info } of entries) {
+      if (info.directory) continue;
+      if (file.type.startsWith('image/')) addImageFile(file);
+      else appendFileMention(info.path);
+    }
+    if (!dirs.length) return;
     projectDropBusy = true;
     try {
       for (const dir of dirs) await switchProjectViaAdd(dir);
@@ -3632,6 +3652,7 @@ function openSettings() {
   syncThemeChoices();
   openModal("settingsModal");
   if ($("#setPane-environment").classList.contains("active")) void environmentSettings?.refresh();
+  if ($("#setPane-proxy").classList.contains("active")) void proxySettings?.refresh();
   if ($("#setPane-video").classList.contains("active")) void videoSettings?.refresh();
   if ($("#setPane-login").classList.contains("active")) void loadDefaultModels();
   S.pkgLoaded = true;

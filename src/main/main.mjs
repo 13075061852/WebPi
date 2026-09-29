@@ -23,7 +23,8 @@ import { isInsideWorkspace } from "./workspace-path.mjs";
 import { readPreviewFile } from "./read-preview-file.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PiBridge, HaloStore, scanAgents } from "./pi-bridge.mjs";
-import { configureEnvironmentProxy } from "./env-proxy.mjs";
+import { GlobalProxy } from './global-proxy.mjs';
+import { WindowsSystemProxy } from './windows-system-proxy.mjs';
 import { EnvironmentManager } from "./environment-manager.mjs";
 import { GitHubAuth } from './github-auth.mjs';
 import { CloudflareService } from './cloudflare.mjs';
@@ -34,8 +35,6 @@ import { VideoGeneration } from "./video-generation.mjs";
 import { VideoConfirmations } from "./video-confirmations.mjs";
 import { videoResponse } from "./video-preview.mjs";
 
-// Applies to both npm start and the installed EXE, before Pi/OAuth can fetch.
-configureEnvironmentProxy();
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(HERE, "..", "..");
@@ -124,6 +123,10 @@ function writeAgentExt(storeFile) {
 
 function bootstrap() {
   const store = new HaloStore(path.join(app.getPath("userData"), "halo-settings.json"));
+  const globalProxy = new GlobalProxy(store, { system:new WindowsSystemProxy() });
+  app.on('session-created', created => {
+    void globalProxy.addSession(created).catch(error => console.error('[proxy] session configuration failed', error.message));
+  });
   const bridge = new PiBridge(store, { seal, unseal });
   const videoSettings = new VideoSettings(path.join(os.homedir(), '.pi', 'agent', 'halo-video.json'), { seal, unseal });
   const videoPricing = new VideoPricing();
@@ -580,10 +583,12 @@ function bootstrap() {
   handle("halo:video-estimate", input => videoPricing.estimate(input));
   handle("halo:video-model-prices", input => videoPricing.models(input));
   handle("halo:get-state", () => bridge.publicState());
+  handle('halo:proxy-get', () => globalProxy.read());
+  handle('halo:proxy-set', value => globalProxy.set(value));
   handle("halo:init", (cwd) => bridge.start(cwd));
   handle("halo:prompt", (text, opts) => bridge.prompt(text, opts));
-  handle("halo:steer", (text) => bridge.steer(text));
-  handle("halo:followUp", (text) => bridge.followUp(text));
+  handle("halo:steer", (text, attachments) => bridge.steer(text, attachments));
+  handle("halo:followUp", (text, attachments) => bridge.followUp(text, attachments));
   handle("halo:abort", () => bridge.abort());
   handle("halo:compact", (instructions) => bridge.compact(instructions));
   handle("halo:list-models", () => bridge.listModels());
@@ -982,6 +987,12 @@ function bootstrap() {
     return true;
   });
 
+  handle('halo:dropped-file-info', async (filePath) => {
+    if (typeof filePath !== 'string' || !filePath) return null;
+    try { return { path: filePath, directory: (await fs.promises.stat(filePath)).isDirectory() }; }
+    catch { return null; }
+  });
+
   handle("halo:pick-images", async () => {
     const res = await dialog.showOpenDialog(mainWin, {
       title: "附加图片",
@@ -1017,7 +1028,8 @@ function bootstrap() {
     }
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    await Promise.all([globalProxy.addSession(session.defaultSession), globalProxy.addSession(session.fromPartition('website-preview'))]);
     // preview protocol: serve workspace files to the Preview iframe safely
     const MIME = {
       ".html": "text/html", ".htm": "text/html", ".css": "text/css",

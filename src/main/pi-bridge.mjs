@@ -738,6 +738,17 @@ async _doStart() {
       if (event.type === "message_end") ctx.partial = null;
       if (event.type === "tool_execution_start") (ctx.activeTools ||= {})[event.toolCallId] = event.toolName;
       if (event.type === "tool_execution_end") delete (ctx.activeTools ||= {})[event.toolCallId];
+      let forwardedEvent = event;
+      if (event.type === "queue_update") {
+        const queued = (ctx.queueAttachments ||= { steering: [], followUp: [] });
+        for (const kind of ['steering', 'followUp']) {
+          const names = queued[kind], length = event[kind]?.length || 0;
+          while (names.length > length) names.shift();
+          while (names.length < length) names.push([]);
+        }
+        forwardedEvent = { ...event, steeringAttachments: queued.steering.map((names) => [...names]),
+          followUpAttachments: queued.followUp.map((names) => [...names]) };
+      }
       if (event.type === "agent_settled") {
         ctx.partial = null; ctx.activeTools = {};
         const user = [...(session.messages || [])].reverse().find(m => m.role === 'user');
@@ -748,7 +759,7 @@ async _doStart() {
         }
       }
       this._accountUsage(event, ctx);
-      this.emit("pi:event", { sessionId: session.sessionId, cwd: ctx.cwd, serverId: this.serverTargets.get(session.sessionId) || null, seq: ctx.eventSeq, event });
+      this.emit("pi:event", { sessionId: session.sessionId, cwd: ctx.cwd, serverId: this.serverTargets.get(session.sessionId) || null, seq: ctx.eventSeq, event: forwardedEvent });
       if (event?.type === "message_end" || event?.type === "agent_end" || event?.type === "agent_settled") {
         this._noteSession(session);
         if (ctx.key === this.#focusedKey) this.pushState();
@@ -1323,25 +1334,41 @@ async _doStart() {
     }
   }
 
-  async steer(text) {
+  async steer(text, attachments) {
     const ctx = this.#focusedCtx();
     if (!ctx) return this.publicState();
     ctx.busy = (ctx.busy || 0) + 1;
+    const images = Array.isArray(attachments?.images) ? attachments.images : [];
+    const names = Array.isArray(attachments?.names) ? attachments.names.map((name) => String(name).slice(0, 120)) : [];
+    const bucket = (ctx.queueAttachments ||= { steering: [], followUp: [] }).steering;
+    bucket.push(names);
     try {
-      await ctx.runtime.session.steer(text);
+      await ctx.runtime.session.steer(text, images);
       return this.publicState();
+    } catch (error) {
+      const index = bucket.indexOf(names);
+      if (index >= 0) bucket.splice(index, 1);
+      throw error;
     } finally {
       ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
     }
   }
 
-  async followUp(text) {
+  async followUp(text, attachments) {
     const ctx = this.#focusedCtx();
     if (!ctx) return this.publicState();
     ctx.busy = (ctx.busy || 0) + 1;
+    const images = Array.isArray(attachments?.images) ? attachments.images : [];
+    const names = Array.isArray(attachments?.names) ? attachments.names.map((name) => String(name).slice(0, 120)) : [];
+    const bucket = (ctx.queueAttachments ||= { steering: [], followUp: [] }).followUp;
+    bucket.push(names);
     try {
-      await ctx.runtime.session.followUp(text);
+      await ctx.runtime.session.followUp(text, images);
       return this.publicState();
+    } catch (error) {
+      const index = bucket.indexOf(names);
+      if (index >= 0) bucket.splice(index, 1);
+      throw error;
     } finally {
       ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
     }

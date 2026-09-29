@@ -382,13 +382,13 @@ try {
   await select('videoModel', 'veo-3.1-fast-generate-preview');
   assert.deepEqual(await evaluate('["videoResolution", "videoDuration"].map(id => document.getElementById(id).value)'), ['1080P', '8'], 'Valid choices must survive dynamic model option replacement');
   await evaluate('document.querySelector("#videoApiKey").value = "fixture-google-key"; document.querySelector("#videoApiKey").dispatchEvent(new Event("input"))');
-  await select('videoNetwork', 'direct');
+  assert.equal(await evaluate('document.querySelector("#videoNetwork").disabled'), true);
   await chooseVideoProvider('minimax');
   assert.equal(await evaluate('document.querySelector("#videoApiKey").value'), '');
   assert.equal(await evaluate('document.querySelector("#videoDuration").value'), '8');
   await chooseVideoProvider('google');
   assert.equal(await evaluate('document.querySelector("#videoKeyStatus").textContent'), '已配置');
-  assert.equal(await evaluate('document.querySelector("#videoNetwork").value'), 'direct');
+  assert.equal(await evaluate('document.querySelector("#videoNetwork").value'), 'system');
   await evaluate('document.querySelector("#videoSave").click()');
   await until('document.querySelector("#videoSettingsForm").getAttribute("aria-busy") === "false"');
   assert.equal((await evaluate('window.halo.videoSettings()')).data.provider, 'google', 'Saving config selects its default model');
