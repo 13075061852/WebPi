@@ -36,9 +36,9 @@ try {
     const server = http.createServer();
     server.on('connect', (req, socket, head) => {
       seen.push({ label, target: req.url });
-      if (label === 'https') { socket.end('HTTP/1.1 502 Fixture HTTPS tunnel observed\r\nConnection: close\r\n\r\n'); return; }
+      if (req.url === 'secure-proxy-fixture.invalid:443') { socket.end('HTTP/1.1 502 Fixture HTTPS tunnel observed\r\nConnection: close\r\n\r\n'); return; }
       // Only the controlled origin is allowed through this test proxy.
-      if (req.url !== `127.0.0.1:${originPort}`) { socket.destroy(); return; }
+      if (req.url !== `proxy-fixture.invalid:${originPort}`) { socket.destroy(); return; }
       const upstream = net.connect(originPort, '127.0.0.1', () => {
         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         if (head.length) upstream.write(head);
@@ -59,22 +59,25 @@ try {
 exports.initTheme = () => {
   (async () => {
     const init = { signal: AbortSignal.timeout(7000) };
-    const proxied = await (await fetch(${JSON.stringify(`http://127.0.0.1:${originPort}/token-fixture`)}, init)).json();
+    const proxied = await (await fetch(${JSON.stringify(`http://${expectDirect ? '127.0.0.1' : 'proxy-fixture.invalid'}:${originPort}/token-fixture`)}, init)).json();
     const direct = await (await fetch(${JSON.stringify(`http://127.0.0.1:${bypassPort}/bypass`)}, init)).json();
     let httpsRejected = false;
-    try { await fetch(${JSON.stringify(`https://127.0.0.1:${originPort}/token-fixture`)}, init); } catch { httpsRejected = true; }
+    try { await fetch(${JSON.stringify('https://secure-proxy-fixture.invalid/token-fixture')}, init); } catch { httpsRejected = true; }
     fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify({ proxied, direct, httpsRejected, node: process.versions.node, electron: process.versions.electron }));
   })().catch(error => fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify({ error: error.message })));
 };
 `);
-  const env = { ...process.env };
+  const profile = path.join(dir, 'user-data');
+  fs.mkdirSync(profile);
+  fs.writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({globalProxy:{mode:expectDirect?'direct':'proxy',port:Number(new URL(httpProxy).port)}}));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key])=>!/(?:TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL)/i.test(key)));
   for (const key of Object.keys(env)) if (/^(http_proxy|https_proxy|all_proxy|no_proxy|node_use_env_proxy|node_options|electron_run_as_node)$/i.test(key)) delete env[key];
   Object.assign(env, {
     HTTP_PROXY: httpProxy, HTTPS_PROXY: httpsProxy, NO_PROXY: `127.0.0.1:${bypassPort}`,
-    USERPROFILE: dir, PI_CODING_AGENT_DIR: path.join(dir, 'agent'), PI_HALO_PI_PATH: sdk,
+    USERPROFILE: dir, HOME:dir, APPDATA:path.join(dir,'roaming'), LOCALAPPDATA:path.join(dir,'local'), PI_OFFLINE:'1', PI_CODING_AGENT_DIR: path.join(dir, 'agent'), PI_HALO_PI_PATH: sdk,
   });
   const args = [`--user-data-dir=${path.join(dir, 'user-data')}`];
-  if (useElectron) args.unshift(path.resolve('dist/win-unpacked/resources/app.asar'));
+  if (useElectron) args.unshift(path.resolve('.'));
   child = spawn(exe, args, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { output = (output + chunk).slice(-4000); });
@@ -86,13 +89,13 @@ exports.initTheme = () => {
   assert.equal(result.proxied.fixture, true, 'Gzip JSON is decoded correctly');
   assert.equal(result.direct.fixture, true);
   assert.equal(result.httpsRejected, true);
-  if (expectDirect) assert.equal(seen.length, 0, 'The old EXE should demonstrate the skipped proxy initialization');
+  if (expectDirect) assert.equal(seen.length, 0, 'Saved direct mode must override inherited proxy environment');
   else {
-    assert.ok(seen.some(row => row.label === 'http' && row.target === `127.0.0.1:${originPort}`));
-    assert.ok(seen.some(row => row.label === 'https' && row.target === `127.0.0.1:${originPort}`));
+    assert.ok(seen.some(row => row.label === 'http' && row.target === `proxy-fixture.invalid:${originPort}`));
+    assert.ok(seen.some(row => row.label === 'http' && row.target === 'secure-proxy-fixture.invalid:443'));
     assert.ok(seen.every(row => row.target !== `127.0.0.1:${bypassPort}`), 'NO_PROXY must bypass both proxies');
   }
-  console.log(`${expectDirect ? 'REPRODUCED old EXE bypassing environment proxies' : 'PASS packaged EXE HTTP/HTTPS proxy routing, dynamic ports, NO_PROXY and gzip JSON'} (Electron ${result.electron}, Node ${result.node})`);
+  console.log(`${expectDirect ? 'PASS saved direct mode overrides inherited proxies' : 'PASS saved proxy mode: HTTP/HTTPS routing, dynamic port, loopback bypass and gzip JSON'} (Electron ${result.electron}, Node ${result.node})`);
 } finally {
   if (child && child.exitCode === null) {
     const exited = once(child, 'exit'); child.kill(); await Promise.race([exited, sleep(5000)]);
