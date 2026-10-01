@@ -4,6 +4,7 @@ import { isTrustedUIURL } from "./trusted-ui-url.mjs";
 import electronUpdater from 'electron-updater';
 import { createAppUpdates } from './app-updates.mjs';
 import { createReleaseHistory } from './release-history.mjs';
+import { createReleaseHistoryFetch } from './release-history-fetch.mjs';
 import { createStartupLifecycle } from './startup-lifecycle.mjs';
 import { inspectPreview } from "./preview-inspection.mjs";
 import { createPreviewControl } from './preview-control.mjs';
@@ -128,8 +129,10 @@ function writeAgentExt(storeFile) {
 
 function bootstrap() {
   const store = new HaloStore(path.join(app.getPath("userData"), "halo-settings.json"));
+  const historyRequests = createReleaseHistoryFetch({ app, session });
   const globalProxy = new GlobalProxy(store, { system:new WindowsSystemProxy() });
   app.on('session-created', created => {
+    if (historyRequests.ownsSession(created)) return;
     void globalProxy.addSession(created).catch(error => console.error('[proxy] session configuration failed', error.message));
   });
   const bridge = new PiBridge(store, { seal, unseal });
@@ -500,8 +503,8 @@ function bootstrap() {
     emit:state => emit('halo:app-update', state)});
   handle('halo:check-app-update', () => updates.check(true));
   handle('halo:app-update-state', () => updates.getState());
-  const releaseHistory = createReleaseHistory({ offline: process.env.PI_OFFLINE === '1' });
-  handle('halo:release-history', () => releaseHistory());
+  const releaseHistory = createReleaseHistory({ fetchImpl:historyRequests.fetch, offline: process.env.PI_OFFLINE === '1' });
+  handle('halo:release-history', force => releaseHistory(force === true));
   handle('halo:download-app-update', () => updates.download());
   if (app.isPackaged && process.env.PI_OFFLINE !== '1') {
     const firstCheck = setTimeout(() => void updates.check(), 3000);

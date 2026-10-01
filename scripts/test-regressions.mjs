@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tests = [
   'verify-release-workflow', 'verify-workspace-import', 'verify-installer-native',
-  'verify-release-history',
+  'verify-release-history', 'verify-release-history-ui', 'verify-release-history-fetch',
   'verify-app-updates', 'verify-image-generation', 'verify-image-card-timing',
   'verify-turn-cost', 'verify-subscription-usage', 'verify-quota-refresh',
   'verify-context-rate', 'verify-compaction-feedback',

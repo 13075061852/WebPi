@@ -119,24 +119,28 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
     highlight(releases[0]?.version);
     syncPosition();
   }
-  async function load() {
+  async function load(force = false) {
     if (busy) return;
     busy = true; refresh.disabled = true;
     get('releaseHistoryStatus').textContent = '正在同步版本记录…';
     try {
-      const result = await api.releaseHistory();
-      if (!result?.ok || !Array.isArray(result.data)) throw Error('无法同步');
+      const result = await api.releaseHistory(force === true);
+      if (!result?.ok) throw Error(result?.error || '同步失败');
+      if (!Array.isArray(result.data)) throw Error('版本记录格式异常');
       const merged = new Map(bundledReleases.map(item => [item.version, item]));
       for (const item of result.data) {
         if (/^\d+\.\d+\.\d+$/.test(item.version) && typeof item.date === 'string' && typeof item.body === 'string') merged.set(item.version, item);
       }
       releases = [...merged.values()].sort((a, b) => b.date.localeCompare(a.date));
       render(); get('releaseHistoryStatus').textContent = '已同步 GitHub 正式版本';
-    } catch { get('releaseHistoryStatus').textContent = '同步暂不可用，显示已保存记录'; }
+    } catch (error) {
+      const reason = String(error?.message || '同步失败').replace(/\s+/g, ' ').slice(0, 80);
+      get('releaseHistoryStatus').textContent = `${reason}，显示本地记录`;
+    }
     finally { busy = false; refresh.disabled = false; }
   }
   get('releaseRepository').onclick = () => void open(repo);
-  refresh.onclick = () => void load();
+  refresh.onclick = () => void load(true);
   root.querySelector('[data-pane="history"]').addEventListener('click', () => void load());
   render();
   void api.appUpdateState().then(result => {

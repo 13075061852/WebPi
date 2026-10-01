@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld("halo", {
   proxySet: config => ipcRenderer.invoke('halo:proxy-set', config),
   checkAppUpdate: () => ipcRenderer.invoke('halo:check-app-update'),
   appUpdateState: () => ipcRenderer.invoke('halo:app-update-state'),
-  releaseHistory: () => ipcRenderer.invoke('halo:release-history'),
+  releaseHistory: (force = false) => ipcRenderer.invoke('halo:release-history', force === true),
   downloadAppUpdate: () => ipcRenderer.invoke('halo:download-app-update'),
   onAppUpdate: listen('halo:app-update'),
   onWebsiteZoom: listen('halo:website-zoom'),
