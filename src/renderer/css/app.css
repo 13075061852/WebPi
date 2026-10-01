@@ -407,16 +407,17 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
   color: var(--ok);
   font-size: 9.5px; font-weight: 650;
 }
-.session-item .s-busy {
-  display: inline-block; width: 6px; height: 6px;
-  border-radius: 50%; background: var(--ok);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent);
-  animation: s-busy-pulse 1.6s ease-out infinite;
+.session-item .s-busy, .conversation-spinner {
+  display:inline-block; flex:none; width:11px; height:11px;
+  box-sizing:border-box; border-radius:50%;
+  border:1.5px solid color-mix(in srgb, var(--ok) 24%, transparent);
+  border-top-color:var(--ok); border-right-color:var(--ok);
+  animation:conversation-spin .85s linear infinite;
 }
-@keyframes s-busy-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.5); }
-  70% { box-shadow: 0 0 0 6px rgba(74, 222, 128, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+.conversation-spinner { margin-right:7px; vertical-align:-1px; }
+@keyframes conversation-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) {
+  .session-item .s-busy, .conversation-spinner { animation:none; }
 }
 .session-item .s-del {
   flex: none; width: 26px; height: 26px; margin-right: 7px;
@@ -678,20 +679,19 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
   padding: 0 14px;
   border-bottom: 1px solid var(--hair);
 }
-.pv-mode {
-  display: inline-flex; align-items: center; justify-content: center;
-  flex: none; width: 48px; height: 26px; padding: 0 10px;
-  white-space: nowrap; font-size: 10.5px; font-weight: 600;
-  color: var(--txt-dim);
-  border: 1px solid var(--hair);
-  border-radius: 999px;
-  background: var(--panel-2);
-  transition: background 0.2s, color 0.2s;
+.pv-actions { display:flex; align-items:center; gap:6px; flex:none; }
+.pv-action {
+  display:inline-flex; align-items:center; justify-content:center;
+  flex:none; width:28px; height:28px; padding:0;
+  color:var(--txt-dim); background:var(--panel-2);
+  border:1px solid var(--hair); border-radius:7px;
+  transition:background .15s, color .15s, border-color .15s;
 }
-.pv-mode:hover {
-  color: var(--txt); background: rgba(var(--ink-rgb), 0.08);
-}
-.pv-mode:focus-visible { outline: 2px solid var(--txt-dim); outline-offset: 2px; }
+.pv-action.pv-mode { width:44px; font-size:11px; font-weight:500; white-space:nowrap; }
+.pv-action .ic { width:14px; height:14px; }
+.pv-action:hover { color:var(--txt); background:rgba(var(--ink-rgb),.06); border-color:var(--hair-2); }
+.pv-action:focus-visible { outline:2px solid var(--txt-dim); outline-offset:2px; }
+.pv-action.active { color:var(--txt); background:rgba(var(--ink-rgb),.1); border-color:var(--hair-2); }
 .pv-name { font-family: var(--mono); font-size: 12px; color: var(--txt); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pv-body { flex: 1; min-height: 0; position: relative; background: var(--bg1); }
 .pv-body.dev-desktop:has(.website-browser) { padding-top: 48px; }
@@ -1044,19 +1044,6 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
 body.focus-mode #btnFocus .ic-expand { display: none; }
 body.focus-mode #btnFocus .ic-collapse { display: block; }
 body.focus-mode #btnFocus { color: var(--acc); }
-/* 控制台启动按钮：与 pv-mode 胶囊同风格的圆形图标钮 */
-.pv-term-btn {
-  width: 26px; height: 26px;
-  border: 1px solid transparent; border-radius: 999px;
-  display: grid; place-items: center;
-  background: transparent; color: var(--txt-faint);
-  cursor: pointer;
-  transition: background 0.2s, color 0.2s, border-color 0.2s;
-}
-.pv-term-btn .ic { width: 15px; height: 15px; }
-.pv-term-btn:hover { background: rgba(var(--ink-rgb), 0.06); color: var(--txt); }
-.pv-term-btn.active { color: var(--acc); border-color: var(--hair); background: var(--panel-2); }
-
 /* 预览区控制台：覆盖 pv-body，跟随主题 */
 #cpane-preview { position: relative; }
 #termView {
@@ -2564,7 +2551,6 @@ body.focus-mode #btnFocus { color: var(--acc); }
 .server-conversation { display: block; width: 100%; padding: 8px 10px; text-align: left; font-size: 12px; color: var(--txt-dim); border-radius: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .server-conversation:hover, .server-conversation.active { background: var(--bg1); color: var(--txt); }
 .server-conversation-empty { padding: 8px; font-size: 10px; color: var(--txt-faint); }
-.server-running-dot { display: inline-block; width: 5px; height: 5px; background: var(--ok); border-radius: 50%; margin-right: 6px; }
 .server-group-menu { position: relative; }
 .server-group-menu summary { cursor: pointer; list-style: none; width: 25px; text-align: center; color: var(--txt-dim); }
 .server-group-menu > div { position: absolute; top: 24px; right: 0; z-index: 10; padding: 5px; width: 110px; background: var(--panel); border: 1px solid var(--hair); border-radius: 8px; box-shadow: 0 6px 18px #0002; }
@@ -2735,10 +2721,10 @@ body:not(.focus-mode) #layout:has(#pvBody.dev-mobile) { grid-template-columns: v
 .document-preview{position:absolute;inset:0;display:flex;flex-direction:column;background:#e9ecf0;color:#465466}
 .document-canvas{flex:1;min-height:0;overflow:auto;padding:28px;box-sizing:border-box;text-align:center}
 .document-canvas img{display:block;width:100%;max-width:1100px;height:auto;margin:0 auto;box-shadow:0 3px 16px #1c2c4020;background:white}
-.document-preview nav{flex:none;height:52px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;padding:0 20px;background:#fafbfd;border-top:1px solid #dce2e9;font-size:12px}
-.document-pages{display:flex;align-items:center;gap:16px;font-variant-numeric:tabular-nums}
+.document-preview nav{flex:none;height:32px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;padding:0 12px;background:#fafbfd;border-top:1px solid #dce2e9;font-size:12px}
+.document-pages{display:flex;align-items:center;gap:10px;font-variant-numeric:tabular-nums}
 .document-pages>span{min-width:60px;text-align:center}
-.document-preview button{display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:7px;background:transparent;color:#526177;font-size:23px;cursor:pointer}
+.document-preview button{display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:5px;background:transparent;color:#526177;font-size:20px;cursor:pointer}
 .document-preview button:hover:enabled{background:#e8edf3;color:#182c47}
 .document-preview button:disabled{opacity:.3;cursor:default}
 .document-preview button:focus-visible{outline:2px solid #708bae;outline-offset:2px}
@@ -2887,3 +2873,23 @@ body.preview-collapsed #chat{border-left-width:0}
 
 
 .environment-tool-icon img { display: block; width: 70%; height: auto; aspect-ratio: 1; object-fit: contain; }
+
+/* Loading occupies the available market area, between its heading and pager. */
+#setPane-pkgs .set-body:has(.pkg-loading) { display: flex; flex-direction: column; }
+#pkgMarketSec:not([hidden]):has(.pkg-loading) { display: flex; flex-direction: column; flex: 1; }
+#pkgMarket:has(.pkg-loading) { flex: 1; display: grid; place-items: center; min-height: 120px; }
+.pkg-loading { display: flex; align-items: center; gap: 9px; color: var(--txt-dim); font-size: 12px; line-height: 20px; padding: 20px; }
+.pkg-loading-spinner { width: 15px; height: 15px; flex: none; border: 1.5px solid var(--hair-2); border-top-color: var(--txt-dim); border-right-color: var(--txt-dim); border-radius: 50%; animation: spin .85s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .pkg-loading-spinner { animation: none; } }
+
+.ws-tree.file-drop-active { outline: 1px dashed var(--txt-dim); outline-offset: -5px; background: rgba(var(--ink-rgb), .025); }
+.ws-tree .trow.file-drop-target { background: rgba(var(--ink-rgb), .1); outline: 1px solid var(--hair-2); border-radius: 6px; }
+.ws-tree[aria-busy="true"] { cursor: progress; }
+
+.document-preview nav { line-height: 1; }
+.document-preview nav > .document-kind, .document-preview nav > .document-fit,
+.document-pages > span { display: flex; align-items: center; height: 24px; line-height: 16px; }
+.document-pages > span { justify-content: center; }
+.document-preview nav > .document-fit { justify-content: flex-end; }
+.document-preview button { line-height: 1; }
+.document-preview button svg { display: block; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }

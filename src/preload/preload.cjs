@@ -111,9 +111,11 @@ contextBridge.exposeInMainWorld("halo", {
   projectRemove: (cwd) => ipcRenderer.invoke("halo:project-remove", { cwd }),
   agentDefaultGet: () => ipcRenderer.invoke("halo:agent-default-get"),
   agentDefaultSet: (name) => ipcRenderer.invoke("halo:agent-default-set", { name }),
+  pickAttachments: () => ipcRenderer.invoke("halo:pick-attachments"),
   pickImages: () => ipcRenderer.invoke("halo:pick-images"),
 
   // workspace / preview
+  importFiles: (files, root, target) => ipcRenderer.invoke("halo:import-files", { sources: files.map(file => webUtils.getPathForFile(file)), root, target }),
   readTree: () => ipcRenderer.invoke("halo:read-tree"),
   documentPreview: (file, page) => ipcRenderer.invoke("halo:document-preview", { file, page }),
   copyImage: (file) => ipcRenderer.invoke("halo:copy-image", file),

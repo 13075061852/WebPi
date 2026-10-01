@@ -78,9 +78,11 @@ try {
   await evaluate(`(() => {
     window.__motionRecords=[];
     window.__modalRecords=[];
+    window.__maskReveals=[];
     const nativeAnimate=Element.prototype.animate;
     Element.prototype.animate=function(...args){
       const animation=nativeAnimate.apply(this,args);
+      if(this.matches('.device-switch-mask'))window.__maskReveals.push(performance.now());
       if(this.matches('.modal')){
         const record={created:performance.now()};window.__modalRecords.push(record);
         animation.finished.then(()=>{record.finished=performance.now();record.motionStart=animation.startTime}).catch(()=>{});
@@ -108,13 +110,13 @@ try {
   const results = [];
   for (const [name, selector] of [['sidebar-close','#btnSidebar'],['sidebar-open','#btnSidebar'],['tablet','.pvdev[data-dev="tablet"]'],['phone','.pvdev[data-dev="mobile"]'],['desktop','.pvdev[data-dev="desktop"]'],['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['settings-open','#btnSettings'],['settings-close','#settingsModal [data-close]'],['model-open','#btnModel'],['model-close','#modelModal [data-close]'],['think-open','#btnThink'],['think-close','#thinkModal [data-close]']]) {
     const sample = await evaluate(`(async()=>{
-      const frames=[];window.__motionRecords=[];window.__modalRecords=[];let last=performance.now(),running=true;
+      const frames=[];window.__motionRecords=[];window.__modalRecords=[];window.__maskReveals=[];let last=performance.now(),running=true;
       const tick=now=>{frames.push({at:now,previous:last,gap:now-last});last=now;if(running)requestAnimationFrame(tick)};requestAnimationFrame(tick);
       document.querySelector(${JSON.stringify(selector)}).click();
       await new Promise(r=>setTimeout(r,1000));running=false;
       const transitions=window.__motionRecords.map(t=>{const motion=frames.filter(f=>f.previous>=t.motionStart&&f.at<=t.slideEnd);return {...t,frames:motion.length,maxGap:Math.round(Math.max(0,...motion.map(f=>f.gap)))};});
       const modals=window.__modalRecords.map(t=>{const motion=frames.filter(f=>f.previous>=t.motionStart&&f.at<=t.finished);return {...t,frames:motion.length,maxGap:Math.round(Math.max(0,...motion.map(f=>f.gap)))};});
-      return {transitions,modals,frames:frames.length};
+      return {transitions,modals,reveals:window.__maskReveals,frames:frames.length};
     })()`);
     if (!name.includes('settings') && !name.includes('model') && !name.includes('think')) {
       assert.ok(sample.transitions[0]?.finished, `${name} must contain an actual completed transition`);
@@ -124,13 +126,16 @@ try {
         if (group.keyframes.length < 2 || !group.keyframes[0].width) continue;
         assert.equal(group.keyframes[0].width, group.keyframes.at(-1).width, 'Snapshot width must remain fixed during compositor motion');
       }
-      if (['tablet','phone','desktop'].includes(name)) {
+      {
         assert.ok(sample.transitions[0].masks.length,'Device content must be covered before snapshot movement');
         assert.ok(sample.transitions[0].masks.every(mask=>mask.opacity===1 && mask.covers && mask.background==='rgb(17, 19, 22)'), 'The device mask must be opaque and cover the whole screen: '+JSON.stringify(sample.transitions[0].masks));
+        assert.ok(sample.reveals.length && sample.reveals.every(time=>time>=sample.transitions[0].slideEnd), 'Only reveal content after geometry motion completes');
+      }
+      if (['tablet','phone','desktop'].includes(name)) {
         assert.equal(sample.transitions[0].chrome.length,2,'Device changes must morph chrome without stretching a page snapshot');
         assert.ok(sample.transitions[0].chrome.every(skin=>skin.transform==='none'&&skin.keyframes.length===2));
         assert.ok(!sample.transitions[0].groups.some(group=>group.pseudo.includes('layout-device')),'Device chrome must not be raster-scaled');
-      } else assert.equal(sample.transitions[0].masks.length,0,'Sidebar transitions must keep their existing content behavior');
+      }
     } else {
       assert.ok(sample.modals[0]?.finished, `${name} must have a completed fade animation`);
       assert.ok(sample.modals[0].frames >= 8, `${name} must render intermediate fade frames`);

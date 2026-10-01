@@ -1,3 +1,4 @@
+import { resolvePreviewPath } from '../src/renderer/js/preview-path.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -8,7 +9,8 @@ const pending = new Map();
 const body = { innerHTML: '' }, name = {}, mode = {};
 const context = vm.createContext({
   portPreviewRequest: 0, previewService: null, selectedPortKey: null,
-  S: { previewFile: null, previewMode: 'source' },
+  S: { state: { cwd: 'C:/project' }, previewFile: null, previewMode: 'source' },
+  resolvePreviewPath,
   updatePortSelection() {},
   $: selector => ({ '#pvBody': body, '#pvName': name, '#pvMode': mode, '#btnOpenFile': {} })[selector],
   window: { halo: { readFile: p => new Promise(resolve => pending.set(p, resolve)) } },
@@ -21,9 +23,9 @@ for (const old of ['old.md', 'old.html', 'old.txt']) {
   context.S.previewFile = null;
   const older = context.setPreview(old);
   const newer = context.setPreview('new.md');
-  pending.get('new.md')({ data: { content: 'latest preview' } });
+  pending.get('C:/project/new.md')({ data: { content: 'latest preview' } });
   await newer;
-  pending.get(old)({ data: { content: 'stale preview' } });
+  pending.get('C:/project/' + old)({ data: { content: 'stale preview' } });
   await older;
   assert.match(body.innerHTML, /latest preview/);
   assert.doesNotMatch(body.innerHTML, /stale/);
@@ -32,11 +34,11 @@ for (const old of ['old.md', 'old.html', 'old.txt']) {
 context.S.previewFile = null;
 const first = context.setPreview('same.md');
 await context.setPreview('same.md');
-pending.get('same.md')({ data: { content: 'same file completes' } });
+pending.get('C:/project/same.md')({ data: { content: 'same file completes' } });
 await first;
 assert.match(body.innerHTML, /same file completes/);
 const nested = context.setPreview('docs/README.md');
-pending.get('docs/README.md')({ data: { path: 'C:/project/docs/README.md', content: '![figure](./images/figure.png)\n[guide](../guide.md)' } });
+pending.get('C:/project/docs/README.md')({ data: { path: 'C:/project/docs/README.md', content: '![figure](./images/figure.png)\n[guide](../guide.md)' } });
 await nested;
 assert.match(body.innerHTML, /src="halo-preview:\/\/local\/C%3A\/project\/docs\/images\/figure.png"/);
 assert.match(body.innerHTML, /href="halo-preview:\/\/local\/C%3A\/project\/guide.md"/);

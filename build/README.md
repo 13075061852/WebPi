@@ -30,14 +30,49 @@ fast path; failed cross-volume moves recreate the empty target and use the
 stock copy/retry flow. Per-machine installs always copy so files inherit the
 destination permissions rather than those of the private temporary directory.
 
-The finishing page and silent `--force-run` update path launch the executable
-using non-blocking `Exec` for ordinary per-user installs. UAC's existing outer
+The finishing page queues a single launch and closes the window. `.onGUIEnd`
+then launches the executable, so even a slow process-creation or shell-broker
+call cannot leave a frozen Finish page. The silent `--force-run` update path
+keeps its stock install-section condition. Both use non-blocking `Exec` for
+ordinary per-user installs. UAC's existing outer
 installer performs that call when installation was elevated through the
 wizard. A setup explicitly started as administrator retains the upstream
 de-elevating shell broker because it has no unelevated outer instance.
 
 Before releasing, verify a fresh install, reinstall/update, a path containing
-spaces and Chinese, launch checked/unchecked, silent update, and uninstall.
+spaces and Chinese, Finish-to-launch, silent update, and uninstall.
 Confirm the generated uninstaller exists and the installation log reaches
 verification. Visually check the actual installed wizard at desktop scaling;
 do not use an HTML mockup as evidence of NSIS layout.
+
+## Minimal installer UI
+
+`installer-ui.nsh` rearranges all installer pages into a DPI-scaled
+white window with centered Pi Halo branding and a thin native progress bar.
+The stage label follows real operations; no timed or simulated percentage is
+shown. Detailed records remain in install.log. Window dimensions and white
+background stay consistent across pages at 600 x 440 logical pixels. The scope
+page is skipped by the stock PRE handler: manual installs default to the current
+user, while an update preserves an existing per-machine installation. Path entry
+and Browse share one compact field while keeping native validation and editing.
+The finish page has only Finish, which closes the window before launching the app; stock reboot choices
+remain usable when a restart is required.
+
+`installer-window.c` supplies native caption drawing, drag/minimize/close and
+button painting. It preserves NSIS's keyboard, validation and command handlers.
+Its x86 DLL is checked in with source/binary hashes in `installer-window.json`;
+the build hook rejects stale or modified binaries. Recompile changes with
+`node build/compile-installer-window.cjs <path-to-tcc.exe>` using TinyCC 0.9.27
+win32. Release builds verify this retained DLL without downloading a compiler.
+The DLL is extracted directly to `$PLUGINSDIR` during GUI initialization;
+never rely on `$OUTDIR`, which is not initialized until the install section.
+
+Run `node test/verify-installer-native.mjs --runtime --nsis <makensis.exe>`
+after NSIS is available. Its silent, non-installing fixture checks extraction
+and exports with a missing output directory and two concurrent processes.
+Artifact verification also compares the DLL embedded in the actual setup EXE.
+
+For visual checks without installing or starting the app, compile
+`node test/tools/build-installer-ui-preview.mjs --nsis <makensis.exe>` and open
+its returned preview executable. Finish writes a unique marker with launch count;
+it never changes the selected target directory or writes registry entries.

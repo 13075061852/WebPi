@@ -1,11 +1,18 @@
 # Windows 发布流程
 
-## 发布前
+## 默认流程：本地打包，再上传 GitHub
 
-1. 确定本次代码和版本，运行 `node scripts/release-preflight.mjs`。
-2. 预检必须成功。回归使用临时 HOME、空白认证目录和 `PI_OFFLINE=1`，不继承 API 密钥；首个失败立即终止。需要真实账户的测试（如 `verify-image-runtime.mjs`）不可加入离线列表。
-3. 提交并推送 main，等该提交的 CI 成功、Windows 依赖预热完成后，再创建并推送对应版本标签。不要把未经 CI 检查的 main 和标签一起推送。
-4. 标签触发 Windows release：build 生成并保留候选安装包 → verify 校验哈希/源码并运行打包版 → upload 上传草稿。后续验证失败不会丢弃已完成的构建。
+1. 确定代码和新版本，运行 `node scripts/release-preflight.mjs`。回归使用临时 HOME、空白认证目录和 `PI_OFFLINE=1`，不继承个人账户或 API 密钥。
+2. 提交并推送 main，确认 CI 成功。发布输入必须对应已提交源码；已公开版本的内容有变化时使用新版本。
+3. 在本机 Windows 执行 `npm run dist:local`。这一步只构建；等待 electron-builder 正常退出，保留 `dist/Pi-Halo-Setup-<版本>.exe`、配套 blockmap 和 `dist/latest.yml`。
+4. 设置 `HALO_PACKAGE_STAGE` 为仓库外新的隔离验证目录（例如系统临时目录），运行 `node scripts/verify-release-artifacts.mjs`。验证真实安装包内的版本、当前源码、资源、blockmap、大小与 SHA-512。读取 `test/results/release-artifacts.json` 中的 `stagedExe`，作为下列测试的 `HALO_PACKAGED_EXE`。
+5. 执行打包版检查：`verify-packaged-runtimes.mjs`、`e2e-bundled-pi.mjs`、`verify-office-packaged.mjs`、`e2e-packaged-proxy.mjs`（代理与 `--expect-direct` 两种模式）、`e2e-ui-motion.mjs`，均位于 `test/e2e/`。安装器界面有变更时完成真实原生安装向导检查。
+6. 门禁全部通过后创建并推送版本标签；不移动旧标签。设置 `RELEASE_TAG=v<版本>` 和 `GITHUB_REPOSITORY=13075061852/WebPi`，使用已认证 GitHub CLI 执行 `./scripts/upload-release.ps1`。它核对本地产物哈希并上传同一组文件到草稿。
+7. 核对远端三个资产与本地报告匹配后发布 Release，再检查匿名 latest.yml 和旧版本更新发现。报告本地安装包的绝对路径、版本、Release URL 与阶段耗时。正式发布完成时本地 dist 必须保留这组产物。
+
+标签推送不再自动触发云端打包。`.github/workflows/release.yml` 只作为手动后备，用户明确要求云端构建时才运行；它仍使用 build → verify → upload 与保留候选产物的机制。
+
+本地验证或上传失败时，保留成功构建的安装包。修复验证环境后只重做验证，网络恢复后只重做上传；应用与构建输入变化才重新构建。上传脚本依赖 GitHub CLI，缺少时先准备 CLI 或使用等效、带产物哈希核对的 GitHub API 上传流程，不要改为云端重新打包。
 
 ## 失败恢复
 

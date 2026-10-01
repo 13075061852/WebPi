@@ -1,3 +1,4 @@
+import { resolvePreviewPath } from './preview-path.mjs';
 import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
 import { initAppUpdates } from './app-updates.mjs';
 import { initProxySettings } from './proxy-settings.mjs';
@@ -51,6 +52,7 @@ const S = {
   usageCache: new Map(),      // days -> 统计结果（切换天数避免重复扫描）
   streamingTool: null,
   retrying: null,             // {attempt, maxAttempts} | null
+  files: [],                  // local file attachments [{name, path, size}]
   images: [],                 // pending attachments [{name, mediaType, data}]
   composerRevision: 0,        // protects a newer text/attachment draft from delayed send failures
   lastUserPrompt: null,       // for retry button
@@ -423,7 +425,7 @@ async function refreshServers() {
       button.className = "server-conversation" + (normPath(conversation.file) === normPath(S.state?.sessionFile) ? " active" : "");
       button.textContent = conversation.name;
       button.title = conversation.name;
-      if (conversation.running) { const dot = document.createElement("i"); dot.className = "server-running-dot"; button.prepend(dot); }
+      if (conversation.running) { const indicator = document.createElement("i"); indicator.className = "conversation-spinner"; indicator.setAttribute("role", "img"); indicator.setAttribute("aria-label", "正在执行"); button.title += " · 正在执行"; button.prepend(indicator); }
       button.addEventListener("click", () => { browsingServerId = server.id; openSession(conversation.file); });
       const row = document.createElement("div"); row.className = "server-conversation-row";
       const remove = document.createElement("button"); remove.className = "server-conversation-delete";
@@ -576,6 +578,10 @@ function renderQuotaChip() {
   const el = $("#ctxQuota");
   if (!el) return;
   const provider = S.state?.model?.provider || null;
+  const providerNames = { deepseek: "DeepSeek", openai: "OpenAI", "openai-codex": "OpenAI Codex",
+    anthropic: "Anthropic", google: "Google", openrouter: "OpenRouter", moonshot: "Moonshot",
+    minimax: "MiniMax", "minimax-cn": "MiniMax", longcat: "LongCat", zai: "Z.AI", "zai-coding-cn": "智谱" };
+  $("#ctxQuotaProvider").textContent = providerNames[provider] || provider || "—";
   const q = S.quota.provider === provider ? S.quota.data : null;
   const portals = { longcat: "https://longcat.chat/platform/usage?tab=token" };
   el.classList.remove("low", "kind-plain");
@@ -1632,12 +1638,6 @@ function insertMention(index) {
   input.setRangeText('@"' + path + '" ', mentionStart, input.selectionStart, "end");
   closeMentions(); autoGrow(); input.focus();
 }
-function appendFileMention(path) {
-  const input = $('#input');
-  const reference = `@"${path.replace(/\\/g, '/')}"`;
-  input.value += `${input.value && !/\s$/.test(input.value) ? ' ' : ''}${reference} `;
-  closeMentions(); autoGrow(); input.focus();
-}
 function handleMentionKey(e) {
   if ($("#mentionMenu").hidden || e.isComposing) return false;
   if (!["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(e.key)) return false;
@@ -1686,7 +1686,7 @@ async function compactConversation(instructions) {
 async function send(queueMode = "steer") {
   const input = $("#input");
   const text = input.value.trim();
-  if (!text && S.images.length === 0) return;
+  if (!text && S.images.length === 0 && S.files.length === 0) return;
   if (S.switchingSession) return toast("正在切换会话，请稍候再发送", "");
   if (compactingSessions.has(S.state?.sessionId)) return toast('上下文正在压缩，请完成后再发送', '');
 
@@ -1714,7 +1714,10 @@ async function send(queueMode = "steer") {
   // messages. Do not deduplicate by text: identical consecutive prompts are valid.
   const focus = { seq: S.sessionSwitchSeq, sessionId: S.state.sessionId, cwd: S.state.cwd };
   const sentImages = S.images.slice();
+  const sentFiles = S.files.slice();
+  const messageText = [text, ...sentFiles.map(file => `@"${file.path.replace(/\\/g, "/")}"`)].filter(Boolean).join("\n");
   S.images = [];
+  S.files = [];
   renderAttachments();
   input.value = "";
   autoGrow();
@@ -1722,18 +1725,19 @@ async function send(queueMode = "steer") {
 
   try {
     const result = queued
-      ? await window.halo[queueMode === "followUp" ? "followUp" : "steer"](text,
+      ? await window.halo[queueMode === "followUp" ? "followUp" : "steer"](messageText,
         sentImages.length ? { images: sentImages.map(toPiImage), names: sentImages.map((image) => image.name) } : undefined)
-      : await window.halo.prompt(text, { preview: currentPreviewContext(), ...(sentImages.length ? { images: sentImages.map(toPiImage) } : {}) });
+      : await window.halo.prompt(messageText, { preview: currentPreviewContext(), ...(sentImages.length ? { images: sentImages.map(toPiImage) } : {}) });
     if (result?.ok === false) throw new Error(result.error || "指令执行失败");
   } catch (e) {
     toast(`发送失败：${e?.message || e}`, "err");
     // Restore only the untouched draft in the original view. State events remain
     // authoritative for running tasks, including a task started in another view.
     if (!S.switchingSession && focus.seq === S.sessionSwitchSeq && focus.sessionId === S.state?.sessionId &&
-        focus.cwd === S.state?.cwd && clearedRevision === S.composerRevision && !input.value && !S.images.length) {
+        focus.cwd === S.state?.cwd && clearedRevision === S.composerRevision && !input.value && !S.images.length && !S.files.length) {
       input.value = text;
       S.images = sentImages;
+      S.files = sentFiles;
       renderAttachments();
       autoGrow();
     }
@@ -2275,7 +2279,7 @@ function wireUI() {
   $("#btnSidebar").addEventListener("click", () => applyPreviewLayout(() => {
     const collapsed = document.body.classList.toggle("sb-collapsed");
     try { localStorage.setItem("halo.sbCollapsed", collapsed ? "1" : "0"); } catch {}
-  }));
+  }, { maskPreview: true }));
   $$("#settingsModal .set-nav").forEach((b) => b.addEventListener("click", () => {
     document.querySelectorAll("#settingsModal .set-nav").forEach((x) => x.classList.toggle("active", x === b));
     document.querySelectorAll("#settingsModal .set-pane").forEach((p) => p.classList.toggle("active", p.id === "setPane-" + b.dataset.pane));
@@ -2331,7 +2335,7 @@ function wireUI() {
   $("#modelSearch").addEventListener("input", (e) => renderModelList(e.target.value));
 
   // attachments & project
-  $("#btnAttach").addEventListener("click", attachImages);
+  $("#btnAttach").addEventListener("click", attachFiles);
   $("#projAdd").addEventListener("click", pickProject);
 
   // chat header
@@ -2344,7 +2348,7 @@ function wireUI() {
     button.setAttribute("aria-expanded", String(!collapsed));
     $("#center").inert = collapsed;
     $("#btnFocus").title = "专注模式 · 对话全屏（隐藏侧栏与工作区）";
-  }, { previewFold: true }));
+  }, { previewFold: true, maskPreview: true }));
   $("#btnFocus").addEventListener("click", () => applyPreviewLayout(() => {
     const on = document.body.classList.toggle("focus-mode");
     $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
@@ -2380,7 +2384,7 @@ function wireUI() {
     // streaming + text -> steer; streaming + empty -> abort
     if (S.streaming) {
       const t = input.value.trim();
-      if (t || S.images.length) send();
+      if (t || S.images.length || S.files.length) send();
       else abort();
       return;
     }
@@ -2412,12 +2416,12 @@ function wireUI() {
   $("#ctxQuota").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openUsageDetails(); } });
   $("#refreshUsageDetail").addEventListener("click", openUsageDetails);
 
-  // paste images
+  // Paste images or native files into the composer.
   input.addEventListener("paste", (e) => {
-    const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+    const files = [...(e.clipboardData?.files || [])];
     if (!files.length) return;
     e.preventDefault();
-    for (const f of files) addImageFile(f);
+    void attachNativeFiles(files);
   });
 
   // Project folders from the OS: resolve native File paths in the isolated preload.
@@ -2458,7 +2462,7 @@ function wireUI() {
     for (const { file, info } of entries) {
       if (info.directory) continue;
       if (file.type.startsWith('image/')) addImageFile(file);
-      else appendFileMention(info.path);
+      else addFileAttachment({ path: info.path, name: file.name, size: file.size });
     }
     if (!dirs.length) return;
     projectDropBusy = true;
@@ -2475,12 +2479,64 @@ function wireUI() {
   document.addEventListener('drop', clearProjectDrag);
   window.addEventListener('blur', clearProjectDrag);
 
-  // drop images
+  // Tree drops copy into the project; stop before the global chat attachment handler.
+  const fileTree = $("#wsTree");
+  fileTree.tabIndex = 0;
+  fileTree.addEventListener("keydown", e => {
+    if (e.key !== "Delete" || e.repeat || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    if (e.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+    const button = fileTree.querySelector(".trow.selected .trow-del");
+    if (!button || button.disabled) return;
+    e.preventDefault(); e.stopPropagation();
+    const confirmed = button.classList.contains("confirm");
+    button.click();
+    if (!confirmed) toast("再按 Delete 确认删除", "");
+  });
+  let importingFiles = false;
+  const clearFileDrop = () => {
+    fileTree.classList.remove("file-drop-active");
+    $$(".file-drop-target", fileTree).forEach(row => row.classList.remove("file-drop-target"));
+  };
+  fileTree.addEventListener("dragover", e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); e.stopPropagation();
+    clearFileDrop();
+    fileTree.classList.add("file-drop-active");
+    e.target.closest(".trow.dir")?.classList.add("file-drop-target");
+    e.dataTransfer.dropEffect = importingFiles ? "none" : "copy";
+  });
+  fileTree.addEventListener("dragleave", e => { if (!fileTree.contains(e.relatedTarget)) clearFileDrop(); });
+  document.addEventListener("dragend", clearFileDrop);
+  window.addEventListener("blur", clearFileDrop);
+  fileTree.addEventListener("drop", async e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); e.stopPropagation(); clearFileDrop();
+    if (importingFiles) return toast("文件正在导入", "");
+    const root = S.treeData?.root;
+    if (!root) return toast("请先打开项目", "err");
+    const target = e.target.closest(".trow.dir")?.title || root;
+    const files = Array.from(e.dataTransfer.files);
+    if (!files.length) return;
+    const seq = S.sessionSwitchSeq;
+    importingFiles = true;
+    fileTree.setAttribute("aria-busy", "true");
+    try {
+      const reply = await window.halo.importFiles(files, root, target);
+      if (!reply?.ok) throw Error(reply?.error || "导入失败");
+      const { imported, failed } = reply.data;
+      if (imported.length) toast(`已导入 ${imported.length} 个文件`, "ok");
+      if (failed.length) toast(failed.map(item => `${item.name}：${item.error}`).join("；"), "err");
+      if (seq === S.sessionSwitchSeq) { S.expanded.add(target); await loadTree(true); }
+    } catch (error) { toast(error.message, "err"); }
+    finally { importingFiles = false; fileTree.removeAttribute("aria-busy"); }
+  });
+
+  // Files dropped in the chat must use the same attachment pipeline as the picker.
   document.addEventListener("dragover", (e) => e.preventDefault());
   document.addEventListener("drop", (e) => {
     e.preventDefault();
-    const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith("image/"));
-    for (const f of files) addImageFile(f);
+    const files = [...(e.dataTransfer?.files || [])];
+    void attachNativeFiles(files);
   });
 
   wireCenter();
@@ -2643,6 +2699,7 @@ function renderTree() {
         row.insertBefore(open, row.querySelector('.trow-del'));
       }
       row.addEventListener("click", () => {
+        el.focus({ preventScroll: true });
         S.selectedFile = n.path;
         if (n.dir) {
           const open = !S.expanded.has(n.path);
@@ -2759,6 +2816,7 @@ function mediaPreviewShell(media) {
 }
 
 async function setPreview(p, force) {
+  p = resolvePreviewPath(p, S.state?.cwd);
   if (!p) return;
   if (!force && S.previewFile === p) return;
   const request = ++portPreviewRequest;
@@ -2784,7 +2842,7 @@ async function setPreview(p, force) {
       if (!r?.ok) { body.innerHTML = '<div class="fv-note">' + esc(r?.error || '预览失败') + '</div>'; return; }
       if (ext === 'pdf') {
         pages = r.data.pages;
-        body.innerHTML = '<div class="document-preview"><div class="document-canvas"><img alt="PDF 页面" /></div><nav aria-label="文档翻页"><span class="document-kind">PDF</span><div class="document-pages"><button id="docPrev" title="上一页" aria-label="上一页">‹</button><span>' + page + ' / ' + pages + '</span><button id="docNext" title="下一页" aria-label="下一页">›</button></div><span class="document-fit">适合宽度</span></nav></div>';
+        body.innerHTML = '<div class="document-preview"><div class="document-canvas"><img alt="PDF 页面" /></div><nav aria-label="文档翻页"><span class="document-kind">PDF</span><div class="document-pages"><button id="docPrev" title="上一页" aria-label="上一页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button><span>' + page + ' / ' + pages + '</span><button id="docNext" title="下一页" aria-label="下一页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button></div><span class="document-fit">适合宽度</span></nav></div>';
         body.querySelector('img').src = r.data.image;
         body.querySelector('#docPrev').disabled = page <= 1;
         body.querySelector('#docNext').disabled = page >= pages;
@@ -2892,15 +2950,45 @@ function sniffImageMime(b64 = "") {
 }
 const normImageMime = (m) => (m === "image/jpg" ? "image/jpeg" : m);
 
-async function attachImages() {
-  const r = await window.halo.pickImages();
-  const d = r?.data || { files: [], skipped: [] };
-  const imgs = (d.files || []).map((i) => ({
-    ...i,
-    mediaType: normImageMime(i.mediaType) || sniffImageMime(i.data) || "image/png",
-  }));
-  for (const img of imgs) await attachPrepared(img);
-  if (d.skipped?.length) toast(`已跳过超大图片：${d.skipped.join("、")}（单张上限 25MB）`, "err");
+async function attachFiles() {
+  try {
+    const seq = S.sessionSwitchSeq;
+    const r = await window.halo.pickAttachments();
+    if (seq !== S.sessionSwitchSeq) return;
+    if (r?.ok === false) throw new Error(r.error);
+    const d = r?.data || { files: [], skipped: [] };
+    for (const item of d.files || []) {
+      if (item.kind === "file") addFileAttachment(item);
+      else await attachPrepared({ ...item, mediaType: normImageMime(item.mediaType) || sniffImageMime(item.data) || "image/png" });
+    }
+    if (d.skipped?.length) toast(`无法添加：${d.skipped.join("、")}（图片上限 25MB）`, "err");
+  } catch (error) { toast(`添加失败：${error.message}`, "err"); }
+}
+
+async function attachNativeFiles(files) {
+  const seq = S.sessionSwitchSeq;
+  for (const file of files) {
+    if (seq !== S.sessionSwitchSeq) return;
+    if (file.type.startsWith("image/")) { addImageFile(file); continue; }
+    try {
+      const result = await window.halo.droppedFileInfo(file);
+      if (seq !== S.sessionSwitchSeq) return;
+      const info = result?.data;
+      if (!info?.path || info.directory) {
+        toast(info?.directory ? "请将文件夹拖到项目栏" : `无法读取文件：${file.name}`, "err");
+        continue;
+      }
+      addFileAttachment({ name: file.name, path: info.path, size: file.size });
+    } catch { toast(`无法添加文件：${file.name}`, "err"); }
+  }
+}
+
+function addFileAttachment(file) {
+  if (!file.path) return;
+  const key = value => value.replace(/\\/g, "/");
+  if (S.files.some(existing => key(existing.path) === key(file.path))) return;
+  S.files.push({ name: file.name, path: file.path, size: file.size });
+  renderAttachments();
 }
 
 function addImageFile(file) {
@@ -3005,7 +3093,7 @@ function openImagePreview(src, name = "截图", gallery = [{ src, name }], initi
 function renderAttachments() {
   S.composerRevision++;
   const row = $("#attachRow");
-  row.hidden = S.images.length === 0;
+  row.hidden = S.images.length === 0 && S.files.length === 0;
   row.innerHTML = "";
   S.images.forEach((img, i) => {
     const chip = document.createElement("div");
@@ -3013,6 +3101,14 @@ function renderAttachments() {
     chip.innerHTML = `<button class="attach-preview" type="button" title="放大查看截图"><img src="data:${img.mediaType};base64,${img.data}" alt="" /><span>${esc(trunc(img.name, 18))}</span></button><button class="attach-remove" title="移除">×</button>`;
     $(".attach-preview", chip).addEventListener("click", () => openImagePreview(`data:${img.mediaType};base64,${img.data}`, img.name, S.images.map((item) => ({ src: `data:${item.mediaType};base64,${item.data}`, name: item.name })), i));
     $(".attach-remove", chip).addEventListener("click", () => { S.images.splice(i, 1); renderAttachments(); });
+    row.appendChild(chip);
+  });
+  S.files.forEach((file, i) => {
+    const chip = document.createElement("div");
+    chip.className = "attach-chip";
+    chip.title = file.path;
+    chip.innerHTML = `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h6"/></svg><span>${esc(trunc(file.name, 24))}</span><button class="attach-remove" type="button" title="移除文件" aria-label="移除文件">×</button>`;
+    $(".attach-remove", chip).addEventListener("click", () => { S.files.splice(i, 1); renderAttachments(); });
     row.appendChild(chip);
   });
 }
@@ -3151,7 +3247,7 @@ async function loadProjects() {
       const button = document.createElement("button"); button.className = "project-conversation-name server-conversation";
       button.textContent = session.name || "新会话"; button.title = session.name || "新会话";
       if (normPath(session.file) === normPath(S.state?.sessionFile)) button.classList.add("active");
-      if (session.running) { const dot = document.createElement("i"); dot.className = "server-running-dot"; button.prepend(dot); }
+      if (session.running) { const indicator = document.createElement("i"); indicator.className = "conversation-spinner"; indicator.setAttribute("role", "img"); indicator.setAttribute("aria-label", "正在执行"); button.title += " · 正在执行"; button.prepend(indicator); }
       button.addEventListener("click", async () => {
         await openSession(session.file); loadProjects();
       });
@@ -4025,7 +4121,7 @@ async function loadMarket(page) {
   const box = $("#pkgMarket");
   const cached = cachedMarketPage(marketKey(query, type, currentPage));
   if (!cached) {
-    box.innerHTML = `<div class="pkg-empty">加载中…</div>`;
+    box.innerHTML = `<div class="pkg-loading" role="status"><span class="pkg-loading-spinner" aria-hidden="true"></span><span>加载中</span></div>`;
     S.pkgItems = [];
     S.pkgTotal = 0;
     renderPager();

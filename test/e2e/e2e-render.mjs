@@ -4,7 +4,7 @@
  * Verifies the full renderer pipeline without depending on network/model access.
  */
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from 'node:net';
@@ -253,6 +253,144 @@ await evalJS(`document.querySelector('#proxyReset').click()`);
 await sleep(400);
 if (await evalJS('window.__proxyFixture.mode') !== 'direct') { electron.kill(); throw Error('Proxy reset failed'); }
 console.log('PASS proxy settings UI applies a port and restores direct');
+// Real relative tool-write preview: exercise URL encoding and dependent assets.
+writeFileSync(path.join(workspace, '页面 #%.html'), '<!doctype html><script src="./preview-game.js"></script>');
+writeFileSync(path.join(workspace, 'preview-game.js'), 'parent.postMessage({previewRelativeReady:true},"*");');
+await evalJS(`window.__relativePreviewReady=false; addEventListener('message',e=>{if(e.data?.previewRelativeReady)window.__relativePreviewReady=true;});
+window.__haloDispatch({type:'agent_start'});
+window.__haloDispatch({type:'tool_execution_start',toolCallId:'relative-preview',toolName:'write',args:{path:'页面 #%.html'}});
+window.__haloDispatch({type:'tool_execution_end',toolCallId:'relative-preview',isError:false,result:{content:[{type:'text',text:'File written'}]}});
+window.__haloDispatch({type:'agent_settled'});`);
+let relativeReady=false;
+for(let attempt=0;attempt<40;attempt++) {
+  relativeReady=await evalJS('window.__relativePreviewReady');
+  if(relativeReady)break;
+  await sleep(100);
+}
+if(!relativeReady){electron.kill();throw Error('Relative tool path did not auto-open HTML and its script');}
+console.log('PASS relative HTML write auto-preview, Chinese/special-character paths and relative script loading');
+await evalJS(`document.querySelector('#settingsModal [data-close]').click()`);
+for (const theme of ['light','dark']) {
+  await evalJS(`document.documentElement.dataset.theme='${theme}'`);
+  await sleep(350);
+  await screenshot('test/shot-preview-actions-'+theme+'.png');
+}
+// Render actual attachment code against an isolated draft in the real window.
+const appSource = readFileSync('src/renderer/js/app.js', 'utf8');
+const attachmentRenderer = appSource.slice(appSource.indexOf('function renderAttachments()'), appSource.indexOf('/* ---- project (A9'));
+const attachmentResult = await evalJS(`(() => {
+  const S = {images:[], files:[{name:'产品说明.pdf',path:'C:/files/产品说明.pdf'},{name:'数据表.xlsx',path:'C:/files/数据表.xlsx'}],composerRevision:0};
+  const $ = (selector, root=document) => root.querySelector(selector);
+  const esc = text => text.replaceAll('&','&amp;').replaceAll('<','&lt;');
+  const trunc = text => text;
+  ${attachmentRenderer}
+  renderAttachments();
+  const row = $('#attachRow');
+  if (row.hidden || row.children.length !== 2) return false;
+  row.querySelector('.attach-remove').click();
+  if (row.children.length !== 1 || S.files[0].name !== '数据表.xlsx') return false;
+  return row.scrollWidth <= row.clientWidth;
+})()`);
+if (!attachmentResult) { electron.kill(); throw Error('File attachment chip layout/removal failed'); }
+await screenshot('test/shot-file-attachments.png');
+console.log('PASS ordinary file chips render and remove in Electron');
+// Native File objects exercise the real chat drop event, preload and main IPC.
+const documentFiles = ['说明.docx', '数据.xlsx', '参考.pdf'].map(name => path.join(workspace,name));
+for(const file of documentFiles) writeFileSync(file,'attachment transport fixture');
+await evalJS(`document.querySelector('#attachRow').innerHTML='';
+  const picker=document.createElement('input');picker.id='nativeAttachmentFixture';picker.type='file';picker.multiple=true;picker.hidden=true;document.body.appendChild(picker);`);
+const dom = await send('DOM.getDocument');
+const nativePicker = await send('DOM.querySelector',{nodeId:dom.result.root.nodeId,selector:'#nativeAttachmentFixture'});
+await send('DOM.setFileInputFiles',{nodeId:nativePicker.result.nodeId,files:documentFiles});
+await evalJS(`(() => { const transfer=new DataTransfer();
+  for(const file of document.querySelector('#nativeAttachmentFixture').files) transfer.items.add(file);
+  document.querySelector('#input').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+})()`);
+let nativeChips=[];
+for(let attempt=0;attempt<30;attempt++) {
+  nativeChips=await evalJS(`Array.from(document.querySelectorAll('#attachRow .attach-chip')).map(n=>n.title)`);
+  if(nativeChips.length===3) break;
+  await sleep(100);
+}
+if(documentFiles.some(file=>!nativeChips.includes(file))) {electron.kill();throw Error('Native chat file drop failed: '+JSON.stringify(nativeChips));}
+await screenshot('test/shot-native-document-attachments.png');
+await evalJS(`while(document.querySelector('#attachRow .attach-remove')) document.querySelector('#attachRow .attach-remove').click();`);
+const importTarget=path.join(workspace,'imported');mkdirSync(importTarget);
+await evalJS(`document.querySelector('#treeRefresh').click()`);
+let targetReady=false;
+for(let attempt=0;attempt<30;attempt++) {
+  targetReady=await evalJS(`Array.from(document.querySelectorAll('#wsTree .trow.dir')).some(n=>n.title===${JSON.stringify(importTarget)})`);
+  if(targetReady)break;
+  await sleep(100);
+}
+if(!targetReady){electron.kill();throw Error('Import target folder did not render');}
+await evalJS(`(() => {
+  const transfer=new DataTransfer();
+  for(const file of document.querySelector('#nativeAttachmentFixture').files)transfer.items.add(file);
+  const target=Array.from(document.querySelectorAll('#wsTree .trow.dir')).find(n=>n.title===${JSON.stringify(importTarget)});
+  target.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+})()`);
+let importedReady=false;
+for(let attempt=0;attempt<30;attempt++) {
+  importedReady=await evalJS(`document.querySelector('#wsTree').getAttribute('aria-busy')!=='true' && Array.from(document.querySelectorAll('#wsTree .trow.file')).filter(n=>n.title.startsWith(${JSON.stringify(importTarget)})).length===3`);
+  if(importedReady)break;
+  await sleep(100);
+}
+if(!importedReady){electron.kill();throw Error('Tree import did not refresh its destination');}
+for(const source of documentFiles) {
+  if(readFileSync(path.join(importTarget,path.basename(source)),'utf8')!==readFileSync(source,'utf8')){electron.kill();throw Error('Imported content differs');}
+}
+if(await evalJS(`document.querySelectorAll('#attachRow .attach-chip').length`)){electron.kill();throw Error('Tree drop leaked into chat attachments');}
+await screenshot('test/shot-tree-import.png');
+await evalJS(`document.querySelector('#nativeAttachmentFixture').remove()`);
+const deleteFixture=path.join(importTarget,'参考.pdf');
+await evalJS(`(() => {
+  const tree=document.querySelector('#wsTree');
+  Array.from(tree.querySelectorAll('.trow.file')).find(n=>n.title===${JSON.stringify(deleteFixture)}).click();
+  const editor=document.createElement('input');tree.appendChild(editor);editor.focus();
+  editor.dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',bubbles:true,cancelable:true}));
+  if(tree.querySelector('.trow.selected .trow-del').classList.contains('confirm')) throw Error('Delete intercepted text editing');
+  editor.remove();tree.focus();
+  tree.dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',bubbles:true,cancelable:true}));
+  if(!tree.querySelector('.trow.selected .trow-del').classList.contains('confirm')) throw Error('Delete did not request confirmation');
+  tree.dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',repeat:true,bubbles:true,cancelable:true}));
+})()`);
+// Key auto-repeat must not count as confirmation.
+if(readFileSync(deleteFixture,'utf8')!=='attachment transport fixture'){electron.kill();throw Error('Delete auto-repeat modified file');}
+await evalJS(`document.querySelector('#wsTree').dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',bubbles:true,cancelable:true}));`);
+let deleted=false;
+for(let attempt=0;attempt<30;attempt++) {
+  deleted=await evalJS(`!Array.from(document.querySelectorAll('#wsTree .trow.file')).some(n=>n.title===${JSON.stringify(deleteFixture)})`);
+  if(deleted)break;
+  await sleep(100);
+}
+if(!deleted){electron.kill();throw Error('Confirmed Delete did not refresh file tree');}
+console.log('PASS Delete confirms removal, ignores text editing and ignores held-key repeats');
+console.log('PASS native tree drop imports files into the folder, refreshes tree and does not attach to chat');
+console.log('PASS Word/Excel/PDF native drop into chat through preload and main IPC');
+// Use the production loading markup without issuing a marketplace request.
+const loadingMarkup = appSource.match(/box\.innerHTML = `(<div class="pkg-loading"[\s\S]*?)`;/)[1];
+await evalJS(`document.querySelector('#settingsModal').hidden=false; document.querySelector('#settingsModal').classList.add('show');
+  document.querySelectorAll('.set-pane').forEach(p=>p.classList.toggle('active',p.id==='setPane-pkgs'));
+  document.querySelectorAll('.set-nav').forEach(p=>p.classList.toggle('active',p.dataset.pane==='pkgs'));
+  document.querySelector('#pkgInstalledSec').hidden=true;
+  document.querySelector('#pkgMarketSec').hidden=false;
+  document.querySelector('#pkgMarket').innerHTML=${JSON.stringify(loadingMarkup)};
+  document.documentElement.dataset.theme='light';`);
+await sleep(250);
+const loadingGeometry = await evalJS(`(() => {
+  const box=document.querySelector('#pkgMarket').getBoundingClientRect();
+  const loading=document.querySelector('.pkg-loading').getBoundingClientRect();
+  const spinner=document.querySelector('.pkg-loading-spinner');
+  return {dx:Math.abs(box.x+box.width/2-loading.x-loading.width/2),
+    dy:Math.abs(box.y+box.height/2-loading.y-loading.height/2),height:box.height,
+    spinning:spinner.getAnimations().some(a=>a.playState==='running'),border:getComputedStyle(spinner).borderTopWidth};
+})()`);
+if(loadingGeometry.dx>1 || loadingGeometry.dy>1 || loadingGeometry.height<200 || !loadingGeometry.spinning || loadingGeometry.border==='0px') {
+  electron.kill(); throw Error('Marketplace loading alignment/motion: '+JSON.stringify(loadingGeometry));
+}
+await screenshot('test/shot-market-loading.png');
+console.log('PASS marketplace loading centered with active spinner',loadingGeometry);
 ws.close();
 electron.kill();
 process.exit(0);

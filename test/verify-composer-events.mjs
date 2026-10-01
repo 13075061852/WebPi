@@ -16,7 +16,7 @@ function node() {
 function harness() {
   const input = node(), attachments = node(), messages = node(), calls = [], rows = [], order = [], notices = [];
   const S = { state: { ready: true, sessionId: 'A', cwd: 'C:/project' }, sessionSwitchSeq: 0,
-    switchingSession: false, streaming: false, images: [], composerRevision: 0, toolCards: new Map(),
+    switchingSession: false, streaming: false, images: [], files: [], composerRevision: 0, toolCards: new Map(),
     queued: { steering: [], followUp: [] } };
   const invoke = (method, ...args) => new Promise((resolve, reject) => calls.push({ method, args, resolve, reject }));
   const context = vm.createContext({
@@ -38,7 +38,7 @@ function harness() {
   });
   for (const [start, end] of [
     ['async function send(', '\nfunction renderUserMsg('],
-    ['function appendFileMention(', '\nfunction handleMentionKey('],
+    ['function addFileAttachment(', '\nfunction addImageFile('],
     ['function onMessageStart(', '\nfunction onMessageUpdate('],
     ['async function retryLast()', '\n/* ---- tool timeline'],
     ['function renderAttachments()', '\n/* ---- project'],
@@ -48,14 +48,15 @@ function harness() {
     ['async function restoreHistory(', '\n/* ============================================================\n   sessions'],
     ['async function switchProjectViaAdd(', '\n/* ---- 项目'],
   ]) vm.runInContext(extract(start, end), context);
-  const draft = (text, images = []) => { input.value = text; S.images = images; context.autoGrow(); context.renderAttachments(); };
+  const draft = (text, images = [], files = []) => { input.value = text; S.images = images; S.files = files; context.autoGrow(); context.renderAttachments(); };
   return { context, input, S, calls, rows, order, notices, draft };
 }
 const image = { name: 'A.png', mediaType: 'image/png', data: 'AAAA' };
 {
   const h = harness();
-  h.context.appendFileMention('C:\\work\\report.pdf');
-  assert.equal(h.input.value, '@"C:/work/report.pdf" ');
+  h.context.addFileAttachment({name:'report.pdf',path:'C:\\work\\report.pdf'});
+  h.context.addFileAttachment({name:'report.pdf',path:'C:/work/report.pdf'});
+  assert.equal(h.S.files.length, 1);
   h.S.streaming = true;
   const pending = h.context.send();
   assert.equal(h.calls[0].method, 'steer');
@@ -213,3 +214,59 @@ for (const scenario of ['focused', 'preview', 'background', 'failure']) {
   assert.equal(context.browsingServerId, scenario === 'failure' ? 'deleted' : null);
 }
 console.log('PASS composer rollback isolation, accepted/queued user events, skill/image restore, retry and project/removal transition guards');
+
+// File-only and mixed attachments must survive normal/queued sends and rejection.
+for (const method of ['prompt', 'steer', 'followUp']) {
+  const h = harness();
+  const file = { name: '报告.pdf', path: 'C:/documents/报告.pdf', size: 100 };
+  h.S.streaming = method !== 'prompt';
+  h.draft('', [], [file]);
+  const pending = h.context.send(method);
+  assert.equal(h.calls[0].method, method);
+  assert.equal(h.calls[0].args[0], '@"C:/documents/报告.pdf"');
+  assert.equal(h.S.files.length, 0);
+  h.calls[0].resolve({ ok: false, error: 'offline' }); await pending;
+  assert.equal(h.S.files[0].path, file.path);
+  h.draft('分析附件', [image], [file]);
+  const mixed = h.context.send(method);
+  assert.equal(h.calls[1].args[0], '分析附件\n@"C:/documents/报告.pdf"');
+  assert.equal(h.calls[1].args[1].images[0].data, image.data);
+  h.draft('', [], [{ ...file, name: 'new.pdf', path: 'C:/new.pdf' }]);
+  h.calls[1].resolve({ ok: false, error: 'offline' }); await mixed;
+  assert.equal(h.S.files[0].path, 'C:/new.pdf', 'preserve newer file draft');
+}
+
+// Native picker accepts ordinary files without reading their contents into memory.
+{
+  const main = fs.readFileSync('src/main/main.mjs', 'utf8');
+  const start = main.indexOf('  const pickAttachments = async');
+  const end = main.indexOf('  // window controls', start);
+  const handlers = {}, reads = [];
+  let canceled = false;
+  const picker = vm.createContext({
+    mainWin: null, LIMITS: { IMAGE_PICK: 25 },
+    path: { basename: value => value.split('/').at(-1), extname: value => '.' + value.split('.').at(-1) },
+    dialog: { showOpenDialog: async (_window, options) => {
+      assert.equal(options.filters[0].extensions[0], '*');
+      assert.ok(options.properties.includes('multiSelections'));
+      return { canceled, filePaths: ['/报告.pdf','/table.xlsx','/photo.png','/large.jpg','/missing.txt'] };
+    } },
+    fs: { promises: {
+      stat: async value => { if(value === '/missing.txt') throw Error('missing'); return {isFile:()=>true,size:value === '/large.jpg'?26:10}; },
+      readFile: async value => { reads.push(value); return Buffer.from('image'); },
+    } },
+    handle: (name, handler) => { handlers[name] = handler; },
+  });
+  vm.runInContext(main.slice(start,end), picker);
+  const result = await handlers['halo:pick-attachments']();
+  assert.equal(result.files.length, 3);
+  assert.equal(result.files[0].kind, 'file');
+  assert.equal(result.files[0].path, '/报告.pdf');
+  assert.equal(result.files[1].kind, 'file');
+  assert.equal(result.files[2].mediaType, 'image/png');
+  assert.deepEqual(reads, ['/photo.png']);
+  assert.equal(result.skipped.join(','), 'large.jpg,missing.txt');
+  canceled = true;
+  assert.equal((await handlers['halo:pick-attachments']()).files.length, 0);
+}
+console.log('PASS file picker, mixed attachments, file-only queue and draft recovery');

@@ -65,9 +65,12 @@ globalThis.fetch = async () => { throw Error('Runtime smoke must stay offline');
       terminal = pty.spawn(process.env.ComSpec, ['/D', '/Q'], {
         name: 'xterm-color', cols: 80, rows: 24, cwd: process.cwd(), env: process.env, useConpty: true,
       });
-      terminal.onData(data => { output += data; if (output.includes('HALO_NATIVE_PTY_OK')) { clearTimeout(timeout); resolve(); } });
-      terminal.onExit(() => { terminalExited = true; clearTimeout(timeout); output.includes('HALO_NATIVE_PTY_OK') ? resolve() : reject(Error('Native terminal produced no output')); });
-      terminal.write('echo HALO_NATIVE_PTY_OK\r');
+      terminal.onData(data => { output += data; });
+      terminal.onExit(({ exitCode }) => { terminalExited = true; clearTimeout(timeout);
+        output.includes('HALO_NATIVE_PTY_OK') && exitCode === 0 ? resolve() : reject(Error('Native terminal produced no output or failed to exit cleanly')); });
+      // Wait for a normal shell exit. Resolving on output and immediately
+      // killing ConPTY races its asynchronous console-list cleanup helper.
+      terminal.write('echo HALO_NATIVE_PTY_OK & exit\r');
     });
   } finally { if (!terminalExited) { try { terminal?.kill(); } catch {} } }
   console.log('PASS packaged node-pty/ConPTY terminal output');
@@ -83,7 +86,14 @@ globalThis.fetch = async () => { throw Error('Runtime smoke must stay offline');
     esbuild.stop();
   }
   console.log('PASS packaged Wrangler CLI and both esbuild runtime owners without global Node');
-})().catch(error => { console.error(error.stack || error); process.exitCode = 1; });
+})().then(() => {
+  // The terminal command has exited normally and every runtime assertion is
+  // complete. End the isolated probe explicitly: node-pty retains its native
+  // output worker after a natural shell exit, keeping this test process alive.
+  process.stdout.write('PASS packaged runtime probe completed\n', () => process.exit(0));
+}, error => {
+  process.stderr.write(String(error.stack || error) + '\n', () => process.exit(1));
+});
 `);
 try {
   const code = await new Promise((resolve, reject) => {
@@ -92,11 +102,12 @@ try {
     child.stdout.on('data', chunk => process.stdout.write(chunk));
     child.stderr.on('data', chunk => process.stderr.write(chunk));
     child.once('error', error => { clearTimeout(timeout); reject(error); });
-    child.once('exit', status => { clearTimeout(timeout); resolve(status); });
+    // "close" follows process exit and closure of its inherited stdio pipes.
+    child.once('close', status => { clearTimeout(timeout); resolve(status); });
   });
   assert.equal(code, 0, 'Packaged native/worker/CLI runtime smoke failed');
 } finally {
   assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
   assert.ok(path.basename(dir).startsWith('halo-runtime-smoke-'));
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 }

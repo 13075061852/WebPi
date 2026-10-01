@@ -9,3 +9,9 @@ Reuse retained candidate artifacts for verification retries; after test-only fix
 use the release workflow reuse_run input after shipped-input validation. Run the
 Windows proxy and motion preflight before tagging. Record stage timings and
 prefer removing duplicate work over weakening release gates.
+
+Default release delivery is local Windows packaging followed by GitHub upload.
+Keep the verified EXE, blockmap and latest.yml in local dist. Do not trigger a
+cloud build when pushing a release tag; the cloud release workflow is manual
+fallback only, used when the user explicitly asks for a cloud build. Reuse the
+same local artifacts when upload or verification needs a retry.

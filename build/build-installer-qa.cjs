@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const prepareInstaller = require('./prepare-installer.cjs');
 
 // Compile the same installer UI against an isolated installer identity. This
@@ -10,6 +11,7 @@ const prepareInstaller = require('./prepare-installer.cjs');
 const project = path.resolve(__dirname, '..');
 const qa = path.join(project, 'tmp', 'installer-qa');
 const qaPayload = path.join(project, 'tmp', 'qa-payload');
+const fresh = process.argv.includes('--fresh');
 const manifest = JSON.parse(fs.readFileSync(path.join(project, 'package.json'), 'utf8'));
 const config = structuredClone(manifest.build);
 config.appId = 'com.pihalo.installerqa';
@@ -44,6 +46,42 @@ const configPath = path.join(qa, 'electron-builder.json');
 fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 console.log(`Prepared QA-only installer configuration: ${configPath}`);
 console.log('Before running it, isolate APPDATA and USERPROFILE for the launched app; do not run alongside the real Pi Halo.');
+
+if (fresh) {
+  const testVersion = '1.0.11-test.4';
+  config.appId = 'com.pihalo.test';
+  config.productName = 'Pi Halo Test';
+  config.extraMetadata = { name: 'pi-halo-test', version: testVersion, haloTestBuild: true };
+  config.directories.output = 'dist/test';
+  config.win.executableName = 'Pi Halo Test';
+  config.nsis.artifactName = 'Pi-Halo-Test-Setup-${version}.${ext}';
+  config.nsis.shortcutName = 'Pi Halo Test';
+  config.nsis.include = path.join(__dirname, 'installer.nsh');
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  console.log(`Building ${testVersion} from current source into dist/test`);
+  const started = Date.now();
+  const child = spawnSync(process.execPath, [
+    path.join(project, 'node_modules', 'electron-builder', 'cli.js'),
+    '--config', configPath, '--win', '--publish', 'never',
+  ], { cwd: project, stdio: 'inherit', windowsHide: true,
+    env: { ...process.env, ELECTRON_BUILDER_CACHE: path.join(project, 'tmp', 'electron-builder-cache') } });
+  fs.writeFileSync(path.join(qa, 'fresh-build.json'), JSON.stringify({ version: testVersion,
+    startedAt: new Date(started).toISOString(), durationMs: Date.now() - started,
+    exitCode: child.status, fresh: true, directory: config.directories.output }, null, 2));
+  if (child.error) throw child.error;
+  if (child.status === 0) {
+    const output = path.join(project, config.directories.output);
+    const name = `Pi-Halo-Test-Setup-${testVersion}.exe`;
+    const data = fs.readFileSync(path.join(output, name));
+    const sha512 = createHash('sha512').update(data).digest('base64');
+    fs.writeFileSync(path.join(output, 'latest.yml'), [
+      `version: ${testVersion}`, 'files:', `  - url: ${name}`, `    sha512: ${sha512}`,
+      `    size: ${data.length}`, `path: ${name}`, `sha512: ${sha512}`,
+      `releaseDate: '${new Date().toISOString()}'`, '',
+    ].join('\n'));
+  }
+  process.exit(child.status ?? 1);
+}
 
 if (process.argv.includes('--copy-payload')) {
   if (fs.existsSync(qaPayload)) throw new Error(`QA payload already exists; preserve or clear this exact test directory before taking a fresh snapshot: ${qaPayload}`);

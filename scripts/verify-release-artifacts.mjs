@@ -63,10 +63,15 @@ async function verifyBlockmap(executable, blockmap, expected) {
   return { sha256: sha256.digest('hex'), size: position, chunks: chunks.sizes.length };
 }
 
-export async function verifyReleaseArtifacts({ directory = path.join(root, 'dist'), tag = process.env.GITHUB_REF_TYPE === 'tag' ? process.env.GITHUB_REF_NAME : undefined, stageDirectory = process.env.HALO_PACKAGE_STAGE } = {}) {
+export async function verifyReleaseArtifacts({ directory = path.join(root, 'dist'), tag = process.env.GITHUB_REF_TYPE === 'tag' ? process.env.GITHUB_REF_NAME : undefined, stageDirectory = process.env.HALO_PACKAGE_STAGE, testBuildVersion } = {}) {
   assert.equal(process.platform, 'win32', 'Verify the Windows installer on Windows');
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   if (tag) assert.equal(tag, `v${manifest.version}`, 'Release tag must match source version');
+  if (testBuildVersion) {
+    assert.match(testBuildVersion, /^\d+\.\d+\.\d+-test\.\d+$/, 'Use an explicit test version');
+    assert.ok(!tag, 'A test installer must not be verified as a tagged release');
+    manifest.version = testBuildVersion;
+  }
   const updateFile = path.join(directory, 'latest.yml');
   const update = parse(fs.readFileSync(updateFile, 'utf8'));
   assert.equal(update.version, manifest.version, 'Update manifest must match source version');
@@ -92,6 +97,13 @@ export async function verifyReleaseArtifacts({ directory = path.join(root, 'dist
   const sevenZip = path.join(path.dirname(require.resolve('electron-winstaller/package.json')), 'vendor', '7z.exe');
   const extract = args => run(sevenZip, ['x', '-y', '-bso0', '-bsp0', ...args], { windowsHide: true, timeout: 180000, maxBuffer: 2 * 1024 * 1024 });
   try {
+    await extract([executable, '-o' + temp, '$PLUGINSDIR\\halo-installer-ui.dll']);
+    const nativeUi = path.join(temp, '$PLUGINSDIR', 'halo-installer-ui.dll');
+    assert.ok(fs.existsSync(nativeUi), 'Installer native UI DLL is missing');
+    const nativeUiHash = await hashFile(nativeUi);
+    assert.equal(nativeUiHash, await hashFile(path.join(root, 'build', 'installer-window.dll')),
+      'Installer contains a stale native UI DLL');
+    console.log('PASS installer contains the current native UI DLL');
     await extract([executable, '-o' + temp, '$PLUGINSDIR\\app-64.7z']);
     const payload = path.join(temp, '$PLUGINSDIR', 'app-64.7z');
     assert.ok(fs.existsSync(payload), 'Installer application payload is missing');
@@ -112,6 +124,10 @@ export async function verifyReleaseArtifacts({ directory = path.join(root, 'dist
     for (const file of entries) assert.ok(allowedRoots.has(file.split('/')[0]), `Unexpected packaged path: ${file}`);
     const packaged = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
     assert.equal(packaged.version, manifest.version, 'Installer contains stale application version');
+    if (testBuildVersion) {
+      assert.equal(packaged.name, 'pi-halo-test');
+      assert.equal(packaged.haloTestBuild, true, 'Test installer must isolate its app profile');
+    }
     assert.equal(packaged.main, manifest.main, 'Installer entrypoint differs from source');
     assert.ok(entries.includes(manifest.main), 'Installer main entrypoint is missing');
     let checkedSources = 0;
@@ -125,12 +141,13 @@ export async function verifyReleaseArtifacts({ directory = path.join(root, 'dist
       executable: { file: entry.url, ...result },
       blockmap: { file: path.basename(blockmap), sha256: await hashFile(blockmap) },
       latest: { file: 'latest.yml', sha256: await hashFile(updateFile) },
+      nativeUi: { sha256: nativeUiHash },
       archive: { sha256: await hashFile(archive), entries: entries.length, checkedSources },
       assets: [entry.url, path.basename(blockmap), 'latest.yml'],
-      ...(stageDirectory ? { stagedExe: path.join(payloadDirectory, 'Pi Halo.exe') } : {}),
+      ...(stageDirectory ? { stagedExe: path.join(payloadDirectory, testBuildVersion ? 'Pi Halo Test.exe' : 'Pi Halo.exe') } : {}),
     };
     fs.mkdirSync(path.join(root, 'test', 'results'), { recursive: true });
-    fs.writeFileSync(path.join(root, 'test', 'results', 'release-artifacts.json'), JSON.stringify(report, null, 2) + '\n');
+    fs.writeFileSync(path.join(root, 'test', 'results', testBuildVersion ? 'test-installer-artifacts.json' : 'release-artifacts.json'), JSON.stringify(report, null, 2) + '\n');
     console.log(`PASS installer payload version ${manifest.version}, allowed archive roots and ${checkedSources} current source files`);
     return report;
   } finally {

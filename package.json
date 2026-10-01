@@ -1,6 +1,6 @@
 {
   "name": "pi-halo",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Pi Halo — a celestial desktop console for the pi coding agent",
   "main": "src/main/main.mjs",
   "type": "commonjs",
@@ -18,6 +18,7 @@
     "check": "node scripts/check-syntax.mjs",
     "lint": "eslint src scripts test --max-warnings 0",
     "dist": "electron-builder --win",
+    "dist:local": "electron-builder --win --publish never",
     "dist:dir": "electron-builder --win dir",
     "test:audit": "node scripts/test-audit.mjs",
     "test:regressions": "node scripts/test-regressions.mjs"

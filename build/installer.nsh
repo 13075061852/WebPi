@@ -10,8 +10,8 @@
 !cd "${BUILD_RESOURCES_DIR}\generated"
 
 !define MUI_BGCOLOR "FFFFFF"
-!define MUI_TEXTCOLOR "19253D"
-!define MUI_INSTFILESPAGE_COLORS "19253D F3F6FB"
+!define MUI_TEXTCOLOR "202126"
+!define MUI_INSTFILESPAGE_COLORS "202126 FFFFFF"
 
 ; electron-builder already measured the archive at build time. Avoid walking
 ; every installed dependency again merely to populate Windows' EstimatedSize.
@@ -23,8 +23,8 @@
 
 !macro customHeader
   SetFont "Microsoft YaHei UI" 9
-  BrandingText "Pi Halo ${VERSION}  |  安装与更新"
-  ShowInstDetails show
+  BrandingText "Pi Halo ${VERSION}"
+  ShowInstDetails nevershow
   ShowUninstDetails show
   !ifndef BUILD_UNINSTALLER
     ; Builder appends its plugin search paths after loading this include.
@@ -35,36 +35,49 @@
 !macroend
 
 !ifndef BUILD_UNINSTALLER
+!define MUI_CUSTOMFUNCTION_GUIINIT PiHaloGuiInit
 Var PiHaloStartedAt
 Var PiHaloLog
 Var PiHaloLogPath
 Var PiHaloInstallSeconds
 
-!define MUI_DIRECTORYPAGE_TEXT_TOP "选择 Pi Halo 的安装位置。$\r$\n$\r$\n接下来会依次检查环境、解压并写入文件、配置快捷方式、验证安装结果。安装期间可查看当前操作和完整阶段记录。"
+!define MUI_DIRECTORYPAGE_TEXT_TOP "选择安装位置。"
 !define MUI_DIRECTORYPAGE_TEXT_DESTINATION "安装位置"
 !define MUI_FINISHPAGE_TITLE "Pi Halo 已安装完成"
 !define MUI_FINISHPAGE_TEXT_LARGE
-!define MUI_FINISHPAGE_TEXT "Pi Halo 已准备就绪。$\r$\n安装耗时：$PiHaloInstallSeconds 秒。$\r$\n$\r$\n操作记录已保存至安装目录中的 install.log。"
-!define MUI_FINISHPAGE_RUN_TEXT "启动 Pi Halo"
+!define MUI_FINISHPAGE_TEXT "一切就绪。"
 !define MUI_FINISHPAGE_BUTTON "完成"
+
+!ifndef INSTALL_MODE_PER_ALL_USERS
+!macro customInstallMode
+  ; Skip the scope page before it creates its controls. Fresh/manual installs
+  ; use the current user; updates keep an existing per-machine installation.
+  ${If} ${isUpdated}
+  ${AndIf} $installMode == "all"
+    StrCpy $isForceMachineInstall "1"
+  ${Else}
+    StrCpy $isForceCurrentInstall "1"
+  ${EndIf}
+!macroend
+!endif
 
 !macro PiHaloDetail TEXT
   Push $0
   System::Call 'kernel32::GetTickCount() i.r0'
   IntOp $0 $0 - $PiHaloStartedAt
   IntOp $0 $0 / 1000
-  SetDetailsPrint both
+  SetDetailsPrint listonly
   DetailPrint "[$0 秒] ${TEXT}"
   ${If} $PiHaloLog != ""
     FileWriteUTF16LE $PiHaloLog "[$0 秒] ${TEXT}$\r$\n"
   ${EndIf}
-  SetDetailsPrint textonly
+  SetDetailsPrint none
   Pop $0
 !macroend
 
 !macro PiHaloStage TITLE TEXT
   ${IfNot} ${Silent}
-    !insertmacro MUI_HEADER_TEXT "${TITLE}" "${TEXT}"
+    SendMessage $PiHaloStatus ${WM_SETTEXT} 0 "STR:${TITLE}"
   ${EndIf}
   !insertmacro PiHaloDetail "${TITLE} — ${TEXT}"
 !macroend
@@ -86,21 +99,15 @@ Var PiHaloInstallSeconds
 
 !macro customPageAfterChangeDir
   !define MUI_PAGE_HEADER_TEXT "安装 Pi Halo"
-  !define MUI_PAGE_HEADER_SUBTEXT "下方会实时显示当前阶段、正在处理的内容和操作记录。"
+  !define MUI_PAGE_HEADER_SUBTEXT "正在准备安装"
   !define MUI_PAGE_CUSTOMFUNCTION_SHOW PiHaloInstFilesShow
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE PiHaloInstFilesLeave
 !macroend
 
-!macro PiHaloInstFilesFunctions
-Function PiHaloInstFilesShow
-  System::Call 'kernel32::GetTickCount() i.r0'
-  StrCpy $PiHaloStartedAt $0
-  SetDetailsView show
-  !insertmacro PiHaloDetail "安装位置：$INSTDIR"
-FunctionEnd
-!macroend
+!include "${BUILD_RESOURCES_DIR}\installer-ui.nsh"
 
 !macro customInstall
-  !insertmacro PiHaloStage "9 / 9  验证安装结果" "检查启动程序、应用资源与卸载程序是否就绪。"
+  !insertmacro PiHaloStage "即将完成" "检查启动程序、应用资源与卸载程序是否就绪。"
   ${IfNot} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
   ${OrIfNot} ${FileExists} "$INSTDIR\resources\app.asar"
   ${OrIfNot} ${FileExists} "$INSTDIR\${UNINSTALL_FILENAME}"
@@ -163,10 +170,8 @@ FunctionEnd
 !macroend
 
 !macro customFinishPage
-  !ifndef HIDE_RUN_AFTER_FINISH
-    !define MUI_FINISHPAGE_RUN
-    !define MUI_FINISHPAGE_RUN_FUNCTION "PiHaloStartApp"
-  !endif
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW PiHaloFinishShow
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE PiHaloFinishLeave
   !insertmacro MUI_PAGE_FINISH
 !macroend
 !endif

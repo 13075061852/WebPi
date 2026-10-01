@@ -215,6 +215,8 @@ export function createLayoutMotion({ setPaused }) {
   }
   return (change, { maskPreview = false, previewFold = false, device = false } = {}) => {
     if (maskPreview) {
+      // Cover before asynchronous pause/paint work, including sidebar and pane toggles.
+      coverPreview();
       maskFades.forEach(animation => animation.cancel());
       maskFades = [];
     }

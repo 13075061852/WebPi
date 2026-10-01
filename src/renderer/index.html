@@ -125,11 +125,13 @@
           <span class="ct-spacer"></span>
           <span id="wsPath" class="ct-path"></span>
           <span class="ct-spacer"></span>
-          <button id="pvMode" class="pv-mode" type="button" hidden title="查看源代码" aria-label="查看源代码" aria-controls="pvBody">源码</button>
-          <button id="btnOpenFile" hidden title="使用系统默认应用打开文件" aria-label="使用默认应用打开文件"><svg viewBox="0 0 24 24" class="ic"><path d="M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg></button>
-          <button id="btnTerm" class="pv-term-btn" title="控制台 · 命令提示符">
+          <div class="pv-actions" role="group" aria-label="预览操作">
+          <button id="pvMode" class="pv-mode pv-action" type="button" hidden title="查看源代码" aria-label="查看源代码" aria-controls="pvBody">源码</button>
+          <button id="btnOpenFile" class="pv-action" type="button" hidden title="使用系统默认应用打开文件" aria-label="使用默认应用打开文件"><svg viewBox="0 0 24 24" class="ic"><path d="M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg></button>
+          <button id="btnTerm" class="pv-term-btn pv-action" type="button" aria-label="打开控制台" title="控制台 · 命令提示符">
             <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9.5l2.8 2.5L7 14.5M13 15h4"/></svg>
           </button>
+          </div>
         </div>
         <div class="pv-body dev-desktop" id="pvBody">
           <div class="pv-empty">
@@ -213,7 +215,7 @@
           <textarea id="input" rows="1" placeholder="描述你要完成的任务…  Enter 发送 · Shift+Enter 换行"></textarea>
           <div class="composer-bar">
             <div class="cb-left">
-              <button id="btnAttach" title="附加图片"><svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg></button>
+              <button id="btnAttach" title="添加文件或图片" aria-label="添加文件或图片"><svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg></button>
               <button id="btnModel" class="chip"><svg viewBox="0 0 24 24" class="ic"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg><span id="modelChipName">模型</span></button>
             </div>
             <div class="cb-right">
@@ -226,7 +228,7 @@
           </div>
         </div>
         <div class="composer-balances">
-          <span id="ctxQuota" class="chip quota"><span>大模型</span><span class="q-track"><i id="ctxQuotaBar"></i></span><span id="ctxQuotaText">—</span></span>
+          <span id="ctxQuota" class="chip quota"><span id="ctxQuotaProvider">—</span><span class="q-track"><i id="ctxQuotaBar"></i></span><span id="ctxQuotaText">—</span></span>
           <button id="ctxVideoQuota" class="chip" type="button" title="默认视频平台账户余额，点击刷新">视频 —</button>
         </div>
       </footer>

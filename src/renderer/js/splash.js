@@ -10,7 +10,10 @@
     state = next; receivedAt = performance.now();
     const current = state.steps.find(step => step.status === 'error') || state.steps.find(step => step.status === 'active') || state.steps.find(step => step.status === 'pending');
     status.textContent = current?.label || '正在打开工作空间';
-    detail.textContent = current?.detail || '窗口就绪后立即打开';
+    detail.textContent = current?.detail || '';
+    detail.hidden = current?.status !== 'error';
+    document.getElementById('stage').dataset.error = String(current?.status === 'error');
+    status.title = current?.detail || '';
   };
   window.halo.onStartupProgress(render);
   window.halo.splashDone().then(reply => { if (reply?.ok) render(reply.data); }).catch(() => {});

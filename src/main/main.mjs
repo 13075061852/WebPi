@@ -1,3 +1,4 @@
+import { importWorkspaceFiles } from "./workspace-import.mjs";
 import { searchPackageNames } from './package-name-search.mjs';
 import { isTrustedUIURL } from "./trusted-ui-url.mjs";
 import electronUpdater from 'electron-updater';
@@ -87,7 +88,11 @@ protocol.registerSchemesAsPrivileged([
   { scheme: "halo-preview", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
-app.setName("Pi Halo");
+const testBuild = JSON.parse(fs.readFileSync(path.join(DIST, "package.json"), "utf8")).haloTestBuild === true;
+app.setName(testBuild ? "Pi Halo Test" : "Pi Halo");
+if (testBuild && !app.commandLine.hasSwitch("user-data-dir")) {
+  app.setPath("userData", path.join(app.getPath("appData"), "Pi Halo Test"));
+}
 
 let splashWin = null;
 let mainWin = null;
@@ -672,6 +677,13 @@ function bootstrap() {
     treeWatcher = null;
   };
 
+  handle("halo:import-files", async ({ root, target, sources }) => {
+    const currentRoot = path.resolve(bridge.cwd || ".");
+    if (path.resolve(root) !== currentRoot) throw Error("项目已切换，请重新拖入文件");
+    if (!Array.isArray(sources) || sources.some(source => typeof source !== "string" || !source)) throw Error("无效的文件路径");
+    return importWorkspaceFiles(currentRoot, target || currentRoot, sources);
+  });
+
   handle("halo:read-tree", async () => {
     armTreeWatcher();
     const root = path.resolve(bridge.cwd || ".");
@@ -993,25 +1005,34 @@ function bootstrap() {
     catch { return null; }
   });
 
-  handle("halo:pick-images", async () => {
+  const pickAttachments = async (imagesOnly = false) => {
     const res = await dialog.showOpenDialog(mainWin, {
-      title: "附加图片",
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
+      title: imagesOnly ? "附加图片" : "添加文件或图片",
+      filters: [ ...(imagesOnly ? [] : [{ name: "所有文件", extensions: ["*"] }]),
+        { name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif"] } ],
       properties: ["openFile", "multiSelections"],
     });
     if (res.canceled) return { files: [], skipped: [] };
     const files = [], skipped = [];
     for (const p of res.filePaths) {
       try {
-        if (fs.statSync(p).size > LIMITS.IMAGE_PICK) { skipped.push(path.basename(p)); continue; }
-        const b = fs.readFileSync(p).toString("base64");
+        const stat = await fs.promises.stat(p);
+        if (!stat.isFile()) { skipped.push(path.basename(p)); continue; }
         const ext = path.extname(p).slice(1).toLowerCase();
+        if (!["png", "jpg", "jpeg", "webp", "gif"].includes(ext)) {
+          files.push({ kind: "file", name: path.basename(p), path: p, size: stat.size });
+          continue;
+        }
+        if (stat.size > LIMITS.IMAGE_PICK) { skipped.push(path.basename(p)); continue; }
+        const data = (await fs.promises.readFile(p)).toString("base64");
         const mediaType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
-        files.push({ name: path.basename(p), mediaType, data: b });
+        files.push({ kind: "image", name: path.basename(p), mediaType, data });
       } catch { skipped.push(path.basename(p)); }
     }
     return { files, skipped };
-  });
+  };
+  handle("halo:pick-images", () => pickAttachments(true));
+  handle("halo:pick-attachments", () => pickAttachments());
 
   // window controls
   ipcMain.on("win:minimize", (e) => { if (trustedSender(e)) mainWin?.minimize(); });

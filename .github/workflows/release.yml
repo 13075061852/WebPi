@@ -1,7 +1,6 @@
 name: Windows release
 on:
-  push:
-    tags: ['v*']
+  # Local Windows builds are the default. Cloud builds require explicit dispatch.
   workflow_dispatch:
     inputs:
       tag:
