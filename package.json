@@ -1,6 +1,6 @@
 {
   "name": "pi-halo",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "Pi Halo — a celestial desktop console for the pi coding agent",
   "main": "src/main/main.mjs",
   "type": "commonjs",
@@ -92,7 +92,7 @@
     "globals": "^17.11.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-coding-agent": "1.0.2",
     "@napi-rs/canvas": "^1.0.9",
     "docx": "^9.7.1",
     "docx-preview": "^0.4.0",

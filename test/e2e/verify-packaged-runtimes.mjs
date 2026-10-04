@@ -56,6 +56,40 @@ globalThis.fetch = async () => { throw Error('Runtime smoke must stay offline');
   } finally { await worker.terminate(); }
   console.log('PASS packaged native canvas and actual Pi worker/Photon WASM image resize');
 
+  // Codemode has import-only exports. Resolve its installed package beside the
+  // physical Pi entry without falling back to the checkout or global modules.
+  const codemodePackage = (createRequire(piEntry).resolve.paths('@earendil-works/pi-codemode') || [])
+    .map(base => path.join(base, '@earendil-works/pi-codemode', 'package.json'))
+    .find(file => fs.existsSync(file));
+  assert.ok(codemodePackage, 'Packaged codemode dependency is missing');
+  const codemodeManifest = JSON.parse(fs.readFileSync(codemodePackage, 'utf8'));
+  const codemodeEntry = physical(path.join(path.dirname(codemodePackage), codemodeManifest.main));
+  const runtimeRoot = path.join(path.dirname(process.execPath), 'resources', 'app.asar.unpacked', 'node_modules');
+  const codemodeRelative = path.relative(runtimeRoot, codemodeEntry);
+  assert.ok(!codemodeRelative.startsWith('..' + path.sep) && !path.isAbsolute(codemodeRelative),
+    'Codemode must resolve from the packaged physical dependency tree');
+  const { CodemodeSandbox } = await import(pathToFileURL(codemodeEntry));
+  const bundledWorker = path.join(path.dirname(piEntry), 'bundle', 'chunks', 'codemode-worker.js');
+  assert.ok(fs.existsSync(bundledWorker), 'Pi CLI codemode worker is missing');
+  // SDK and CLI use different worker entrypoints. Both must load the shipped
+  // QuickJS WASM and complete a real asynchronous host-tool round trip.
+  for (const workerUrl of [undefined, pathToFileURL(bundledWorker)]) {
+    let calls = 0;
+    const sandbox = new CodemodeSandbox({
+      timeoutMs: 15000, workerUrl,
+      tools: [{ name: 'add', execute: async ({ a, b }) => { calls++; return a + b; } }],
+    });
+    try {
+      const result = await sandbox.execute('const value = await tools.add({ a: 2, b: 3 }); text(value); return value;');
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal(result.value, 5);
+      assert.equal(calls, 1);
+      assert.ok(result.output.some(item => item.type === 'text' && item.text === '5'));
+      assert.equal(result.calls[0]?.status, 'ok');
+    } finally { await sandbox.close(); }
+  }
+  console.log('PASS packaged SDK/CLI codemode workers and QuickJS WASM host-tool execution');
+
   const pty = packageRequire('node-pty');
   let terminal, terminalExited = false;
   try {

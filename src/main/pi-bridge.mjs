@@ -1338,7 +1338,11 @@ async _doStart() {
     const bucket = (ctx.queueAttachments ||= { steering: [], followUp: [] }).steering;
     bucket.push(names);
     try {
-      await ctx.runtime.session.steer(text, images);
+      const disposition = await ctx.runtime.session.steer(text, images);
+      if (disposition === 'handled') {
+        const index = bucket.indexOf(names);
+        if (index >= 0) bucket.splice(index, 1);
+      }
       return this.publicState();
     } catch (error) {
       const index = bucket.indexOf(names);
@@ -1358,7 +1362,11 @@ async _doStart() {
     const bucket = (ctx.queueAttachments ||= { steering: [], followUp: [] }).followUp;
     bucket.push(names);
     try {
-      await ctx.runtime.session.followUp(text, images);
+      const disposition = await ctx.runtime.session.followUp(text, images);
+      if (disposition === 'handled') {
+        const index = bucket.indexOf(names);
+        if (index >= 0) bucket.splice(index, 1);
+      }
       return this.publicState();
     } catch (error) {
       const index = bucket.indexOf(names);

@@ -40,7 +40,12 @@ try {
     'halo-fixture': { baseUrl, api: 'openai-completions', apiKey: 'fixture-only', models: [{ id: 'fixture', name: 'Offline fixture', contextWindow: 32000, maxTokens: 2048 }] },
   } }));
   fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'halo-fixture', defaultModel: 'fixture' }));
-  fs.writeFileSync(path.join(userData, 'halo-settings.json'), JSON.stringify({ cwd: workspace, modelKey: 'halo-fixture/fixture', projects: [{ cwd: workspace }], splashed: true }));
+  const agentPrompt = 'HALO_KERNEL_CUSTOM_AGENT: preserve this role verbatim.';
+  const projectRule = 'HALO_KERNEL_PROJECT_RULE: preserve the project instructions.';
+  fs.mkdirSync(path.join(workspace, '.pi', 'agents'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, '.pi', 'agents', 'kernel-fixture.md'), `---\nname: kernel-fixture\n---\n${agentPrompt}\n`);
+  fs.writeFileSync(path.join(workspace, 'AGENTS.md'), projectRule + '\n');
+  fs.writeFileSync(path.join(userData, 'halo-settings.json'), JSON.stringify({ cwd: workspace, modelKey: 'halo-fixture/fixture', projects: [{ cwd: workspace }], defaultAgent: 'kernel-fixture', splashed: true }));
   const probe = net.createServer(); probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
   const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
   const system = process.env.SystemRoot || 'C:/Windows';
@@ -98,6 +103,25 @@ try {
   assert.equal(calls.length, 3, 'Real SDK must execute both local tools before the final answer');
   assert.ok(calls[0].tools.some(t => t.function.name === 'powershell'));
   assert.ok(!calls[0].tools.some(t => t.function.name === 'bash'));
+  const policy = fs.readFileSync('assets/delivery-policy.md', 'utf8');
+  const skills = ['halo-word', 'halo-excel', 'halo-powerpoint', 'halo-pdf', 'halo-imagegen', 'halo-video-prompt'];
+  // Check the actual provider payload from the packaged session, not just the
+  // resource inventory or a separately invoked extension handler.
+  for (const call of calls) {
+    const prompt = call.messages.filter(message => ['system', 'developer'].includes(message.role))
+      .map(message => typeof message.content === 'string' ? message.content : message.content.map(part => part.text || '').join('\n')).join('\n');
+    assert.ok(prompt.includes(policy), 'The complete delivery policy must reach the provider unchanged');
+    assert.equal(prompt.split(policy).length - 1, 1, 'The delivery policy must not duplicate across tool turns');
+    assert.ok(prompt.includes(agentPrompt), 'The selected custom agent must reach every provider request');
+    assert.ok(prompt.includes(projectRule), 'Project AGENTS.md must reach the provider');
+    for (const skill of skills) assert.ok(prompt.includes(skill), `Packaged ${skill} must remain exposed`);
+  }
+  fs.mkdirSync('test/results', { recursive: true });
+  fs.writeFileSync('test/results/packaged-kernel-prompts.json', JSON.stringify({
+    passed: true, sdkVersion: JSON.parse(fs.readFileSync('package.json', 'utf8')).dependencies['@earendil-works/pi-coding-agent'],
+    provider: 'local-fixture', requests: calls.length, verbatimPolicy: true, customAgent: true, projectRules: true, skills,
+  }, null, 2));
+  console.log('PASS packaged provider payload preserves delivery policy, custom agent, project rules and all six bundled skills');
   const toolResults = calls.at(-1).messages.filter(m => m.role === 'tool');
   assert.ok(toolResults.some(m => String(m.content).includes('bundled-pi-ok')), 'Native PowerShell read must succeed');
   await sleep(300);
