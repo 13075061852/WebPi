@@ -447,8 +447,9 @@
           </button>
           <div class="release-history-meta"><span id="releaseCurrentVersion"></span><span id="releaseHistoryStatus" role="status"></span></div>
           <div class="release-history-layout">
-            <nav id="releaseHistoryNav" aria-label="历史版本导航"></nav>
-            <div id="releaseHistoryList" tabindex="0" aria-label="版本更新说明"></div>
+            <div id="releaseHistoryLoading" class="release-history-loading" role="status"><span class="pkg-loading-spinner" aria-hidden="true"></span><span>加载中…</span></div>
+            <nav id="releaseHistoryNav" aria-label="历史版本导航" hidden></nav>
+            <div id="releaseHistoryList" tabindex="0" aria-label="版本更新说明" hidden></div>
           </div>
         </div>
       </div>

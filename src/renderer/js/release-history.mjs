@@ -4,8 +4,9 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
   const get = id => root.querySelector(`#${id}`);
   const list = get('releaseHistoryList'), refresh = get('releaseHistoryRefresh');
   const nav = get('releaseHistoryNav');
+  const loading = get('releaseHistoryLoading');
   const repo = 'https://github.com/13075061852/WebPi';
-  let releases = bundledReleases, current = '', busy = false;
+  let releases = bundledReleases, current = '', pending = null, ready = false, rendered = '';
   let scrollFrame = null;
   const reducedMotion = () => list.ownerDocument.defaultView.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function stopScroll() {
@@ -71,8 +72,16 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
     if (active) highlight(active.dataset.version);
   }).observe(nav);
   function render() {
+    const signature = JSON.stringify([current, releases]);
+    if (signature === rendered) return;
     stopScroll();
     const previousTop = list.scrollTop;
+    const previousNavTop = nav.scrollTop;
+    // Keep the same paragraph in view when a new release is inserted above it.
+    const listTop = list.getBoundingClientRect().top;
+    const anchor = previousTop > 0 ? [...list.children].find(entry => entry.getBoundingClientRect().bottom > listTop) : undefined;
+    const anchorVersion = anchor?.dataset.version;
+    const anchorOffset = anchor ? anchor.getBoundingClientRect().top - listTop : 0;
     list.replaceChildren(...releases.map(release => {
       const article = node('article', undefined, 'release-entry');
       article.dataset.version = release.version;
@@ -116,37 +125,54 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
       return button;
     }));
     list.scrollTop = previousTop;
+    if (anchorVersion) {
+      const replacement = [...list.children].find(entry => entry.dataset.version === anchorVersion);
+      if (replacement) list.scrollTop += replacement.getBoundingClientRect().top - list.getBoundingClientRect().top - anchorOffset;
+    }
+    nav.scrollTop = previousNavTop;
     highlight(releases[0]?.version);
     syncPosition();
+    rendered = signature;
   }
-  async function load(force = false) {
-    if (busy) return;
-    busy = true; refresh.disabled = true;
+  function load(force = false) {
+    if (pending) return pending;
+    refresh.disabled = true;
     get('releaseHistoryStatus').textContent = '正在同步版本记录…';
-    try {
-      const result = await api.releaseHistory(force === true);
-      if (!result?.ok) throw Error(result?.error || '同步失败');
-      if (!Array.isArray(result.data)) throw Error('版本记录格式异常');
-      const merged = new Map(bundledReleases.map(item => [item.version, item]));
-      for (const item of result.data) {
-        if (/^\d+\.\d+\.\d+$/.test(item.version) && typeof item.date === 'string' && typeof item.body === 'string') merged.set(item.version, item);
+    pending = (async () => {
+      try {
+        const result = await api.releaseHistory(force === true);
+        if (!result?.ok) throw Error(result?.error || '同步失败');
+        if (!Array.isArray(result.data)) throw Error('版本记录格式异常');
+        const merged = new Map(bundledReleases.map(item => [item.version, item]));
+        for (const item of result.data) {
+          if (item && /^\d+\.\d+\.\d+$/.test(item.version) && typeof item.date === 'string' && typeof item.body === 'string') merged.set(item.version, item);
+        }
+        releases = [...merged.values()].sort((a, b) => b.date.localeCompare(a.date));
+        get('releaseHistoryStatus').textContent = '已同步 GitHub 正式版本';
+      } catch (error) {
+        const reason = String(error?.message || '同步失败').replace(/\s+/g, ' ').slice(0, 80);
+        get('releaseHistoryStatus').textContent = `${reason}，显示本地记录`;
+      } finally {
+        // Commit the first list once, with its current-version badge already ready.
+        await currentReady;
+        loading.hidden = true; nav.hidden = false; list.hidden = false;
+        ready = true;
+        render();
+        pending = null; refresh.disabled = false;
       }
-      releases = [...merged.values()].sort((a, b) => b.date.localeCompare(a.date));
-      render(); get('releaseHistoryStatus').textContent = '已同步 GitHub 正式版本';
-    } catch (error) {
-      const reason = String(error?.message || '同步失败').replace(/\s+/g, ' ').slice(0, 80);
-      get('releaseHistoryStatus').textContent = `${reason}，显示本地记录`;
-    }
-    finally { busy = false; refresh.disabled = false; }
+    })();
+    return pending;
   }
   get('releaseRepository').onclick = () => void open(repo);
   refresh.onclick = () => void load(true);
   root.querySelector('[data-pane="history"]').addEventListener('click', () => void load());
-  render();
-  void api.appUpdateState().then(result => {
+  loading.hidden = false; nav.hidden = true; list.hidden = true;
+  const currentReady = Promise.resolve().then(() => api.appUpdateState()).then(result => {
     current = result?.data?.currentVersion || '';
     get('releaseCurrentVersion').textContent = current ? `当前安装 v${current}` : '正式发布记录';
-    render();
+    if (ready) render();
   }).catch(() => { get('releaseCurrentVersion').textContent = '正式发布记录'; });
+  // Preload while the app starts instead of waiting for the pane's first click.
+  void load();
   return { refresh: load };
 }
