@@ -72,7 +72,7 @@ try {
   assert.equal(nodes.get('#releaseCurrentVersion').textContent, '当前安装 v1.0.11');
   assert.equal(nodes.get('#releaseHistoryStatus').textContent, 'GitHub 请求限流（403），显示本地记录');
   assert.equal(nodes.get('#releaseHistoryRefresh').disabled, false);
-  assert.equal(nodes.get('#releaseHistoryList').children[0].dataset.version, '1.0.11');
+  assert.equal(nodes.get('#releaseHistoryList').children[0].dataset.version, bundledReleases[0].version);
   assert.ok(bundledReleases.some(release => release.version === '1.0.10'));
 
   response = { ok: true, data: [{ version: '1.0.12', date: '2026-10-02T00:00:00Z', body: '<script>fixture</script>' }] };

@@ -1,6 +1,12 @@
 // Snapshot of public releases; live history is merged when available.
 export const bundledReleases = [
 {
+  "version": "1.0.12",
+  "date": "2026-10-05T00:00:00+08:00",
+  "body": "更新内容\n\n- Pi 内核升级至 1.0.2，保留内置提示词、技能和自定义智能体规则。\n- 修复历史版本同步失败，支持 Windows 系统代理及 GitHub 限流时的备用同步入口。\n- 历史版本提前加载，首次打开直接显示最新记录，刷新时保持阅读位置。\n\nWindows x64：下载 Pi-Halo-Setup-1.0.12.exe，或使用软件内“检查更新”。",
+  "url": "https://github.com/13075061852/WebPi/releases/tag/v1.0.12"
+},
+{
   "version": "1.0.11",
   "date": "2026-10-01T09:35:02Z",
   "body": "更新内容\n\n- 安装器采用纯白简约界面，默认为当前用户安装；点击完成关闭安装窗口并启动应用。\n- 支持聊天文件附件和任务队列附件，完善 Word、Excel、PDF 等文件导入。\n- 文件列表支持拖拽导入和 Delete 键删除。\n- 优化预览自动刷新、设备切换与侧栏展开收起动效。\n- 统一预览操作按钮，精简启动界面与加载状态，优化 PDF 工具栏。\n- 状态栏显示当前模型供应商名称。\n\nWindows x64 安装包已在本地构建，并通过源码一致性、更新文件、运行依赖、文档处理、代理/直连及界面动效检查。",

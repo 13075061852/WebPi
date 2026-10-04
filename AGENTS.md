@@ -1,5 +1,12 @@
 # Repository guidance
 
+Daily fixes, UI changes, and dependency or Pi kernel upgrades are source-only
+work: do not increment the application version, build an installer, push changes,
+create a release tag, or publish a Release. Start the packaging and publication
+flow only when the user explicitly asks to push or publish the latest version.
+If the user explicitly requests a test installer, build only that requested test
+package without changing the formal application version or publishing it.
+
 For packaging, GitHub Releases, updater publication, or release retries, read
 `docs/RELEASING.md` before acting. Use the checked-in release workflow and preflight
 script, not version-specific scripts in ignored `tmp/` directories. Keep offline
