@@ -82,7 +82,10 @@ try {
   for (const metadata of Object.values(PINNED_INSTALLERS)) for (const [arch, artifact] of Object.entries(metadata.artifacts)) {
     assert.ok(['x64', 'arm64'].includes(arch)); assert.match(artifact.sha256, /^[0-9a-f]{64}$/); assert.match(artifact.url, /^https:\/\/(www\.python\.org|nodejs\.org|github\.com)\//);
   }
-  assert.equal(officialInstallAvailable({ platform: 'win32', arch: 'x64', env: fixtureEnv(temporary) }), process.platform === 'win32');
+  // The supplied platform and Windows path define this unit-test scenario,
+  // independently of the OS running the regression (including Linux CI).
+  assert.equal(officialInstallAvailable({ platform: 'win32', arch: 'x64', env: fixtureEnv('C:\\Users\\fixture\\AppData\\Local') }), true);
+  assert.equal(officialInstallAvailable({ platform: 'win32', arch: 'arm64', env: fixtureEnv('C:\\Users\\fixture\\AppData\\Local') }), true);
   assert.equal(officialInstallAvailable({ platform: 'win32', arch: 'ia32', env: fixtureEnv(temporary) }), false);
   assert.equal(officialInstallAvailable({ platform: 'win32', arch: 'arm64', env: { LOCALAPPDATA: 'relative' } }), false);
   assert.equal(officialInstallAvailable({ platform: 'linux', arch: 'x64', env: fixtureEnv(temporary) }), false); mark();
