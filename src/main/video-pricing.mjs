@@ -5,29 +5,16 @@ import { validateVideoNetwork } from './video-settings.mjs';
 const finite = n => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 const round = n => Number(n.toFixed(8));
 const SOURCE = 'https://apimart.ai/pricing';
+const CATALOG = 'https://apimart.ai/api/pricing/models/all';
 const perVideo = new Set(['veo3.1-fast', 'veo3.1-quality', 'veo3.1-lite']);
 
-// /api/pricing/model exposes base rates, not final promotional rates. The official
-// pricing page supplies fixed_prices.items with original_price AND after_discount.
-// Read that data; never infer a discount from a bill or execute page JavaScript.
-export function parseApimartPricing(html) {
-  let flight = '';
-  for (const [, body] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
-    const marker = 'self.__next_f.push(', start = body.indexOf(marker);
-    if (start < 0) continue;
-    try {
-      const frame = JSON.parse(body.slice(start + marker.length, body.lastIndexOf(')')));
-      if (frame[0] === 1 && typeof frame[1] === 'string') flight += frame[1];
-    } catch { /* Non-data scripts are intentionally ignored. */ }
-  }
+// The pricing page loads this public catalog client-side. Its after_discount
+// values are the displayed rates; the older per-model API supplies base rates.
+export function parseApimartPricing(data) {
   const models = new Map();
-  function visit(value, depth = 0) {
-    if (!value || typeof value !== 'object' || depth > 60) return;
-    if (typeof value.id === 'string' && value.fixed_prices?.items) models.set(value.id, value);
-    for (const child of Object.values(value)) visit(child, depth + 1);
-  }
-  for (const line of flight.split('\n')) {
-    try { visit(JSON.parse(line.slice(line.indexOf(':') + 1))); } catch { /* Other Flight records are not JSON. */ }
+  if (data?.success !== true || !Array.isArray(data.data?.models?.video)) return models;
+  for (const value of data.data.models.video) {
+    if (typeof value?.id === 'string' && Array.isArray(value.fixed_prices?.items)) models.set(value.id, value);
   }
   return models;
 }
@@ -76,16 +63,8 @@ export class VideoPricing {
   }
   async load(network) {
     const http = new VideoHTTP({ fetchImpl: this.fetchImpl, network });
-    const response = await http.raw(SOURCE, { timeoutMs: 12000 });
-    if (!response.ok) { await response.body?.cancel(); throw Error('报价获取失败'); }
-    let size = 0, html = '';
-    const decoder = new TextDecoder();
-    for await (const chunk of response.body || []) {
-      size += chunk.length;
-      if (size > 8 * 1024 * 1024) throw Error('报价响应过大');
-      html += decoder.decode(chunk, { stream: true });
-    }
-    const models = parseApimartPricing(html + decoder.decode());
+    const data = await http.request(CATALOG, { timeoutMs: 12000, headers: { Accept: 'application/json' } });
+    const models = parseApimartPricing(data);
     if (!models.size) throw Error('平台报价格式已变化');
     return models;
   }
@@ -99,12 +78,13 @@ export class VideoPricing {
     }
     try {
       const data = (await entry.promise).get(options.model);
+      if (!data) return { available: false, message: '平台暂未提供该模型报价', source: SOURCE };
       const value = estimateApimart(data, { ...options, inputImageCount: input.inputImageCount ?? 0 });
       return value ? { available: true, ...value, source: SOURCE, updatedAt: entry.at, parameters: options }
         : { available: false, message: '当前参数暂无可靠折后报价', source: SOURCE };
-    } catch {
+    } catch (error) {
       if (this.cache.get(network) === entry) this.cache.delete(network);
-      return { available: false, message: '报价获取失败，请稍后重试', source: SOURCE };
+      return { available: false, message: '报价获取失败，请稍后重试', detail: error.message, source: SOURCE };
     }
   }
 }

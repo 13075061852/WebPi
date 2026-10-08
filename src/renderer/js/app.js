@@ -2,6 +2,8 @@ import { resolvePreviewPath } from './preview-path.mjs';
 import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
 import { initAppUpdates } from './app-updates.mjs';
 import { initProxySettings } from './proxy-settings.mjs';
+import { initThemePreviews } from './theme-previews.mjs';
+import { initGlassMaterial } from './glass-material.mjs';
 import { initReleaseHistory } from './release-history.mjs';
 import { initStartupProgress } from './startup.mjs';
 import { createLayoutMotion } from './layout-motion.mjs';
@@ -12,6 +14,8 @@ import { initEnvironmentSettings } from "./environment-settings.mjs";
 import { initVideoSettings } from "./video-settings.mjs";
 import { mountVideoConfirmation } from "./video-confirmation.mjs";
 import { videoBalanceText } from "./video-balance.mjs";
+import { initVideoHistory } from './video-history.mjs';
+import { initDigitalHuman } from './digital-human.mjs';
 import { initProjectRuns } from './project-runs.mjs';
 import { initSidebarHeight } from './sidebar-height.mjs';
 import { OutputRate } from './output-rate.mjs';
@@ -32,6 +36,8 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 let environmentSettings;
 let videoSettings;
 let proxySettings;
+let videoUsage;
+let digitalHuman;
 
 /* ---- 渲染层常量（与主进程 LIMITS 对应，收敛魔法数字） ---- */
 const CONFIRM_RESET_MS = 2600;        // 两步删除确认：未二次确认时恢复的毫秒数
@@ -85,9 +91,10 @@ const S = {
 
 /* ---------- theme: 黑 / 白 ---------- */
 function applyTheme(t, { persist = true } = {}) {
-  const selected = [...Object.keys(window.HALO_THEME_PALETTES || {}), 'light', 'dark', 'nebula', 'mist', 'dunes', 'scholar', 'studio', 'garden', 'spacepig', 'blueprint', 'executive'].includes(t) ? t : 'dark';
-  document.documentElement.dataset.theme = window.HALO_THEME_PALETTES?.[selected] || (['light', 'mist', 'dunes', 'scholar', 'studio', 'garden'].includes(selected) ? 'light' : 'dark');
-  document.documentElement.dataset.wallpaper = [...Object.keys(window.HALO_THEME_PALETTES || {}), 'nebula', 'mist', 'dunes', 'scholar', 'studio', 'garden', 'spacepig', 'blueprint', 'executive'].includes(selected) ? selected : '';
+  const selected = [...Object.keys(window.HALO_THEME_PALETTES || {}), 'light', 'dark', 'glass'].includes(t) ? t : 'dark';
+  document.documentElement.dataset.theme = window.HALO_THEME_PALETTES?.[selected] || (['light', 'glass'].includes(selected) ? 'light' : 'dark');
+  document.documentElement.dataset.surface = selected === 'glass' ? 'glass' : '';
+  document.documentElement.dataset.wallpaper = Object.hasOwn(window.HALO_THEME_PALETTES || {}, selected) ? selected : '';
   if (persist) { try { localStorage.setItem("halo-theme", selected); } catch {} }
   document.dispatchEvent(new CustomEvent("themechange"));
 }
@@ -188,6 +195,10 @@ const portCache = new Map();
 let selectedPortKey = null;
 let previewService = null;
 const projectRunnerUI = initProjectRuns({api:window.halo, context:()=>S.state, switchProject,
+  capturePreviewIntent: () => {
+    const request = previewVisibilityRequest;
+    return () => request === previewVisibilityRequest;
+  },
   openPreview:openWebsite, toast, showLogs:(message, log)=>{
     $('#projectRunLogTitle').textContent=message;
     $('#projectRunLogBody').textContent=log;
@@ -195,6 +206,7 @@ const projectRunnerUI = initProjectRuns({api:window.halo, context:()=>S.state, s
   }});
 function openWebsite(value, projectRun = null) {
   const url = websiteURL(value); if (!url) return;
+  setPreviewCollapsed(false);
   const request = ++portPreviewRequest;
   S.previewFile = null; selectedPortKey = null; updatePortSelection();
   previewService = {kind:'website', url, status:'loading',
@@ -265,7 +277,7 @@ function refreshCompletedPreview({event, sessionId, serverId, cwd}) {
     return;
   }
   if (!serverId && sessionId === S.state?.sessionId && !S.switchingSession && S.previewFile) {
-    void setPreview(S.previewFile, true);
+    void setPreview(S.previewFile, true, { reveal: false });
   }
 }
 const portKey = (id, item) => JSON.stringify([id, item.protocol, item.address, item.port]);
@@ -306,6 +318,7 @@ async function loadServerPorts(force = false) {
     const row = document.createElement("div"); row.className = "port-row"; row.dataset.portKey = portKey(id, item);
     row.tabIndex = 0; row.setAttribute("role", "button"); row.title = "点击预览端口 " + item.port;
     const open = async () => {
+      setPreviewCollapsed(false);
       const request = ++portPreviewRequest;
       selectedPortKey = portKey(id, item); updatePortSelection();
       previewService = {kind:"service", serverId:id, port:item.port, protocol:item.protocol, address:item.address, process:item.process, status:"loading"};
@@ -328,7 +341,7 @@ async function loadServerPorts(force = false) {
       guest.addEventListener("did-finish-load", () => { if (request === portPreviewRequest && previewService) previewService.status = "loaded"; });
       guest.src = result.data;
       updatePortSelection();
-      window.halo.previewTouch?.(currentPreviewDevice() !== "desktop");
+      window.halo.previewTouch?.(previewUsesTouch());
     };
     row.addEventListener("click", open);
     row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
@@ -413,7 +426,9 @@ async function refreshServers() {
       try {
         const result = await window.halo.serverNewSession(server.id);
         if (!result.ok) throw Error(result.error);
-        clearChat(); applyState(result.data); await restoreHistory();
+        clearChat(); applyState(result.data);
+        void loadQuota(S.state?.model?.provider, true);
+        await restoreHistory();
         collapsedServers.delete(server.id); await refreshServers(); await loadSessions(); $("#input").focus();
       } catch (e) { toast(e.message, "err"); }
       finally { finishSessionSwitch(); }
@@ -507,6 +522,7 @@ function initServerUI() {
 function applyState(st) {
   document.documentElement.dataset.projectCwd = st?.cwd || "";
   if (!st) return;
+  if (S.state && previewWorkspaceKey(S.state) !== previewWorkspaceKey(st)) resetPreview();
   S.state = st;
   document.dispatchEvent(new Event("projectstatechange"));
   if (st.sessionFile) saveWorkspace();
@@ -546,7 +562,7 @@ function applyState(st) {
   }
 }
 
-/* 当前模型的剩余额度：切模型 / 每个工具步骤结束时刷新（force 跳过主进程缓存） */
+/* 当前模型的剩余额度：每分钟、新建对话、切模型及操作结束时刷新。 */
 const quotaRefresh = createQuotaRefreshQueue({
   request: (provider, force) => window.halo.modelQuota(provider, force).catch(() => null),
   currentProvider: () => S.state?.model?.provider || null,
@@ -587,6 +603,13 @@ function renderQuotaChip() {
   el.classList.remove("low", "kind-plain");
   el.dataset.portal = "";
   el.style.cursor = "default";
+  if (q?.authExpired) {
+    el.classList.add("low", "kind-plain");
+    $("#ctxQuotaBar").style.width = "0%";
+    $("#ctxQuotaText").textContent = "账户过期";
+    el.title = "账户登录信息已失效，请在设置中重新登录";
+    return;
+  }
   if (q?.kind === "points" && !q.error) {
     // 积分制：纯数字，无上限不画条
     el.classList.add("kind-plain");
@@ -637,6 +660,7 @@ function renderQuotaChip() {
 
 /** 账户芯片上的额度摘要：订阅制“5h 82% · 7d 41%”、余额制“$12.34”、积分制“1,234 分”；无接口返回空 */
 function formatQuotaShort(q) {
+  if (q?.authExpired) return "账户过期";
   if (!q || q.kind === "context") return "";
   if (q.error) return "额度 —";
   if (q.kind === "windows" && Array.isArray(q.windows) && q.windows.length)
@@ -894,25 +918,37 @@ function ensureTurn() {
   return wrap;
 }
 
-// Keep only the latest tool step in the live timeline.
+// Progress text stays visible; each following run of execution steps has its own fold.
 function compactToolTimeline(turn) {
-  const tools = Array.from(turn.children).filter(node => node.classList.contains('tool'));
-  if (tools.length <= 1) return;
-  let archive = turn.querySelector(':scope > .tool-history');
-  if (!archive) {
-    archive = document.createElement('details');
-    archive.className = 'process-group tool-history';
-    archive.innerHTML = '<summary title="展开或收起较早的执行过程"><svg class="process-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg></summary><div class="process-body"></div>';
-    turn.insertBefore(archive, turn.firstChild);
-  }
-  const body = archive.querySelector('.process-body');
-  const cutoff = tools[tools.length - 1];
+  let archive = null;
   for (const node of Array.from(turn.children)) {
-    if (node === cutoff) break;
-    if (node.matches('.tool, .think, .md, .stall-hint') && !node.querySelector('.video-confirmation')) body.appendChild(node);
+    if (node.matches('.md, .error-card') || node.querySelector('.video-confirmation')) { archive = null; continue; }
+    if (node.matches('.tool-history')) { archive = node; continue; }
+    if (!node.matches('.tool, .think, .stall-hint')) continue;
+    if (!archive) {
+      archive = document.createElement('details');
+      archive.className = 'process-group tool-history';
+      archive.innerHTML = '<summary title="展开或收起执行过程"><span class="process-label">执行过程</span><svg class="process-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg></summary><div class="process-body"></div>';
+      turn.insertBefore(archive, node);
+    }
+    archive.querySelector('.process-body').appendChild(node);
+    archive.querySelector('.process-label').textContent = `执行过程 · ${archive.querySelector('.process-body').children.length} 步`;
   }
-  const status = turn.querySelector('.turn-status');
-  if (status) archive.querySelector('summary').prepend(status);
+}
+
+function updateProcessActivity(turn) {
+  if (!turn) return;
+  const groups = [...turn.querySelectorAll(':scope > .tool-history')];
+  const anyTools = !!turn.querySelector('.tool.running');
+  for (const group of groups) {
+    const running = !!group.querySelector('.tool.running');
+    const thinking = !!S.thinking && group.contains(S.thinking.el);
+    const waiting = S.streaming && !S.assistant && !anyTools && !S.thinking && group === groups.at(-1);
+    const active = running || thinking || waiting;
+    group.classList.toggle('is-running', active);
+    group.setAttribute('aria-busy', String(active));
+    group.querySelector('.process-label').textContent = `${active ? running ? '执行中' : '思考中' : '执行过程'} · ${group.querySelector('.process-body').children.length} 步`;
+  }
 }
 
 function formatDuration(seconds) {
@@ -998,9 +1034,10 @@ async function showTurnArtifacts(turn) {
   }
   if (!paths.length) { turn.querySelector(':scope > .turn-artifacts')?.remove(); return; }
   // Resolve delivery paths after renames; never advertise vanished intermediate files.
-  const checked=await window.halo.artifactFiles(paths.slice(0,100), {imageHashes:!!turn.__imageResults?.size}).catch(()=>null);
+  const checked=await window.halo.artifactFiles(paths.slice(0,100), {imageHashes:!!turn.__imageResults?.size,mediaMetadata:true}).catch(()=>null);
   if (!turn.isConnected || request !== turn.__artifactRequest || switchSeq !== S.sessionSwitchSeq ||
       cwd !== (S.state?.cwd || '') || !checked?.ok) return;
+  const mediaSizes = new Map(checked.data.filter(item => typeof item === 'object').map(item => [normPath(item.file), item.bytes]));
   const hashes = new Map(checked.data.filter(item => typeof item === 'object').map(item => [normPath(item.file), item.sha256]));
   paths = [...new Map(checked.data.map(item => { const file = typeof item === 'string' ? item : item.file; return [normPath(file), file]; })).values()];
   let box = turn.querySelector(':scope > .turn-artifacts');
@@ -1025,16 +1062,10 @@ async function showTurnArtifacts(turn) {
       continue;
     }
     const button=document.createElement('button');
-    decorateArtifactCard(button, file, previewURL(file));
+    decorateArtifactCard(button, file, previewURL(file), { bytes: mediaSizes.get(key) });
     updateVideoArtifactCard(button, file, turn, cwd);
     updateImageArtifactCard(button, file, turn, cwd, hashes.get(key));
     button.onclick=async()=>{
-      document.body.classList.remove('preview-collapsed','focus-mode');
-      syncPreviewMotion();
-      $('#center').inert=false;
-      document.querySelector('.term-open')?.classList.remove('term-open');
-      $('#btnTerm')?.classList.remove('active');
-      const toggle=$('#btnPreviewToggle');toggle.setAttribute('aria-expanded','true');toggle.title='收起预览区';toggle.setAttribute('aria-label',toggle.title);
       try { await setPreview(file,true); saveWorkspace(); } catch(error){toast(error.message,'err');}
     };
     let entry = button;
@@ -1105,8 +1136,7 @@ function finalizeTurn() {
   $$(".think[open]", turn).forEach((d) => { d.open = false; });
   $(".turn-status", turn)?.remove();
   // Flatten the live archive before collecting the final collapsed process.
-  const archive = turn.querySelector(':scope > .tool-history');
-  if (archive) {
+  for (const archive of turn.querySelectorAll(':scope > .tool-history')) {
     for (const node of Array.from(archive.querySelector('.process-body').children)) turn.insertBefore(node, archive);
     archive.remove();
   }
@@ -1156,6 +1186,7 @@ function turnStatusText() {
 }
 function updateTurnStatus() {
   const turn = S.turn;
+  updateProcessActivity(turn);
   const row = turn && $(".turn-status", turn);
   if (!row) return;
   const txt = turnStatusText();
@@ -1166,8 +1197,7 @@ function updateTurnStatus() {
   const toolCount = turn.__toolCount || 0;
   $(".turn-status-meta", row).textContent =
     `${elapsed < 2 ? "刚刚开始" : `已运行 ${formatDuration(elapsed)}`} · ${turn.__outputRate?.live() || '约 0.0 token/s'}${toolCount ? ` · ${toolCount} 个工具` : ""}`;
-  const summary = turn.querySelector(":scope > .tool-history > summary");
-  const parent = summary || turn;
+  const parent = turn;
   if (row.parentElement !== parent || parent.firstElementChild !== row) parent.prepend(row);
   scrollDown();
 }
@@ -1186,6 +1216,7 @@ function ensureThink() {
   d.className = "think";
   d.innerHTML = `<summary>${thinkingIcon()}<span class="think-preview">正在分析下一步…</span><span class="think-label">思考中</span></summary><div class="think-body"></div>`;
   ensureTurn().appendChild(d);
+  compactToolTimeline(S.turn);
   updateTurnStatus();
   d.open = true;
   S.thinking = { el: d, body: $(".think-body", d), label: $(".think-label", d), preview: $(".think-preview", d), buf: "", t0: Date.now() };
@@ -1486,6 +1517,7 @@ function onToolEnd(ev) {
   const contents = result?.content || [];
   for (const c of contents) if (c.type === "text") text += (text ? "\n" : "") + c.text;
   const turn = rec.card.closest('.turn');
+  updateProcessActivity(turn);
   if (!isError) {
     collectArtifactResult(turn, rec.toolName, text, secs * 1000, result?.details);
     // The completed file is deliverable now, even if the assistant continues
@@ -1499,14 +1531,14 @@ function onToolEnd(ev) {
   const diff = result?.details?.diff || result?.details?.patch;
   if (diff && !text) text = diff;
 
-  // workspace: record session changes + refresh tree + auto-preview pages
+  // Background writes refresh the current page without selecting or revealing another preview.
   if (!isError && (rec.toolName === "write" || rec.toolName === "edit") && rec.path) {
     recordActivity({ path: rec.path, tool: rec.toolName, time: Date.now(), diff: diff ? String(diff).slice(0, 120000) : null });
     scheduleTreeRefresh();
     const ext = rec.path.split(".").pop().toLowerCase();
-    if (ext === "html" || ext === "htm") {
-      setPreview(rec.path, true);
-      toast("已生成页面，已切换到预览", "ok");
+    if ((ext === "html" || ext === "htm") && S.previewFile &&
+        normPath(resolvePreviewPath(rec.path, S.state?.cwd)) === normPath(S.previewFile)) {
+      void setPreview(S.previewFile, true, { reveal: false });
     }
   }
 
@@ -2073,7 +2105,9 @@ async function newSession() {
   try {
     const r = await window.halo.newSession();
     if (seq !== S.sessionSwitchSeq) return;
+    if (!r?.ok) throw Error(r?.error || '新建对话失败');
     if (r?.data) applyState(r.data);
+    void loadQuota(S.state?.model?.provider, true);
     toast("新会话已开启", "ok");
     loadSessions();
   } catch (e) {
@@ -2242,10 +2276,12 @@ function wireUI() {
   $("#winMax").addEventListener("click", () => window.halo.maximize());
   $("#winClose").addEventListener("click", () => window.halo.close());
   let themeTransition = null;
-  let targetTheme = document.documentElement.dataset.theme;
+  let targetTheme = document.documentElement.dataset.surface || document.documentElement.dataset.theme;
   $('#themeToggle').addEventListener('click', () => {
     const root = document.documentElement;
-    targetTheme = (themeTransition ? targetTheme : root.dataset.theme) === 'light' ? 'dark' : 'light';
+    const themes = ['light', 'dark', 'glass'];
+    const current = themeTransition ? targetTheme : (root.dataset.surface || root.dataset.theme);
+    targetTheme = themes[(themes.indexOf(current) + 1) % themes.length];
     const next = targetTheme;
     themeTransition?.skipTransition();
     const update = () => applyTheme(next);
@@ -2259,6 +2295,7 @@ function wireUI() {
   });
 
   // sidebar tabs
+  syncThemeChoices();
   $$(".nav-item").forEach((btn) => btn.addEventListener("click", () => {
     $$(".nav-item").forEach((b) => b.classList.toggle("active", b === btn));
     const tab = btn.dataset.tab;
@@ -2281,12 +2318,15 @@ function wireUI() {
     try { localStorage.setItem("halo.sbCollapsed", collapsed ? "1" : "0"); } catch {}
   }, { maskPreview: true }));
   $$("#settingsModal .set-nav").forEach((b) => b.addEventListener("click", () => {
+    if (b.dataset.pane !== 'digital-human') digitalHuman?.closeProfile();
     document.querySelectorAll("#settingsModal .set-nav").forEach((x) => x.classList.toggle("active", x === b));
     document.querySelectorAll("#settingsModal .set-pane").forEach((p) => p.classList.toggle("active", p.id === "setPane-" + b.dataset.pane));
     if (b.dataset.pane === "usage") loadUsage(); // 打开面板时刷新统计
     if (b.dataset.pane === "environment") void environmentSettings?.refresh();
     if (b.dataset.pane === "proxy") void proxySettings?.refresh();
     if (b.dataset.pane === "video") void videoSettings?.refresh();
+    if (b.dataset.pane === 'digital-human') void getDigitalHuman().openProfile();
+    if (b.dataset.pane === 'pkgs') { S.pkgLoaded = true; loadInstalled(); syncPkgTab(); }
     if (b.dataset.pane === "login") void loadDefaultModels();
   }));
   $("#usageRange").addEventListener("click", (e) => {
@@ -2335,20 +2375,14 @@ function wireUI() {
   $("#modelSearch").addEventListener("input", (e) => renderModelList(e.target.value));
 
   // attachments & project
+  $('#btnDigitalHuman').addEventListener('click', () => {
+    void getDigitalHuman().open();
+  });
   $("#btnAttach").addEventListener("click", attachFiles);
   $("#projAdd").addEventListener("click", pickProject);
 
   // chat header
-  $("#btnPreviewToggle").addEventListener("click", () => applyPreviewLayout(() => {
-    document.body.classList.remove("focus-mode");
-    const collapsed = document.body.classList.toggle("preview-collapsed");
-    const button = $("#btnPreviewToggle");
-    button.title = collapsed ? "展开预览区" : "收起预览区";
-    button.setAttribute("aria-label", button.title);
-    button.setAttribute("aria-expanded", String(!collapsed));
-    $("#center").inert = collapsed;
-    $("#btnFocus").title = "专注模式 · 对话全屏（隐藏侧栏与工作区）";
-  }, { previewFold: true, maskPreview: true }));
+  $("#btnPreviewToggle").addEventListener("click", () => setPreviewCollapsed(!previewPaneCollapsed));
   $("#btnFocus").addEventListener("click", () => applyPreviewLayout(() => {
     const on = document.body.classList.toggle("focus-mode");
     $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
@@ -2541,8 +2575,10 @@ function wireUI() {
 
   wireCenter();
 
-  // 额度：初始拉取；此后在每个工具步骤结束及 agent_settled 时刷新
+  // Keep the existing event refreshes and also query idle conversations every minute.
   if (S.state?.model?.provider) loadQuota(S.state.model.provider, true);
+  const quotaTimer = setInterval(() => { void loadQuota(S.state?.model?.provider, true); }, 60_000);
+  window.addEventListener('pagehide', () => clearInterval(quotaTimer), { once: true });
 }
 
 /* ============================================================
@@ -2559,21 +2595,24 @@ function wireCenter() {
     setPreview(S.previewFile, true);
   });
 
-  // 预览设备切换：电脑 / 平板 / 手机
-  const devSize = { desktop: "100%", tablet: "768px", mobile: "390px" };
+  // 预览模式：普通无外壳 / 电脑 / 平板 / 手机
+  const devSize = { normal: "100%", desktop: "100%", tablet: "768px", mobile: "390px" };
   let requestedDevice = currentPreviewDevice();
   $$(".pvdev").forEach((b) => b.addEventListener("click", () => {
     const body = $("#pvBody");
     if (requestedDevice === b.dataset.dev && body.classList.contains('dev-' + b.dataset.dev)) return;
     requestedDevice = b.dataset.dev;
     applyPreviewLayout(() => {
-      $$(".pvdev").forEach((x) => x.classList.toggle("active", x === b));
-      body.classList.remove("dev-desktop", "dev-tablet", "dev-mobile");
+      $$(".pvdev").forEach((x) => {
+        x.classList.toggle("active", x === b);
+        x.setAttribute("aria-pressed", String(x === b));
+      });
+      body.classList.remove("dev-normal", "dev-desktop", "dev-tablet", "dev-mobile");
       body.classList.add("dev-" + b.dataset.dev);
+      window.halo.previewTouch?.(previewUsesTouch(b.dataset.dev)); // 与最终模式同步，避免排队切换时保留旧触摸状态
+      const size = $("#pvDevSize");
+      if (size) size.textContent = devSize[b.dataset.dev] || "100%";
     }, { maskPreview: true, device: true });
-    window.halo.previewTouch?.(b.dataset.dev !== "desktop"); // 平板/手机模式：隐藏滚动条 + 触摸式拖动
-    const size = $("#pvDevSize");
-    if (size) size.textContent = devSize[b.dataset.dev] || "100%";
   }));
 }
 
@@ -2585,9 +2624,53 @@ function syncPreviewMotion(settle = false) {
 }
 const applyPreviewLayout = createLayoutMotion({ setPaused: paused => { layoutMotionPaused = paused; return syncPreviewMotion(paused); } });
 
+let previewPaneCollapsed = document.body.classList.contains('preview-collapsed');
+let previewVisibilityRequest = 0;
+let previewProjectRevision = 0;
+const previewWorkspaceKey = state => `${state?.serverId || ''}|${normPath(state?.cwd)}`;
+function setPreviewCollapsed(collapsed) {
+  previewPaneCollapsed = collapsed;
+  const request = ++previewVisibilityRequest;
+  const update = () => {
+    // A queued reveal must not win over a later project switch or manual fold.
+    if (request !== previewVisibilityRequest) return;
+    document.body.classList.remove('focus-mode');
+    document.body.classList.toggle('preview-collapsed', collapsed);
+    $('#center').inert = collapsed;
+    const button = $('#btnPreviewToggle');
+    button.title = collapsed ? '展开预览区' : '收起预览区';
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-expanded', String(!collapsed));
+    $('#btnFocus').title = '专注模式 · 对话全屏（隐藏侧栏与工作区）';
+    if (!collapsed) {
+      document.querySelector('.term-open')?.classList.remove('term-open');
+      $('#btnTerm')?.classList.remove('active');
+    }
+  };
+  if (!layoutMotionPaused && !document.body.classList.contains('focus-mode') &&
+      document.body.classList.contains('preview-collapsed') === collapsed) {
+    update();
+    void syncPreviewMotion();
+  } else {
+    applyPreviewLayout(update, { previewFold: true, maskPreview: true });
+  }
+}
+function resetPreview() {
+  previewProjectRevision++;
+  portPreviewRequest++;
+  previewService = null; selectedPortKey = null; updatePortSelection();
+  S.previewFile = null;
+  $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
+  $('#pvBody').innerHTML = PV_EMPTY;
+  $('#pvName').textContent = '未选择文件';
+  setPreviewCollapsed(true);
+}
+
 /* ---- file tree ---- */
 async function loadTree(force) {
+  const revision = previewProjectRevision;
   const r = await window.halo.readTree();
+  if (revision !== previewProjectRevision) return;
   const data = r?.data;
   if (!data) return;
   S.treeData = data;
@@ -2656,14 +2739,18 @@ function renderTree() {
       if (done) return;
       const name = inp.value.trim();
       if (!name) { done = true; S.creating = null; renderTree(); return; }
+      const revision = previewProjectRevision;
+      const visibilityRequest = previewVisibilityRequest;
       const r = await window.halo.createEntry({ parent: S.creating.parent, name, kind: S.creating.kind }).catch((e) => ({ error: String(e?.message || e).replace(/^Error: /, "") }));
+      if (revision !== previewProjectRevision) return;
       if (r?.error) { toast(r.error, "err"); inp.focus(); inp.select(); return; }
       done = true;
       toast("已创建 ✓", "ok");
       const created = r.data?.path;
       S.creating = null;
       await loadTree(true);
-      if (created) {
+      if (revision !== previewProjectRevision) return;
+      if (created && visibilityRequest === previewVisibilityRequest) {
         S.selectedFile = created;
         const node = findNodeByPath(S.treeData?.tree || [], created);
         if (node && !node.dir) setPreview(created);
@@ -2794,8 +2881,9 @@ function recordActivity(rec) {
 /* ---- 预览 URL（定义在 markdown.js，函数声明挂全局，供两处使用） ---- */
 const currentPreviewDevice = () => {
   const c = $("#pvBody").classList;
-  return c.contains("dev-tablet") ? "tablet" : c.contains("dev-mobile") ? "mobile" : "desktop";
+  return c.contains("dev-normal") ? "normal" : c.contains("dev-tablet") ? "tablet" : c.contains("dev-mobile") ? "mobile" : "desktop";
 };
+const previewUsesTouch = (device = currentPreviewDevice()) => device === "tablet" || device === "mobile";
 
 function previewDeviceStatusbar() {
   const now = new Date();
@@ -2815,9 +2903,10 @@ function mediaPreviewShell(media) {
   return shell;
 }
 
-async function setPreview(p, force) {
+async function setPreview(p, force, { reveal = true } = {}) {
   p = resolvePreviewPath(p, S.state?.cwd);
   if (!p) return;
+  if (reveal) setPreviewCollapsed(false);
   if (!force && S.previewFile === p) return;
   const request = ++portPreviewRequest;
   previewService = null; selectedPortKey = null; updatePortSelection();
@@ -2862,6 +2951,10 @@ async function setPreview(p, force) {
       }
     };
     await load();
+  } else if (["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(ext)) {
+    const player = document.createElement('audio'); player.controls = true; player.preload = 'metadata';
+    player.src = previewURL(p); player.setAttribute('aria-label', '音频预览');
+    const panel = document.createElement('div'); panel.className = 'pv-empty'; panel.append(player); body.replaceChildren(panel);
   } else if (["mp4", "webm"].includes(ext)) {
     const player = document.createElement('video'); player.className = 'pv-video'; player.controls = true; player.preload = 'metadata';
     player.src = previewURL(p); player.setAttribute('aria-label', '视频预览'); body.replaceChildren(mediaPreviewShell(player));
@@ -2892,7 +2985,7 @@ async function setPreview(p, force) {
       body.innerHTML = `<div class="file-view"><div class="fv-code"><div class="fvc-ln">${nums}</div><pre class="fvc-body">${hlFile(content, "html")}</pre></div></div>`;
     } else {
       body.innerHTML = `<div class="dev-shell dev-html-shell">${previewDeviceStatusbar()}<div class="dev-screen"><iframe src="${previewURL(p)}"></iframe></div></div>`;
-      window.halo.previewTouch?.(currentPreviewDevice() !== "desktop");
+      window.halo.previewTouch?.(previewUsesTouch());
     }
   } else {
     // 文本文件：代码类 → 语法高亮行号视图；纯文本类 → 阅读视图
@@ -3115,11 +3208,8 @@ function renderAttachments() {
 
 /* ---- project (A9: no-op when unchanged) ---- */
 async function applyProjectReset() {
-  portPreviewRequest++; previewService = null; selectedPortKey = null; updatePortSelection();
+  resetPreview();
   clearChat();
-  S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true;
-  $("#pvBody").innerHTML = PV_EMPTY;
-  $("#pvName").textContent = "未选择文件";
   S.expanded.clear();
   S.creating = null;
 }
@@ -3345,6 +3435,9 @@ function openModal(id) {
 function closeModal(m) {
   const el = m || $(".modal.show");
   if (!el) return;
+  if (el.id === 'videoUsageModal') videoUsage?.close();
+  if (el.id === 'digitalHumanModal') digitalHuman?.close();
+  if (el.id === 'settingsModal') digitalHuman?.closeProfile();
   modalMotion.close(el);
 }
 
@@ -3442,7 +3535,7 @@ function renderAuthRows() {
       }).join("")}
     </div>` : "";
     return `<div class="auth-row" data-auth-row="${esc(p.id)}">
-      <div class="auth-name"><span>${esc(p.name)}</span>${status}<small>${esc(p.id)}</small></div>
+      <div class="auth-name"><span>${esc(p.name)}</span>${status}</div>
       <div class="auth-actions">${actions}</div>
       ${acctsHtml}
       <div class="auth-progress" data-auth-progress="${esc(p.id)}" hidden></div>
@@ -3696,6 +3789,10 @@ async function onAuthEvent(ev) {
     updateAuthSummary();
     await loadModels();
     await ensureModelAvailable();
+    if (S.state?.model?.provider === ev.providerId) {
+      quotaRefresh.invalidate();
+      void loadQuota(ev.providerId, true);
+    }
   } else if (ev.phase === "error") {
     toast(`登录失败：${ev.error}`, "err");
     if (prog) prog.hidden = true;
@@ -3738,22 +3835,44 @@ $('#wallpaperTransparency').addEventListener('input', (event) => {
 });
 function syncThemeChoices() {
   syncWallpaperTransparency();
-  $$("[data-theme-choice]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeChoice === (document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme))));
+  const current = document.documentElement.dataset.surface || document.documentElement.dataset.theme;
+  const next = { light: 'dark', dark: 'glass', glass: 'light' }[current] || 'light';
+  const toggle = $('#themeToggle');
+  toggle.dataset.nextTheme = next;
+  toggle.title = `切换为${{ light: '浅色', dark: '深色', glass: '液态玻璃' }[next]}主题`;
+  toggle.setAttribute('aria-label', toggle.title);
+  $$("[data-theme-choice]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeChoice === (document.documentElement.dataset.surface || document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme))));
 }
 document.addEventListener("themechange", syncThemeChoices);
+initThemePreviews();
+initGlassMaterial();
 $("#settingsAuth").addEventListener("click", () => { closeModal($("#settingsModal")); openAuthModal(); });
 $$("[data-theme-choice]").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themeChoice)));
 
-function openSettings() {
+function getDigitalHuman() {
+  digitalHuman ||= initDigitalHuman({
+    open: () => openModal('digitalHumanModal'),
+    configure: () => { closeModal($('#digitalHumanModal')); openSettings('digital-human'); },
+  });
+  return digitalHuman;
+}
+function openSettings(pane) {
+  if (typeof pane === 'string') {
+    $$('#settingsModal .set-nav').forEach(button => button.classList.toggle('active', button.dataset.pane === pane));
+    $$('#settingsModal .set-pane').forEach(panel => panel.classList.toggle('active', panel.id === `setPane-${pane}`));
+  }
   syncThemeChoices();
   openModal("settingsModal");
   if ($("#setPane-environment").classList.contains("active")) void environmentSettings?.refresh();
   if ($("#setPane-proxy").classList.contains("active")) void proxySettings?.refresh();
   if ($("#setPane-video").classList.contains("active")) void videoSettings?.refresh();
+  if ($('#setPane-digital-human').classList.contains('active')) void getDigitalHuman().openProfile();
   if ($("#setPane-login").classList.contains("active")) void loadDefaultModels();
-  S.pkgLoaded = true;
-  loadInstalled(); // 已安装数据每次打开都刷新
-  syncPkgTab();    // 市场数据按需加载
+  if ($('#setPane-pkgs').classList.contains('active')) {
+    S.pkgLoaded = true;
+    loadInstalled(); // 已安装数据每次打开都刷新
+    syncPkgTab();    // 市场数据按需加载
+  }
 }
 /** 已安装 / 市场 两个分区的显隐切换（搜索框两边共用，分别过滤各自列表） */
 function syncPkgTab() {
@@ -3830,37 +3949,9 @@ async function loadDefaultModels() {
 }
 
 /* ---- 用量统计 ---- */
-let videoUsageRequest = 0;
 async function openVideoUsage() {
-  openModal('videoUsageModal');
-  const seq = ++videoUsageRequest, body = $('#videoUsageBody');
-  body.innerHTML = '<div class="model-empty">正在读取记录…</div>';
-  try {
-    const reply = await window.halo.videoHistory();
-    if (seq !== videoUsageRequest) return;
-    if (!reply?.ok) throw Error(reply?.error || '读取失败');
-    body.replaceChildren();
-    if (!reply.data.length) { body.textContent = '暂无视频生成记录'; return; }
-    for (const job of reply.data) {
-      const row = document.createElement('div'); row.className = 'usage-session-row';
-      const main = document.createElement('div'), title = document.createElement('b'), detail = document.createElement('small');
-      title.textContent = `${job.providerName} · ${job.model}`;
-      detail.textContent = `${job.createdAt ? new Date(job.createdAt).toLocaleString() : ''} · ${job.resolution || '—'} · ${job.duration || '—'} 秒`;
-      main.append(title, detail);
-      const numbers = document.createElement('div'); numbers.className = 'usage-session-numbers';
-      const amount = document.createElement('strong'), status = document.createElement('small');
-      const actual = job.actual, estimate = job.estimate;
-      const value = Number.isFinite(actual?.amount) ? actual.amount : estimate?.total;
-      const unit = Number.isFinite(actual?.amount) ? actual.unit : estimate?.currency;
-      amount.textContent = Number.isFinite(value) ? `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(value)} ${unit === 'Credits' ? '积分' : unit || ''}` : '消耗未返回';
-      status.textContent = `${({delivered:'已完成', succeeded:'生成成功', failed:'失败', queued:'排队中', processing:'生成中'})[job.status] || job.status || '未知状态'} · ${Number.isFinite(actual?.amount) ? '实际消耗' : '暂无实际消耗'}`;
-      if (!Number.isFinite(actual?.amount) && Number.isFinite(value)) amount.textContent = '预估 ' + amount.textContent;
-      row.title = `任务 ${job.id}`;
-      numbers.append(amount, status); row.append(main, numbers); body.append(row);
-    }
-  } catch {
-    if (seq === videoUsageRequest) body.innerHTML = '<div class="model-empty">读取失败，请点击刷新重试</div>';
-  }
+  videoUsage ||= initVideoHistory({ body: $('#videoUsageBody'), api: window.halo, open: () => openModal('videoUsageModal') });
+  await videoUsage.open();
 }
 let usageDetailRequest = 0;
 async function openUsageDetails() {
@@ -4319,5 +4410,5 @@ $$('[data-theme-tab]').forEach((button, index, tabs) => {
     selectThemeCategory(tabs[next].dataset.themeTab, true);
   });
 });
-const selectedThemeCard = $('[data-theme-choice="' + (document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme) + '"]');
+const selectedThemeCard = $('[data-theme-choice="' + (document.documentElement.dataset.surface || document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme) + '"]');
 selectThemeCategory(selectedThemeCard?.closest('[data-theme-panel]')?.dataset.themePanel || 'nature');

@@ -7,6 +7,9 @@ const TOOL_INFO = [
 ];
 const ACTIVE_STATES = new Set(["queued", "checking", "installing", "downloading", "detecting", "verifying"]);
 const ERROR_STATES = new Set(["error", "failed"]);
+const redactDiagnostics = value => String(value)
+  .replace(/\b((?:https?|socks5h?):\/\/)[^/\s@]+@/gi, '$1[redacted]@')
+  .replace(/\b((?:proxy-)?authorization\s*[:=]\s*)(?:basic|bearer)\s+\S+/gi, '$1[redacted]');
 
 /** Own the environment pane without mixing its asynchronous state with chat state. */
 export function initEnvironmentSettings({ root = document, api = window.halo } = {}) {
@@ -26,6 +29,7 @@ export function initEnvironmentSettings({ root = document, api = window.halo } =
   const issue = get("environmentIssue");
   const errorMessage = get("environmentError");
   const helpButton = get("environmentHelp");
+  const copyButton = get("environmentCopyDiagnostics");
   const progressSection = get("environmentProgressSection");
   const progressList = get("environmentProgress");
   let snapshot = null;
@@ -35,6 +39,31 @@ export function initEnvironmentSettings({ root = document, api = window.halo } =
   let eventRevision = 0;
   let requestId = 0;
   let progressSignature = "";
+
+  const brief = value => {
+    const line = redactDiagnostics(value || "").trim().split(/\r?\n/, 1)[0];
+    return line.length > 220 ? `${line.slice(0, 220)}…` : line;
+  };
+
+  function failedRun(history, detected) {
+    if (snapshot?.installing || pending) return false;
+    if (error) return true;
+    if (TOOL_INFO.every(({ id }) => detected.find(tool => tool.id === id)?.installed)) return false;
+    return [null, ...TOOL_INFO.map(tool => tool.id)].some(id => {
+      const last = history.findLast(entry => (entry.id || null) === id);
+      return ERROR_STATES.has(last?.state) && (!id || !detected.find(tool => tool.id === id)?.installed);
+    });
+  }
+
+  function diagnostics() {
+    // Export only environment diagnostics; authorization cards use separate state.
+    return JSON.stringify({
+      platform: snapshot?.platform, arch: snapshot?.arch, osRelease: snapshot?.osRelease,
+      installer: snapshot?.installer, tools: snapshot?.tools || [],
+      progress: snapshot?.progress || [], error: error || undefined,
+    }, (key, value) => /^(?:password|token|accessToken|refreshToken|apiKey|clientSecret|authorization|proxyAuthorization)$/i.test(key)
+      ? '[redacted]' : typeof value === 'string' ? redactDiagnostics(value) : value, 2);
+  }
 
   function element(tag, className, text) {
     const node = doc.createElement(tag);
@@ -86,6 +115,7 @@ export function initEnvironmentSettings({ root = document, api = window.halo } =
     const installing = Boolean(snapshot?.installing || (pending && operation === "install"));
     const detected = snapshot?.tools || [];
     const missing = TOOL_INFO.filter(({ id }) => !detected.find((tool) => tool.id === id)?.installed);
+    const automaticAvailable = snapshot?.installer?.automaticAvailable ?? snapshot?.installer?.available;
     const history = (snapshot?.progress || []).slice(-40);
     pane.setAttribute("aria-busy", String(pending || installing));
     refreshButton.disabled = pending || installing;
@@ -95,7 +125,7 @@ export function initEnvironmentSettings({ root = document, api = window.halo } =
     }
     if (get('environmentRepairStop')) get('environmentRepairStop').hidden = !repairing;
     refreshButton.textContent = pending && operation === "refresh" ? "检测中…" : "重新检测";
-    installButton.disabled = pending || installing || !snapshot || !missing.length || !snapshot.installer?.available;
+    installButton.disabled = pending || installing || !snapshot || !missing.length || !automaticAvailable;
     installButton.textContent = installing ? "正在配置…" : snapshot && !missing.length ? "环境已就绪" : "一键配置环境";
 
     for (const info of TOOL_INFO) {
@@ -104,28 +134,38 @@ export function initEnvironmentSettings({ root = document, api = window.halo } =
       const last = history.findLast((entry) => entry.id === info.id);
       const active = installing && ACTIVE_STATES.has(last?.state);
       const failed = !tool?.installed && (tool?.problem === "broken" || ERROR_STATES.has(last?.state));
+      const needsPath = !tool?.installed && tool?.problem === "path";
       const state = active ? "busy" : tool?.installed ? "ready" : failed ? "error" : snapshot ? "missing" : "unknown";
       view.card.dataset.state = state;
-      view.status.textContent = active ? last.state === "queued" ? "等待配置" : "配置中" : tool?.installed ? "已安装" : failed ? "需要处理" : snapshot ? "未安装" : pending ? "检测中" : "待检测";
-      view.version.textContent = tool?.installed ? `版本 ${tool.version || "未知"}` : "";
-      view.version.hidden = !tool?.installed;
+      view.status.textContent = active ? last.state === "queued" ? "等待配置" : "配置中" : tool?.installed ? "已安装" : needsPath ? "待配置 PATH" : failed ? "需要处理" : snapshot ? "未安装" : pending ? "检测中" : "待检测";
+      view.version.textContent = tool?.installed || needsPath ? `版本 ${tool.version || "未知"}` : "";
+      view.version.hidden = !tool?.installed && !needsPath;
       view.path.textContent = tool?.path || "";
       view.path.title = tool?.path || "";
       view.path.hidden = !tool?.path;
-      view.detail.textContent = active || (!tool?.installed && ERROR_STATES.has(last?.state)) ? last?.message || tool?.error || "" : tool?.problem === "broken" ? tool.error || "" : "";
+      view.detail.textContent = brief(active || (!tool?.installed && ERROR_STATES.has(last?.state)) ? last?.message || tool?.error : tool?.problem === "broken" || needsPath ? tool.error : "");
       view.detail.hidden = !view.detail.textContent;
     }
 
-    const unavailable = snapshot && missing.length && !snapshot.installer?.available;
-    errorMessage.textContent = error || (unavailable ? snapshot.installer?.error || "此电脑暂时无法自动安装环境，请查看安装说明后重新检测。" : "");
+    const unavailable = snapshot && missing.length && !automaticAvailable;
+    errorMessage.textContent = brief(error || (unavailable ? snapshot.installer?.error || "此电脑暂时无法自动安装环境，请查看安装说明后重新检测。" : ""));
     issue.hidden = !errorMessage.textContent;
     helpButton.hidden = !safeHelpUrl() || issue.hidden;
+    if (copyButton) copyButton.hidden = !failedRun(history, detected);
     progressSection.hidden = !history.length;
     const signature = JSON.stringify(history);
     if (signature !== progressSignature) {
       const atBottom = progressList.scrollHeight - progressList.scrollTop - progressList.clientHeight < 32;
       progressList.replaceChildren(...history.map((entry) => {
-        const item = element("li", ERROR_STATES.has(entry.state) ? "error" : "", entry.message || "");
+        const message = brief(entry.message);
+        const item = element("li", ERROR_STATES.has(entry.state) ? "error" : "");
+        item.append(element("span", "", message));
+        const details = entry.details || (message !== String(entry.message || "").trim() ? entry.message : "");
+        if (details) {
+          const disclosure = element("details", "environment-progress-details");
+          disclosure.append(element("summary", "", "查看详细日志"), element("pre", "", redactDiagnostics(details)));
+          item.append(disclosure);
+        }
         return item;
       }));
       if (atBottom) progressList.scrollTop = progressList.scrollHeight;
@@ -167,6 +207,15 @@ export function initEnvironmentSettings({ root = document, api = window.halo } =
 
   refreshButton.addEventListener("click", () => { void run("refresh"); void github.refresh(); void cloudflare.refresh(); });
   installButton.addEventListener("click", () => { void run("install"); });
+  copyButton?.addEventListener("click", async () => {
+    copyButton.disabled = true;
+    try {
+      await doc.defaultView.navigator.clipboard.writeText(diagnostics());
+      copyButton.textContent = "已复制";
+    } catch { copyButton.textContent = "复制失败，请重试"; }
+    finally { copyButton.disabled = false; }
+    setTimeout(() => { copyButton.textContent = "复制诊断"; }, 1800);
+  });
   repairButton?.addEventListener('click', async () => {
     if (pending || snapshot?.installing || !api?.environmentRepair) return;
     pending = true; repairing = true; render();

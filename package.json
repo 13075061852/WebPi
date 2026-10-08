@@ -1,6 +1,6 @@
 {
   "name": "pi-halo",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Pi Halo — a celestial desktop console for the pi coding agent",
   "main": "src/main/main.mjs",
   "type": "commonjs",
@@ -31,12 +31,15 @@
     "productName": "Pi Halo",
     "asarUnpack": [
       "src/main/windows-proxy.ps1",
+      "src/main/store-proxy.ps1",
       "node_modules/**"
     ],
     "beforePack": "./build/prepare-package.cjs",
     "files": [
       "src/**/*",
       "assets/**/*",
+      "!assets/themes/**/*",
+      "!node_modules/pdfkit/.yarn/**/*",
       "package.json",
       "!tmp/**/*",
       "!test/**/*",
@@ -89,13 +92,14 @@
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
     "eslint": "^9.0.0",
-    "globals": "^17.11.0"
+    "globals": "^17.11.0",
+    "docx-preview": "^0.4.0",
+    "pptx-preview": "^1.0.7"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.2",
     "@napi-rs/canvas": "^1.0.9",
     "docx": "^9.7.1",
-    "docx-preview": "^0.4.0",
     "electron-updater": "6.8.9",
     "exceljs": "^4.4.0",
     "fast-xml-parser": "^5.11.1",
@@ -105,7 +109,6 @@
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.3.289",
     "pdfkit": "^0.20.2",
-    "pptx-preview": "^1.0.7",
     "pptxgenjs": "^4.0.1",
     "ssh2": "^1.17.0",
     "undici": "^7.29.0",

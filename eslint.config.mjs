@@ -44,7 +44,7 @@ export default [
   },
   // 渲染层模块（app.js）：引用经典脚本的全局
   {
-    files: ["src/renderer/js/app.js", "src/renderer/js/layout-motion.mjs", "src/renderer/js/modal-motion.mjs"],
+    files: ["src/renderer/js/app.js", "src/renderer/js/layout-motion.mjs", "src/renderer/js/modal-motion.mjs", "src/renderer/js/video-history.mjs", "src/renderer/js/digital-human.mjs", "src/renderer/js/voice-sample.mjs", "src/renderer/js/voice-recorder.mjs"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",

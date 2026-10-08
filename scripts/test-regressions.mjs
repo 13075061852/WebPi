@@ -10,13 +10,16 @@ const tests = [
   'verify-release-workflow', 'verify-workspace-import', 'verify-installer-native',
   'verify-release-history', 'verify-release-history-ui', 'verify-release-history-fetch',
   'verify-app-updates', 'verify-image-generation', 'verify-image-card-timing',
-  'verify-turn-cost', 'verify-subscription-usage', 'verify-quota-refresh',
+  'verify-turn-cost', 'verify-subscription-usage', 'verify-quota-refresh', 'verify-quota-auth',
   'verify-context-rate', 'verify-compaction-feedback',
-  'verify-package-search', 'verify-global-proxy', 'verify-windows-proxy',
+  'verify-package-search', 'verify-global-proxy', 'verify-windows-proxy', 'verify-store-proxy',
   'verify-icon-library',
   'verify-project-fast-start',
-  'verify-env-proxy', 'verify-pi-command', 'verify-bundled-pi', 'verify-kernel-prompts', 'verify-server-prompt', 'verify-environment-detection', 'verify-environment-manager', 'verify-video-generation',
+  'verify-env-proxy', 'verify-pi-command', 'verify-bundled-pi', 'verify-kernel-prompts', 'verify-server-prompt', 'verify-environment-detection', 'verify-environment-manager', 'verify-environment-fallback', 'verify-video-generation',
   'verify-video-domestic', 'verify-video-international', 'verify-video-platforms', 'verify-video-apimart', 'verify-video-pricing', 'verify-video-workflow', 'verify-video-billing', 'verify-video-confirmations',
+  'verify-video-history', 'verify-video-history-ui',
+  'verify-digital-human', 'verify-voice-sample',
+  'verify-theme-images',
   'verify-session-integrity', 'verify-conversation-meta', 'verify-conversation-switch', 'verify-project-runs', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-server-tools', 'verify-server-delete',
   'verify-composer-events', 'verify-queue-images', 'verify-office-protocol', 'verify-ipc-sender',
   'verify-session-queue', 'verify-preview-races', 'verify-preview-refresh', 'verify-preview-motion',
@@ -24,7 +27,7 @@ const tests = [
   'verify-trusted-ui-url', 'verify-thinking-batch', 'verify-user-message',
   'verify-office', 'verify-office-failures', 'verify-office-efficiency',
 ].map(name => `test/${name}.mjs`);
-tests.push('test/check-touch-script.mjs', 'test/e2e/verify-stream-render.mjs');
+tests.push('test/check-touch-script.mjs', 'test/e2e/verify-stream-render.mjs', 'scripts/verify-theme-cloud.mjs');
 const results = [];
 const sandbox = mkdtempSync(path.join(os.tmpdir(), 'halo-regressions-'));
 // No inherited account, API key or user plugin can make a local test pass

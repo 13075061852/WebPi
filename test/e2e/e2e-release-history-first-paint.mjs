@@ -158,6 +158,20 @@ try {
     return {sameList:state.list.firstElementChild===state.firstList,sameNav:state.nav.firstElementChild===state.firstNav,mutations:state.mutations};
   })()`);
   assert.deepEqual(repeated, { sameList: true, sameNav: true, mutations: 0 }, 'Repeated openings and unchanged refreshes must retain DOM nodes');
+  const following = await evaluate(`(() => {
+    const {list,nav}=__historyPaint;
+    const visible=()=>{
+      const selected=nav.querySelector('[aria-current]');
+      const item=selected.getBoundingClientRect(), viewport=nav.getBoundingClientRect();
+      return item.top>=viewport.top-1 && item.bottom<=viewport.bottom+1;
+    };
+    list.scrollTop=list.scrollHeight;list.dispatchEvent(new Event('scroll'));
+    const bottom=visible() && nav.scrollTop>0;
+    list.scrollTop=0;list.dispatchEvent(new Event('scroll'));
+    return {bottom,top:visible() && nav.scrollTop===0,
+      current:nav.firstElementChild.classList.contains('is-current')};
+  })()`);
+  assert.deepEqual(following, {bottom:true,top:true,current:true}, 'Navigation must reveal the active version in both scroll directions and retain the installed marker');
   const anchored = await evaluate(`(async () => {
     const state=__historyPaint,entry=state.list.querySelector('[data-version="1.48.0"]');
     state.list.scrollTop+=entry.getBoundingClientRect().top-state.list.getBoundingClientRect().top+80;

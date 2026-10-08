@@ -3,14 +3,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const source = fs.readFileSync('src/renderer/js/app.js', 'utf8');
-const start = source.indexOf('async function setPreview(p, force) {');
+const start = source.indexOf('async function setPreview(');
 const end = source.indexOf('\nfunction renderThinkList()', start);
+assert.ok(start >= 0 && end > start, 'Extract the real setPreview implementation');
 const pending = new Map();
 const body = { innerHTML: '' }, name = {}, mode = {};
+const visibilityChanges = [];
 const context = vm.createContext({
   portPreviewRequest: 0, previewService: null, selectedPortKey: null,
   S: { state: { cwd: 'C:/project' }, previewFile: null, previewMode: 'source' },
   resolvePreviewPath,
+  setPreviewCollapsed: collapsed => visibilityChanges.push(collapsed),
   updatePortSelection() {},
   $: selector => ({ '#pvBody': body, '#pvName': name, '#pvMode': mode, '#btnOpenFile': {} })[selector],
   window: { halo: { readFile: p => new Promise(resolve => pending.set(p, resolve)) } },
@@ -33,10 +36,18 @@ for (const old of ['old.md', 'old.html', 'old.txt']) {
 }
 context.S.previewFile = null;
 const first = context.setPreview('same.md');
+const changesBeforeReopen = visibilityChanges.length;
 await context.setPreview('same.md');
+assert.deepEqual(visibilityChanges.slice(changesBeforeReopen), [false], 'Same-file early return must still reveal the preview');
 pending.get('C:/project/same.md')({ data: { content: 'same file completes' } });
 await first;
 assert.match(body.innerHTML, /same file completes/);
+const changesBeforeRefresh = visibilityChanges.length;
+const background = context.setPreview('same.md', true, { reveal: false });
+pending.get('C:/project/same.md')({ data: { content: 'background update' } });
+await background;
+assert.equal(visibilityChanges.length, changesBeforeRefresh, 'Background refresh leaves visibility untouched');
+assert.match(body.innerHTML, /background update/);
 const nested = context.setPreview('docs/README.md');
 pending.get('C:/project/docs/README.md')({ data: { path: 'C:/project/docs/README.md', content: '![figure](./images/figure.png)\n[guide](../guide.md)' } });
 await nested;

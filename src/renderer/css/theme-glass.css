@@ -1,0 +1,146 @@
+/* Clear lenses: the backdrop supplies the material, with a single reflective rim. */
+.glass-filter-defs { position: absolute; width: 0; height: 0; pointer-events: none; overflow: hidden; }
+:root[data-surface="glass"] {
+  --bg0: #e6e6e6;
+  --bg1: rgb(255 255 255 / .06);
+  --panel: rgb(255 255 255 / .085);
+  --panel-2: rgb(255 255 255 / .16);
+  --txt: #242424;
+  --txt-dim: #484848;
+  --txt-faint: #595959;
+  --hair: rgb(0 0 0 / .10);
+  --hair-2: rgb(0 0 0 / .18);
+  --acc: #474747;
+  --acc-ink: #fff;
+  --shadow-lg: 0 18px 54px #00000026;
+  --shadow-sm: 0 3px 12px #00000012;
+  --glass-fill: linear-gradient(165deg, #ffffff16, #ffffff03 45%, #0000000b);
+  --glass-shadow: inset 0 1px 1px #ffffff24, inset 0 -1px 2px #00000012, 0 3px 10px #00000014;
+  /* Static vector glass folds: a quiet light field with narrow reflected edges. */
+  --glass-background: #e6e6e6 url('../assets/glass-backdrop.svg') center / cover no-repeat;
+}
+:root[data-surface="glass"] #app { background: var(--glass-background); isolation: isolate; }
+/* Keep the underlying light continuous; do not frost it away before it reaches a lens. */
+:root[data-surface="glass"] #sidebar {
+  background: #ffffff0a;
+  backdrop-filter: blur(6px);
+  box-shadow: none;
+}
+:root[data-surface="glass"] #chat {
+  background: #ffffff0c;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+:root[data-surface="glass"] :is(#titlebar, .pv-head) {
+  background: #ffffff0a;
+  backdrop-filter: blur(6px);
+  box-shadow: none;
+  border-color: var(--hair);
+}
+:root[data-surface="glass"] :is(.pv-body, #sideNav, #chatHead, .pv-devices) { background: transparent; }
+
+/* Optical filters distort only the backdrop. Text, icons and hit areas remain intact. */
+:root[data-surface="glass"] :is(.input-shell, .welcome-prompts button, .artifact-card, .set-nav.active, .theme-base-modes [aria-pressed="true"], #sideNav .nav-item.active, .pvdev.active) {
+  position: relative;
+  background: var(--glass-fill);
+  border-color: transparent;
+  backdrop-filter: var(--glass-refraction, blur(4px));
+  box-shadow: var(--glass-shadow);
+}
+:root[data-surface="glass"] .glass-static { position: relative; }
+/* One material definition for production surfaces, including dialogs and popup menus. */
+:root[data-surface="glass"] .glass-surface {
+  background: var(--glass-fill) !important;
+  border-color: #ffffff30 !important;
+  backdrop-filter: var(--glass-refraction, blur(.65px)) !important;
+  box-shadow: var(--glass-shadow) !important;
+}
+/* View Transition groups retain backdrop filters from their captured elements.
+   A resizing lens rewrites its SVG map while those snapshots still reference it.
+   Capture stable frost during layout motion; restore live refraction on handoff. */
+:root[data-surface="glass"].layout-motion #layout .glass-surface {
+  backdrop-filter: blur(.65px) !important;
+}
+:root[data-surface="glass"] .glass-surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(145deg, #ffffff9c 0%, #ffffff30 24%, #00000016 47%, #ffffff08 64%, #ffffff6b 86%, #ffffff26 100%);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+}
+:root[data-surface="glass"] .input-shell {
+  border-radius: 26px;
+  transition: box-shadow .2s;
+}
+:root[data-surface="glass"] .input-shell:focus-within {
+  border-color: transparent;
+  box-shadow: var(--glass-shadow), 0 0 0 1px #00000016;
+}
+:root[data-surface="glass"] :is(.artifact-card, .welcome-prompts button) { border-radius: 24px; }
+:root[data-surface="glass"] :is(.welcome-prompts button, .artifact-card, .set-nav, .theme-base-modes button, .pvdev, #sideNav .nav-item) {
+  transition: color .2s, background-color .2s, border-color .2s;
+}
+/* Keep text geometry stable during interaction, including shared button styles. */
+:root[data-surface="glass"] :is(.welcome-prompts button, .artifact-card, .set-nav, .theme-base-modes button, .pvdev, #sideNav .nav-item):active,
+:root[data-surface="glass"] :is(.quick-item, .acc-chip, #btnSend):is(:hover, :active) { transform: none; }
+:root[data-surface="glass"] :is(.welcome-prompts button, .artifact-card, .set-nav, .theme-base-modes button):hover { background-color: #ffffff0d; }
+
+/* Sheets use the same clear material. Only their radius and elevation differ. */
+:root[data-surface="glass"] :is(.modal-panel, .settings-panel) {
+  background: var(--glass-fill);
+  backdrop-filter: var(--glass-refraction, blur(.65px));
+  border: 1px solid #ffffff30;
+  border-radius: 26px;
+  --glass-shadow: inset 0 1px 1px #ffffff24, inset 0 -1px 2px #00000012, 0 20px 54px #00000026;
+  box-shadow: var(--glass-shadow);
+}
+:root[data-surface="glass"] :is(#settingsModal, #authModal, #modelModal) .modal-panel {
+  border-radius: 26px;
+  border-color: #ffffff30;
+  box-shadow: var(--glass-shadow);
+}
+:root[data-surface="glass"] .set-side { background: #00000004; border-color: var(--hair); }
+/* Compact action menus need enough frost to separate labels from the rows below. */
+:root[data-surface="glass"] .server-group-menu > div {
+  --glass-fill: linear-gradient(165deg, rgb(255 255 255 / .94), rgb(246 246 246 / .90));
+  background: var(--glass-fill);
+  backdrop-filter: blur(18px) !important;
+  box-shadow: inset 0 1px 1px #ffffffb3, 0 8px 24px #00000021 !important;
+}
+:root[data-surface="glass"] .modal { background: #00000008; }
+/* Defocus the inactive workspace, not the glass sheet or its foreground text. */
+:root[data-surface="glass"] body:has(> .modal:not([hidden]), > dialog[open]) #app { filter: blur(6px); }
+:root[data-surface="glass"] body:has(> .modal:not([hidden]), > dialog[open]) #app > :is(#titlebar, #layout) { opacity: .42; }
+:root[data-surface="glass"] .glass-surface .glass-surface { --glass-shadow: inset 0 1px 1px #ffffff24, inset 0 -1px 2px #00000012, 0 3px 10px #00000014; }
+:root[data-surface="glass"] :is(.modal input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), .modal textarea, .modal select, .proxy-mode-tabs::before, #environmentRepairPanel, .environment-progress ol) { background: var(--glass-fill); }
+:root[data-surface="glass"] select option { background: transparent; color: #242424; }
+:root[data-surface="glass"] select::picker(select) { background: var(--glass-fill); backdrop-filter: blur(6px); border-color: #ffffff55; box-shadow: var(--glass-shadow); }
+:root[data-surface="glass"] :is(.connectivity-tabs, .proxy-mode-tabs) {
+  border-radius: 20px;
+  background: #00000008;
+  box-shadow: none;
+}
+:root[data-surface="glass"] :is(.theme-base-modes .mini-btn, .connectivity-tabs button, .proxy-mode-tabs button, .set-nav, #sideNav .nav-item) { border-radius: 999px; }
+:root[data-surface="glass"] .theme-base-modes .mini-btn { border-color: transparent; }
+:root[data-surface="glass"] :is(.theme-base-modes [aria-pressed="true"], .set-nav.active, #sideNav .nav-item.active, .pvdev.active) { color: var(--txt); }
+:root[data-surface="glass"] .connectivity-tabs [aria-selected="true"] { background: var(--glass-fill); box-shadow: var(--glass-shadow); }
+:root[data-surface="glass"] #btnSend:not(.streaming) {
+  background: #363636cc;
+  box-shadow: inset 0 1px #ffffff40, 0 2px 5px #00000018;
+}
+:root[data-surface="glass"] button:focus-visible { outline: 2px solid #555; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  :root[data-surface="glass"] :is(.glass-surface, .set-nav, .theme-base-modes button, .pvdev, #sideNav .nav-item) { transition: none; }
+}
+:root[data-surface="glass"] #stage {
+  background: var(--glass-background); --ink: #242424; --muted: #484848;
+  border-color: #ffffff55; box-shadow: 0 12px 36px #00000020;
+}
+@supports not (backdrop-filter: blur(1px)) {
+  :root[data-surface="glass"] :is(.glass-surface, .input-shell, .modal-panel, .settings-panel) { background: #e8e8e8 !important; }
+}

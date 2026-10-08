@@ -6,7 +6,7 @@ import os from 'node:os';
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'halo-office-packaged-'));
 const app=process.env.HALO_PACKAGED_EXE ? path.dirname(path.resolve(process.env.HALO_PACKAGED_EXE)) : path.resolve('dist/win-unpacked'),asar=path.join(app,'resources/app.asar');
 const run=args=>new Promise((resolve,reject)=>{
-  const child=spawn(path.join(app,'Pi Halo.exe'),[path.join(asar,'src/main/office/worker.cjs')],{cwd:dir,env:{...process.env,ELECTRON_RUN_AS_NODE:'1'},windowsHide:true,stdio:['pipe','pipe','pipe']});
+  const child=spawn(process.env.HALO_PACKAGED_EXE || path.join(app,'Pi Halo.exe'),[path.join(asar,'src/main/office/worker.cjs')],{cwd:dir,env:{...process.env,ELECTRON_RUN_AS_NODE:'1'},windowsHide:true,stdio:['pipe','pipe','pipe']});
   let out='',err='';const timer=setTimeout(()=>{child.kill();reject(Error('timeout'));},60000);
   child.stdout.on('data',d=>{out+=d;});child.stderr.on('data',d=>{err+=d;});child.on('error',reject);
   child.on('close',code=>{clearTimeout(timer);if(code!==0)return reject(Error(err||out));try{resolve(JSON.parse(out.slice(out.lastIndexOf('HALO_OFFICE_RESULT=')+19)));}catch{reject(Error(out+err));}});

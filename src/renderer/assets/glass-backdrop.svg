@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" fill="none">
+  <defs>
+    <linearGradient id="ground" x1="130" y1="0" x2="1480" y2="1100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e5e5e5"/>
+      <stop offset=".42" stop-color="#f1f1f1"/>
+      <stop offset="1" stop-color="#dedede"/>
+    </linearGradient>
+    <radialGradient id="light" cx="0" cy="0" r="1" gradientTransform="translate(780 320) rotate(90) scale(680 1060)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity=".38"/>
+      <stop offset="1" stop-color="white" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="lowerGlass" x1="690" y1="665" x2="750" y2="1050" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity=".48"/>
+      <stop offset=".23" stop-color="white" stop-opacity=".09"/>
+      <stop offset=".72" stop-color="#777" stop-opacity=".035"/>
+      <stop offset=".94" stop-color="white" stop-opacity=".25"/>
+      <stop offset="1" stop-color="white" stop-opacity=".60"/>
+    </linearGradient>
+    <linearGradient id="upperGlass" x1="1250" y1="0" x2="1450" y2="475" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity=".08"/>
+      <stop offset=".52" stop-color="white" stop-opacity=".30"/>
+      <stop offset=".84" stop-color="#777" stop-opacity=".04"/>
+      <stop offset="1" stop-color="white" stop-opacity=".48"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="30" y1="840" x2="1570" y2="700" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity=".24"/>
+      <stop offset=".3" stop-color="white" stop-opacity=".9"/>
+      <stop offset=".68" stop-color="white" stop-opacity=".68"/>
+      <stop offset="1" stop-color="white" stop-opacity=".15"/>
+    </linearGradient>
+    <filter id="lift" x="-15%" y="-30%" width="130%" height="180%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#303030" flood-opacity=".08"/>
+    </filter>
+    <filter id="caustic" x="-10%" y="-40%" width="120%" height="180%">
+      <feGaussianBlur stdDeviation="2.5"/>
+    </filter>
+  </defs>
+  <path fill="url(#ground)" d="M0 0h1600v1000H0z"/>
+  <path fill="url(#light)" d="M0 0h1600v1000H0z"/>
+
+  <!-- A clear sheet curls away at the edge, leaving the reading area calm. -->
+  <path d="M1030-100C1087 120 1245 290 1431 340C1542 369 1663 352 1760 300L1770 416C1591 501 1447 468 1309 402C1110 307 978 134 940-100Z" fill="url(#upperGlass)" filter="url(#lift)"/>
+  <path d="M941-100C979 134 1111 306 1310 400C1448 466 1591 499 1770 414" stroke="#919191" stroke-opacity=".12" stroke-width="1"/>
+  <path d="M938-100C976 134 1108 310 1308 405C1446 471 1591 504 1770 419" stroke="white" stroke-opacity=".78" stroke-width="1.4"/>
+  <path d="M1030-100C1087 120 1245 290 1431 340C1542 369 1663 352 1760 300" stroke="white" stroke-opacity=".68" stroke-width="1.2"/>
+  <path d="M995 38C1083 238 1230 374 1420 419" stroke="white" stroke-opacity=".44" stroke-width="6" filter="url(#caustic)"/>
+
+  <!-- Two slim, overlapping folds carry the lower edge reflection. -->
+  <path d="M-170 670C128 867 418 908 733 821C1012 744 1301 812 1730 1015L1740 1130C1287 911 995 852 718 934C377 1035 75 955-170 799Z" fill="url(#lowerGlass)" filter="url(#lift)"/>
+  <path d="M-170 670C128 867 418 908 733 821C1012 744 1301 812 1730 1015" stroke="url(#rim)" stroke-width="1.8"/>
+  <path d="M-170 673C128 870 418 911 733 824C1012 747 1301 815 1730 1018" stroke="#7b7b7b" stroke-opacity=".14" stroke-width=".8"/>
+  <path d="M-170 799C75 955 377 1035 718 934C995 852 1287 911 1740 1130" stroke="white" stroke-opacity=".70" stroke-width="1.3"/>
+  <path d="M-170 815C96 979 397 1017 725 921C1001 840 1295 913 1740 1120" stroke="white" stroke-opacity=".5" stroke-width="5" filter="url(#caustic)"/>
+  <path d="M-150 913C112 1080 480 1127 870 1000C1086 930 1301 946 1630 1080" stroke="white" stroke-opacity=".4" stroke-width="1.5"/>
+</svg>

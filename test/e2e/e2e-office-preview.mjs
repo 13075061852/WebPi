@@ -6,15 +6,21 @@ import { runOffice } from '../../src/main/office/tools.mjs';
  * Verifies the full renderer pipeline without depending on network/model access.
  */
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 const PORT = 9333;
+const isolated = mkdtempSync(path.join(tmpdir(), 'halo-office-e2e-'));
+const profile = path.join(isolated, 'profile'), workspace = path.join(isolated, 'workspace');
+for (const dir of [profile, workspace]) mkdirSync(dir);
+writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({ cwd: workspace, projects: [{ cwd: workspace }], splashed: true }));
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL|ELECTRON_RUN_AS_NODE)/i.test(key)));
+Object.assign(env, { HOME: isolated, USERPROFILE: isolated, APPDATA: path.join(isolated, 'roaming'), LOCALAPPDATA: path.join(isolated, 'local'), PI_CODING_AGENT_DIR: path.join(isolated, 'agent'), PI_HALO_PI_PATH: path.resolve('test/fixtures/pi-sdk.js'), PI_OFFLINE: '1' });
 const electron = spawn(
   process.platform === "win32" ? "node_modules/electron/dist/electron.exe" : "node_modules/.bin/electron",
-  [".", `--remote-debugging-port=${PORT}`, `--user-data-dir=${mkdtempSync(path.join(tmpdir(), 'halo-render-'))}`],
-  { stdio: ["ignore", "pipe", "pipe"] }
+  [".", `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`],
+  { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
 );
 electron.stderr.on("data", () => {});
 electron.on("exit", (c) => console.log("electron exited", c));

@@ -43,7 +43,7 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
       if (!result?.ok) throw Error('无法打开链接');
     } catch { get('releaseHistoryStatus').textContent = '无法打开链接，请稍后重试'; }
   }
-  function highlight(version) {
+  function highlight(version, follow = true) {
     for (const button of nav.children) {
       const active = button.dataset.version === version;
       button.classList.toggle('active', active);
@@ -51,11 +51,16 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
         button.setAttribute('aria-current', 'location');
         nav.style.setProperty('--release-selection-y', `${button.offsetTop}px`);
         nav.style.setProperty('--release-selection-height', `${button.offsetHeight}px`);
+        if (follow && nav.clientHeight) {
+          const top = button.offsetTop, bottom = top + button.offsetHeight;
+          if (top < nav.scrollTop) nav.scrollTop = top;
+          else if (bottom > nav.scrollTop + nav.clientHeight) nav.scrollTop = bottom - nav.clientHeight;
+        }
       }
       else button.removeAttribute('aria-current');
     }
   }
-  function syncPosition() {
+  function syncPosition(follow = true) {
     if (!list.clientHeight || scrollFrame !== null) return;
     const top = list.getBoundingClientRect().top;
     let active = list.firstElementChild;
@@ -64,7 +69,7 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
       else break;
     }
     if (list.scrollTop > 0 && list.scrollTop + list.clientHeight >= list.scrollHeight - 2) active = list.lastElementChild;
-    highlight(active?.dataset.version);
+    highlight(active?.dataset.version, follow);
   }
   list.addEventListener('scroll', syncPosition, { passive: true });
   new ResizeObserver(() => {
@@ -113,6 +118,7 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
     }));
     nav.replaceChildren(...releases.map(release => {
       const button = node('button', undefined, 'release-nav-item');
+      button.classList.toggle('is-current', release.version === current);
       button.type = 'button'; button.dataset.version = release.version;
       button.setAttribute('aria-controls', `release-version-${release.version}`);
       button.appendChild(node('b', `v${release.version}`));
@@ -130,8 +136,8 @@ export function initReleaseHistory({ root = document, api = window.halo } = {}) 
       if (replacement) list.scrollTop += replacement.getBoundingClientRect().top - list.getBoundingClientRect().top - anchorOffset;
     }
     nav.scrollTop = previousNavTop;
-    highlight(releases[0]?.version);
-    syncPosition();
+    highlight(releases[0]?.version, false);
+    syncPosition(false);
     rendered = signature;
   }
   function load(force = false) {

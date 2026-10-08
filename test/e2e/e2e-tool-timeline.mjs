@@ -4,15 +4,20 @@
  * Verifies the full renderer pipeline without depending on network/model access.
  */
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 const PORT = 9333;
+const fixture = mkdtempSync(path.join(tmpdir(), 'halo-timeline-'));
+const agent = path.join(fixture, 'agent'); mkdirSync(agent);
+writeFileSync(path.join(agent, 'auth.json'), '{}');
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL|ELECTRON_RUN_AS_NODE)/i.test(key)));
+Object.assign(env, { PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', PI_HALO_PI_PATH: path.resolve('test/fixtures/pi-sdk.js') });
 const electron = spawn(
   process.platform === "win32" ? "node_modules/electron/dist/electron.exe" : "node_modules/.bin/electron",
   [".", `--remote-debugging-port=${PORT}`, `--user-data-dir=${mkdtempSync(path.join(tmpdir(), 'halo-render-'))}`],
-  { stdio: ["ignore", "pipe", "pipe"] }
+  { stdio: ["ignore", "pipe", "pipe"], env }
 );
 electron.stderr.on("data", () => {});
 electron.on("exit", (c) => console.log("electron exited", c));
@@ -88,19 +93,28 @@ try {
  const live=await evalJS(`(()=>{
  const d=window.__haloDispatch; d({type:'agent_start'});
  for(let i=0;i<7;i++){
+ if(i===0||i===3){
+ const message={role:'assistant',content:[{type:'text',text:'阶段进度 '+i}]};
+ d({type:'message_start',message});d({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'阶段进度 '+i}});d({type:'message_end',message});
+ }
  d({type:'tool_execution_start',toolCallId:'compact-'+i,toolName:'read',args:{path:'file-'+i}});
  d({type:'tool_execution_end',toolCallId:'compact-'+i,isError:i===2,result:{content:[{type:'text',text:'result '+i}]}});
  }
  const turn=document.querySelector('.turn');
- return {visible:turn.querySelectorAll(':scope > .tool').length, archived:turn.querySelectorAll('.tool-history .tool').length,statusAtTop:!!turn.querySelector('.tool-history > summary > .turn-status'),oldLabel:turn.textContent.includes('较早的过程'),open:turn.querySelector('.tool-history').open};
+ return {visible:turn.querySelectorAll(':scope > .tool').length, archived:turn.querySelectorAll('.tool-history .tool').length,statusAtTop:!!turn.querySelector(':scope > .turn-status'),texts:turn.querySelectorAll(':scope > .md').length,groups:[...turn.querySelectorAll('.tool-history')].map(group=>({count:group.querySelectorAll('.tool').length,afterText:group.previousElementSibling.matches('.md')})),oldLabel:turn.textContent.includes('较早的过程'),open:turn.querySelector('.tool-history').open};
  })()`);
- if(live.visible!==1||live.archived!==6||live.open||!live.statusAtTop||live.oldLabel)throw Error(JSON.stringify(live));
+ if(live.visible!==0||live.archived!==7||live.texts!==2||live.groups.length!==2||live.groups[0].count!==3||live.groups[1].count!==4||live.groups.some(group=>!group.afterText)||live.open||!live.statusAtTop||live.oldLabel)throw Error(JSON.stringify(live));
+ const active=await evalJS(`(()=>{const d=window.__haloDispatch;d({type:'tool_execution_start',toolCallId:'active-animation',toolName:'bash',args:{command:'echo animation'}});const groups=[...document.querySelectorAll('.turn .tool-history')];return {active:groups.at(-1).classList.contains('is-running'),older:groups[0].classList.contains('is-running'),animation:getComputedStyle(groups.at(-1).querySelector('.process-label')).animationName,circle:getComputedStyle(groups.at(-1).querySelector('summary'),'::before').content,gradient:getComputedStyle(groups.at(-1).querySelector('.process-label')).backgroundImage,label:groups.at(-1).querySelector('summary').textContent};})()`);
+ if(!active.active||active.older||active.animation!=='statusTextFlow'||active.circle!=='none'||!active.gradient.includes('linear-gradient')||!active.label.includes('执行中'))throw Error(JSON.stringify(active));
+ await evalJS(`window.__haloDispatch({type:'tool_execution_end',toolCallId:'active-animation',result:{content:[]}})`);
+ await screenshot('test/shot-progress-folds.png');
  const ended=await evalJS(`(()=>{
  const d=window.__haloDispatch;
+ const message={role:'assistant',content:[{type:'text',text:'最终完成'}]};d({type:'message_start',message});d({type:'message_end',message});
  d({type:'agent_settled'});
  const turn=document.querySelector('.turn');
- return {visible:turn.querySelectorAll(':scope > .tool').length,archived:turn.querySelectorAll('.process-group .tool').length,open:turn.querySelector('.process-group').open,nested:turn.querySelectorAll('.tool-history').length};
+ return {visible:turn.querySelectorAll(':scope > .tool').length,archived:turn.querySelectorAll('.process-group .tool').length,open:turn.querySelector('.process-group').open,nested:turn.querySelectorAll('.tool-history').length,active:turn.querySelectorAll('.is-running').length,final:turn.querySelector(':scope > .md')?.textContent,progress:turn.querySelectorAll('.process-body > .md').length};
  })()`);
- if(ended.visible!==0||ended.archived!==7||ended.open||ended.nested)throw Error(JSON.stringify(ended));
- console.log('PASS latest tool visible; older tools collapsed; completed process entirely collapsed');
+ if(ended.visible!==0||ended.archived!==8||ended.open||ended.nested||ended.active||ended.final!=='最终完成'||ended.progress!==2)throw Error(JSON.stringify(ended));
+ console.log('PASS progress stays visible with per-stage tool folds; completion collapses progress and preserves final response');
 } finally {ws.close();electron.kill();}

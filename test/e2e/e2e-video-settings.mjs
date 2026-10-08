@@ -486,6 +486,7 @@ try {
   await screenshot('generation-status');
   await until('document.querySelector(".artifact-video .artifact-art .artifact-video-thumbnail")?.readyState >= 2 && !document.querySelector(".artifact-video-thumbnail").seeking');
   assert.match(await evaluate('document.querySelector(".artifact-video .artifact-video-model").textContent'), /APIMart · MiniMax-H3/);
+  assert.match(await evaluate('document.querySelector(".artifact-video .artifact-media-info").textContent'), /[0-9.]+ (?:B|KB|MB) · \d+:\d{2}/);
   assert.equal(await evaluate('document.querySelector(".artifact-video .artifact-video-metrics").textContent'), '生成用时 2分钟 47秒 · 实际消耗 1.144 积分');
   assert.match(await evaluate('document.querySelector(".artifact-video").title'), /任务 ID：fixture.*\n平台耗时 2分钟 37秒.*生成及查询 2分钟 40秒.*\n计费来源：平台结算积分\n预估 1\.43 积分 · 实际 1\.144 积分 · 差额 -0\.286 积分/);
   assert.equal(await evaluate('document.querySelector(".artifact-video").textContent.includes("差额")'), false, 'Billing comparison belongs in the tooltip only');

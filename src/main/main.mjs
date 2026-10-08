@@ -4,6 +4,7 @@ import { isTrustedUIURL } from "./trusted-ui-url.mjs";
 import electronUpdater from 'electron-updater';
 import { createAppUpdates } from './app-updates.mjs';
 import { createReleaseHistory } from './release-history.mjs';
+import { createThemeImages } from './theme-images.mjs';
 import { createReleaseHistoryFetch } from './release-history-fetch.mjs';
 import { createStartupLifecycle } from './startup-lifecycle.mjs';
 import { inspectPreview } from "./preview-inspection.mjs";
@@ -27,6 +28,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { PiBridge, HaloStore, scanAgents } from "./pi-bridge.mjs";
 import { GlobalProxy } from './global-proxy.mjs';
 import { WindowsSystemProxy } from './windows-system-proxy.mjs';
+import { StoreProxy } from './store-proxy.mjs';
 import { EnvironmentManager } from "./environment-manager.mjs";
 import { GitHubAuth } from './github-auth.mjs';
 import { CloudflareService } from './cloudflare.mjs';
@@ -36,6 +38,8 @@ import { VideoPricing } from "./video-pricing.mjs";
 import { VideoGeneration } from "./video-generation.mjs";
 import { VideoConfirmations } from "./video-confirmations.mjs";
 import { videoResponse } from "./video-preview.mjs";
+import { VideoHistory } from "./video-history.mjs";
+import { DigitalHuman } from "./digital-human.mjs";
 
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -86,6 +90,7 @@ process.setMaxListeners?.(0);
 
 // privileged scheme so the Preview pane can load workspace files in an iframe
 protocol.registerSchemesAsPrivileged([
+  { scheme: 'halo-theme', privileges: { standard: true, secure: true, supportFetchAPI: true } },
   { scheme: "halo-preview", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
@@ -131,6 +136,7 @@ function bootstrap() {
   const store = new HaloStore(path.join(app.getPath("userData"), "halo-settings.json"));
   const historyRequests = createReleaseHistoryFetch({ app, session });
   const globalProxy = new GlobalProxy(store, { system:new WindowsSystemProxy() });
+  const storeProxy = new StoreProxy();
   app.on('session-created', created => {
     if (historyRequests.ownsSession(created)) return;
     void globalProxy.addSession(created).catch(error => console.error('[proxy] session configuration failed', error.message));
@@ -139,6 +145,12 @@ function bootstrap() {
   const videoSettings = new VideoSettings(path.join(os.homedir(), '.pi', 'agent', 'halo-video.json'), { seal, unseal });
   const videoPricing = new VideoPricing();
   const video = new VideoGeneration(videoSettings, path.join(os.homedir(), '.pi', 'agent', 'halo-video-jobs.json'), { pricing: videoPricing });
+  const videoHistory = new VideoHistory(() => video.jobs(), { fetchImpl: video.fetch });
+  const digitalHuman = new DigitalHuman(path.join(app.getPath('userData'), 'digital-human'), { readImage: buffer => {
+    const image = nativeImage.createFromBuffer(buffer);
+    if (image.isEmpty()) throw Error('照片无法读取，请选择有效的 JPG、PNG 或 WEBP');
+    return image.getSize();
+  } });
   const videoConfirmations = new VideoConfirmations();
   app.on('before-quit', () => videoConfirmations.dispose());
   video.confirmGeneration = async (request, signal, publish) => {
@@ -181,7 +193,10 @@ function bootstrap() {
     }
   };
   bridge.onEvent(emit);
-  const environment = new EnvironmentManager({ onChange: state => emit('halo:environment-progress', state) });
+  const environment = new EnvironmentManager({
+    fetcher: (...args) => session.defaultSession.fetch(...args),
+    onChange: state => emit('halo:environment-progress', state),
+  });
   const githubAuth = new GitHubAuth();
   const cloudflareDir = path.join(app.getPath('userData'), 'cloudflare');
   fs.mkdirSync(cloudflareDir, { recursive: true });
@@ -346,6 +361,14 @@ function bootstrap() {
         webviewTag: true,
       },
     });
+
+    const mainUIURL = pathToFileURL(path.join(DIST, 'src', 'renderer', 'index.html')).href;
+    const trustedMediaFrame = (contents, details) => contents === mainWin?.webContents && details?.isMainFrame === true
+      && isTrustedUIURL(details.requestingUrl, mainUIURL) && isTrustedUIURL(contents.getURL(), mainUIURL);
+    mainWin.webContents.session.setPermissionCheckHandler((contents, permission, _origin, details) =>
+      trustedMediaFrame(contents, details) && (permission !== 'media' || details.mediaType === 'audio'));
+    mainWin.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) => callback(
+      trustedMediaFrame(contents, details) && (permission !== 'media' || (details.mediaTypes?.length > 0 && details.mediaTypes.every(type => type === 'audio')))));
 
     mainWin.webContents.on("will-attach-webview", (event, preferences, params) => {
       // Isolate public websites from the app and from SSH preview sessions.
@@ -586,13 +609,48 @@ function bootstrap() {
   handle("halo:video-confirmations", () => videoConfirmations.list());
   handle("halo:video-balance", input => video.balance(input));
   handle("halo:video-history", () => video.consumptionHistory());
+  handle("halo:video-history-playback", input => videoHistory.playback(input));
+  handle('halo:digital-human-state', () => digitalHuman.state());
+  handle('halo:digital-human-import', async kind => {
+    if (!['photo', 'voice'].includes(kind)) throw Error('素材类型无效');
+    const result = await dialog.showOpenDialog(mainWin, {
+      title: kind === 'photo' ? '选择数字人照片' : '选择声音样本', properties: kind === 'photo' ? ['openFile', 'multiSelections'] : ['openFile'],
+      filters: [{ name: kind === 'photo' ? '照片' : '录音', extensions: kind === 'photo' ? ['jpg', 'jpeg', 'png', 'webp'] : ['mp3', 'm4a', 'wav'] }],
+    });
+    if (result.canceled || !result.filePaths?.length) return null;
+    if (kind === 'voice') return digitalHuman.importAsset(kind, result.filePaths[0]);
+    const assets = [], errors = [];
+    for (const file of result.filePaths.slice(0, 9)) {
+      try { assets.push(await digitalHuman.importAsset(kind, file)); }
+      catch (error) { errors.push(`${path.basename(file)}：${error.message}`); }
+    }
+    if (result.filePaths.length > 9) errors.push('每次最多导入 9 张照片');
+    return { assets, errors };
+  });
+  handle('halo:digital-human-recording', input => digitalHuman.importRecording(input));
+  handle('halo:digital-human-asset-update', input => digitalHuman.assetUpdate(input));
+  handle('halo:digital-human-asset-delete', id => digitalHuman.assetDelete(id));
+  handle('halo:digital-human-profile-save', input => digitalHuman.profileSave(input));
+  handle('halo:digital-human-draft-save', input => digitalHuman.draftSave(input));
   handle("halo:video-save", input => videoSettings.save(input));
   handle("halo:video-test", input => video.test(input));
   handle("halo:video-estimate", input => videoPricing.estimate(input));
   handle("halo:video-model-prices", input => videoPricing.models(input));
   handle("halo:get-state", () => bridge.publicState());
+  const connectivityPending = new Map();
+  handle('halo:connectivity-test', async id => {
+    if (!connectivityPending.has(id)) {
+      const request = import('./connectivity.mjs').then(({ probeConnectivity }) =>
+        probeConnectivity(id, (url, options) => session.defaultSession.fetch(url, options)));
+      connectivityPending.set(id, request);
+      request.finally(() => connectivityPending.delete(id)).catch(() => {});
+    }
+    return connectivityPending.get(id);
+  });
   handle('halo:proxy-get', () => globalProxy.read());
   handle('halo:proxy-set', value => globalProxy.set(value));
+  handle('halo:proxy-store-status', () => storeProxy.status());
+  handle('halo:proxy-store-repair', () => storeProxy.repair());
   handle("halo:init", (cwd) => bridge.start(cwd));
   handle("halo:prompt", (text, opts) => bridge.prompt(text, opts));
   handle("halo:steer", (text, attachments) => bridge.steer(text, attachments));
@@ -779,6 +837,7 @@ function bootstrap() {
           return {file,sha256:hash.digest('hex')};
         } catch { return file; }
       }
+      if (options?.mediaMetadata && /\.(mp4|webm|mp3|wav|m4a|aac|ogg|flac)$/i.test(abs)) return { file, bytes: stat.size };
       return file;
     }));
     return found.filter(Boolean);
@@ -1054,6 +1113,11 @@ function bootstrap() {
 
   app.whenReady().then(async () => {
     await Promise.all([globalProxy.addSession(session.defaultSession), globalProxy.addSession(session.fromPartition('website-preview'))]);
+    protocol.handle('halo-theme', createThemeImages({
+      manifest: JSON.parse(fs.readFileSync(path.join(DIST, 'assets/theme-images.json'), 'utf8')),
+      cacheDir: path.join(app.getPath('userData'), 'theme-images'),
+      fetcher: (url, options) => session.defaultSession.fetch(url, options),
+    }));
     // preview protocol: serve workspace files to the Preview iframe safely
     const MIME = {
       ".html": "text/html", ".htm": "text/html", ".css": "text/css",
@@ -1062,10 +1126,13 @@ function bootstrap() {
       ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
       ".md": "text/markdown", ".txt": "text/plain", ".mp4": "video/mp4",
       ".webm": "video/webm", ".pdf": "application/pdf",
+      ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".flac": "audio/flac",
     };
     protocol.handle("halo-preview", async (request) => {
       try {
         const u = new URL(request.url);
+        if (u.hostname === 'video-history') return videoHistory.response(request);
+        if (u.hostname === 'digital-human') return digitalHuman.response(request);
         let p = decodeURIComponent(u.pathname);
         if (process.platform === "win32") p = p.replace(/^\//, "");
         p = path.normalize(p);

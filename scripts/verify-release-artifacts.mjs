@@ -23,6 +23,7 @@ async function hashFile(file) {
 function sourceFiles(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const file = path.join(dir, entry.name);
+    if (file === path.join(root, 'assets', 'themes')) return [];
     return entry.isDirectory() ? sourceFiles(file) : entry.isFile() && !/\.(?:map|d\.(?:ts|mts|cts))$/.test(file) ? [file] : [];
   });
 }
@@ -121,6 +122,14 @@ export async function verifyReleaseArtifacts({ directory = path.join(root, 'dist
     assert.equal(await hashFile(archive), await hashFile(builtArchive), 'Installer payload differs from the tested unpacked app');
     const allowedRoots = new Set(['src', 'assets', 'node_modules', 'package.json']);
     const entries = asar.listPackage(archive).map(file => file.replaceAll('\\', '/').replace(/^\//, ''));
+    assert.ok(!entries.some(file => file.startsWith('assets/themes/')), 'Local theme originals must not be packaged');
+    for (const dependency of ['docx-preview', 'pptx-preview', 'echarts', 'zrender']) {
+      assert.ok(!entries.some(file => file.startsWith(`node_modules/${dependency}/`)), `Build-only preview dependency was packaged: ${dependency}`);
+    }
+    assert.ok(!entries.some(file => file.startsWith('node_modules/pdfkit/.yarn/')), 'PDFKit development tools must not be packaged');
+    for (const file of ['docx-preview.min.js', 'pptx-preview.umd.js', 'exceljs.min.js', 'jszip.min.js']) {
+      assert.ok(entries.includes(`src/renderer/vendor/office/${file}`), `Missing bundled preview: ${file}`);
+    }
     for (const file of entries) assert.ok(allowedRoots.has(file.split('/')[0]), `Unexpected packaged path: ${file}`);
     const packaged = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
     assert.equal(packaged.version, manifest.version, 'Installer contains stale application version');

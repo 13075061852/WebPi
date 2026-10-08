@@ -18,7 +18,7 @@ const profile = path.join(fixture, 'profile'), workspace = path.join(fixture, 'w
 for (const dir of [profile, workspace, agent]) mkdirSync(dir);
 writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({ cwd:workspace, projects:[{cwd:workspace}] }));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL|ELECTRON_RUN_AS_NODE)/i.test(key)));
-Object.assign(env, { USERPROFILE:fixture, HOME:fixture, APPDATA:path.join(fixture,'roaming'), LOCALAPPDATA:path.join(fixture,'local'), PI_CODING_AGENT_DIR:agent, PI_OFFLINE:'1' });
+Object.assign(env, { USERPROFILE:fixture, HOME:fixture, APPDATA:path.join(fixture,'roaming'), LOCALAPPDATA:path.join(fixture,'local'), PI_CODING_AGENT_DIR:agent, PI_OFFLINE:'1', GH_CONFIG_DIR:path.join(fixture,'gh'), GCM_CREDENTIAL_STORE:'plaintext', GCM_PLAINTEXT_STORE_PATH:path.join(fixture,'empty-gcm-store') });
 const electron = spawn(
   process.platform === "win32" ? "node_modules/electron/dist/electron.exe" : "node_modules/.bin/electron",
   [".", `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`],
@@ -85,6 +85,115 @@ for (let i = 0; i < 30; i++) {
   await sleep(500);
 }
 if (!ready) throw new Error("__haloDispatch not available");
+const glass = await evalJS(`(() => {
+  document.querySelector('[data-theme-choice="glass"]').click();
+  const root=document.documentElement;
+  return {surface:root.dataset.surface,theme:root.dataset.theme,wallpaper:root.dataset.wallpaper,
+    saved:localStorage.getItem('halo-theme'),selected:document.querySelector('[data-theme-choice="glass"]').getAttribute('aria-pressed'),
+    blur:getComputedStyle(document.querySelector('#sidebar')).backdropFilter};
+})()`);
+if(glass.surface!=='glass'||glass.theme!=='light'||glass.wallpaper!==''||glass.saved!=='glass'||glass.selected!=='true'||!glass.blur.includes('blur'))throw Error('Glass theme failed: '+JSON.stringify(glass));
+for(let attempt=0;attempt<20 && !await evalJS(`document.querySelector('#sideNav .nav-item.active').style.getPropertyValue('--glass-refraction')`);attempt++)await sleep(100);
+// DOM/CDP clicks bypass native window hit testing. Guard the drag-region layout too;
+// window controls also need a real Windows mouse smoke test when this area changes.
+const titlebarRegions = await evalJS(`(() => {
+  const bar=document.querySelector('#titlebar');
+  const controls=[...document.querySelectorAll('.tb-right, .tb-right *, #titlebar button')];
+  return {
+    drag:getComputedStyle(bar).getPropertyValue('-webkit-app-region'),
+    overlay:bar.matches('.glass-surface, .glass-lens') || ['::before','::after'].some(p=>!['none','normal'].includes(getComputedStyle(bar,p).content)),
+    draggableControls:controls.filter(el=>getComputedStyle(el).getPropertyValue('-webkit-app-region')==='drag').map(el=>el.id||el.tagName),
+    themeOverlay:getComputedStyle(document.querySelector('#themeToggle'),'::before').getPropertyValue('-webkit-app-region')
+  };
+})()`);
+if(titlebarRegions.drag!=='drag'||titlebarRegions.overlay||titlebarRegions.draggableControls.length||titlebarRegions.themeOverlay!=='no-drag')throw Error('Titlebar native hit regions failed: '+JSON.stringify(titlebarRegions));
+console.log('PASS glass titlebar native drag-region layout');
+if(!await evalJS(`!!document.querySelector('.glass-filter-defs feImage') && getComputedStyle(document.querySelector('#sideNav .nav-item.active')).backdropFilter.includes('url(')`))throw Error('Static glass refraction missing');
+async function checkStableHover(selector) {
+  await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1100,y:20});
+  await sleep(300);
+  const expression=`(() => {
+    const target=document.querySelector(${JSON.stringify(selector)});
+    // Sample both labels: hovering the inactive tab previously shifted its sibling too.
+    return [...new Set([target,...target.querySelectorAll('span,strong,small,svg'),...document.querySelectorAll('#sideNav .nav-item span')])].map(node=>{
+      const r=node.getBoundingClientRect(),s=getComputedStyle(node);
+      return {x:r.x,y:r.y,width:r.width,height:r.height,translate:s.translate,scale:s.scale,transform:s.transform,filter:s.filter,backdrop:s.backdropFilter};
+    });
+  })()`;
+  const before=await evalJS(expression), target=before[0];
+  for(const fraction of [.2,.8]) {
+    await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:target.x+target.width*fraction,y:target.y+target.height*.5});
+    await sleep(350);
+    const after=await evalJS(expression);
+    if(JSON.stringify(after)!==JSON.stringify(before))throw Error('Hover moved or blurred glass content: '+selector+' '+JSON.stringify({before,after}));
+  }
+  if(await evalJS(`!!document.querySelector('.glass-interacting,[style*="--glass-shift"],[style*="--glass-reflection"],[style*="--glass-angle"]')`))throw Error('Pointer-driven glass effects remain');
+}
+for(const selector of ['#sideNav .nav-item.active','#sideNav .nav-item:not(.active)','.welcome-prompts button','.input-shell','.pvdev.active','#btnSend'])await checkStableHover(selector);
+await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1100,y:20});
+console.log('PASS static glass and stable text across active/inactive tabs, cards, composer and controls');
+await screenshot('test/shot-theme-glass.png');
+await evalJS(`(() => {
+  const modal=document.querySelector('#settingsModal');modal.hidden=false;modal.classList.add('show');
+  document.querySelectorAll('#settingsModal .set-pane').forEach(p=>p.classList.toggle('active',p.id==='setPane-appearance'));
+  document.querySelectorAll('#settingsModal .set-nav').forEach(p=>p.classList.toggle('active',p.dataset.pane==='appearance'));
+})()`);
+await sleep(250);
+await checkStableHover('#settingsModal .set-nav.active');
+await screenshot('test/shot-theme-glass-settings.png');
+await evalJS(`(() => {const modal=document.querySelector('#settingsModal');modal.hidden=true;modal.classList.remove('show');})()`);
+
+// The same production lenses must preserve both light and dark textured backdrops.
+await evalJS(`(async () => {
+  const fixture=document.createElement('section');fixture.id='glassMaterialFixture';
+  fixture.style.cssText='position:fixed;inset:160px auto auto 60px;width:960px;height:280px;z-index:9999;display:flex;background:#ccc';
+  const backgrounds=['repeating-linear-gradient(115deg,#d0d0d0 0 20px,#a0a0a0 20px 22px,#ddd 22px 42px)', 'scene-forest', 'scene-canyon'];
+  for(const [index,background] of backgrounds.entries()) {
+    const panel=document.createElement('div');panel.className='welcome-prompts';
+    panel.style.cssText='width:320px;height:280px;position:relative;display:block;background-size:cover;background-position:center';
+    if(index) {const img=new Image();img.src=new URL('../../assets/themes/collection/'+background+'.webp',location.href).href;await img.decode();panel.style.backgroundImage='url("'+img.src+'")';}
+    else panel.style.backgroundImage=background;
+    const color=index?'white':'#242424';
+    panel.innerHTML='<button aria-label="圆形玻璃" style="position:absolute;top:36px;left:36px;width:64px;height:64px;padding:18px;border-radius:50%;color:'+color+'">'+document.querySelector('#themeToggle .ic-sun').outerHTML+'</button><button style="position:absolute;top:48px;left:134px;width:130px;height:40px;justify-content:center;padding:0;border-radius:999px;color:'+color+'">⌕ 搜索</button><button style="position:absolute;top:150px;left:30px;width:260px;height:70px;padding:0 22px;border-radius:32px;color:'+color+'">透明玻璃</button>';
+    fixture.append(panel);
+  }
+  document.body.append(fixture);
+})()`);
+for(let attempt=0;attempt<20 && await evalJS(`document.querySelectorAll('#glassMaterialFixture .glass-lens').length`) !== 9;attempt++)await sleep(100);
+if(await evalJS(`document.querySelectorAll('#glassMaterialFixture .glass-lens').length`) !== 9)throw Error('Dynamic glass lenses not initialized');
+await sleep(300);
+const materialShot=await send('Page.captureScreenshot',{format:'png',clip:{x:60,y:160,width:960,height:280,scale:1}});
+writeFileSync('test/shot-theme-glass-material.png',Buffer.from(materialShot.result.data,'base64'));
+const lensBeforeResize=await evalJS(`[...document.querySelectorAll('.glass-filter-defs feImage')].map(image=>image.getAttribute('href')).join('|')`);
+await evalJS(`document.querySelector('#glassMaterialFixture button').style.width='84px'`);
+await sleep(250);
+if(!await evalJS(`document.querySelector('#glassMaterialFixture button').classList.contains('glass-lens')`))throw Error('Resized lens lost its material');
+if(await evalJS(`[...document.querySelectorAll('.glass-filter-defs feImage')].map(image=>image.getAttribute('href')).join('|')`)===lensBeforeResize)throw Error('Lens displacement did not adapt to its size');
+const idleLensFrames=await evalJS(`(async () => {
+  await new Promise(resolve=>setTimeout(resolve,150));
+  const original=window.requestAnimationFrame;let calls=0;
+  window.requestAnimationFrame=function(callback){if(new Error().stack.includes('glass-material.mjs'))calls++;return original.call(window,callback);};
+  try {await new Promise(resolve=>setTimeout(resolve,300));return calls;}finally{window.requestAnimationFrame=original;}
+})()`);
+if(idleLensFrames)throw Error('Glass material scheduled idle frames: '+idleLensFrames);
+const filtersWithFixture=await evalJS(`document.querySelectorAll('.glass-filter-defs filter').length`);
+await evalJS(`document.querySelector('#glassMaterialFixture').remove()`);
+await sleep(150);
+if(await evalJS(`document.querySelectorAll('.glass-filter-defs filter').length`) !== filtersWithFixture-9)throw Error('Removed glass elements retained their filters');
+await evalJS(`document.querySelector('[data-theme-choice="dark"]').click()`);
+if(await evalJS(`document.documentElement.dataset.surface`) !== '')throw Error('Glass theme did not clear');
+await sleep(150);
+if(await evalJS(`document.querySelectorAll('.glass-filter-defs filter, .glass-lens').length`))throw Error('Glass lenses leaked after theme switch');
+console.log('PASS glass lens resizing, idle frame budget and resource cleanup');
+console.log('PASS glass theme selection, persistence and switch back');
+for (const theme of ['glass', 'light', 'dark']) {
+  await evalJS(`document.querySelector('#themeToggle').click()`);
+  await sleep(500);
+  const state = await evalJS(`({ saved:localStorage.getItem('halo-theme'), selected:document.querySelector('[data-theme-choice="${theme}"]').getAttribute('aria-pressed'), icons:[...document.querySelectorAll('#themeToggle .ic')].filter(icon=>getComputedStyle(icon).display!=='none').length })`);
+  if(state.saved!==theme||state.selected!=='true'||state.icons!==1)throw Error('Titlebar theme cycle failed: '+JSON.stringify(state));
+}
+console.log('PASS titlebar cycles three themes and synchronizes settings');
+if(process.argv.includes('--glass-only')) {ws.close();electron.kill();process.exit(0);}
 console.log("app ready, injecting scenarios...");
 
 // make the layout deterministic for the shot
@@ -169,7 +278,7 @@ await evalJS(`
 await sleep(700);
 const errorCollapsed = await evalJS("document.querySelector('.tool.error .tool-out').hidden");
 if (!errorCollapsed) { electron.kill(); throw new Error('Failed tools should start collapsed'); }
-await evalJS("document.querySelector('.tool.error .tool-line').click()");
+await evalJS("document.querySelector('.tool-history').open=true;document.querySelector('.tool.error .tool-line').click()");
 for (const theme of ['light', 'dark']) {
   await evalJS(`document.documentElement.dataset.theme = '${theme}'`);
   const layout = await evalJS(`(() => {
@@ -231,19 +340,32 @@ await evalJS(`document.querySelector('#btnSettings').click(); document.querySele
 await sleep(300);
 // Replace form listeners with a fixture: UI tests must never modify the host system proxy.
 await evalJS(`(async () => {
-  const old = document.querySelector('#proxyForm'); old.replaceWith(old.cloneNode(true));
+  const old = document.querySelector('#setPane-proxy'); old.replaceWith(old.cloneNode(true));
   window.__proxyFixture = {mode:'direct',port:7890,system:{flags:1,server:''}};
+  window.__connectivityCalls = [];
   const {initProxySettings} = await import('./js/proxy-settings.mjs');
   const controller = initProxySettings({api:{
+    connectivityTest:async(id)=>{window.__connectivityCalls.push(id);return {ok:true,data:{status:'available',ms:42}};},
     proxyGet:async()=>({ok:true,data:window.__proxyFixture}),
-    proxySet:async(value)=>({ok:true,data:window.__proxyFixture={...value,port:Number(value.port),system:{flags:value.mode==='proxy'?3:1,server:value.mode==='proxy'?'127.0.0.1:'+value.port:''}}})
+    proxySet:async(value)=>{await new Promise(resolve=>setTimeout(resolve,150));return {ok:true,data:window.__proxyFixture={...value,port:Number(value.port),system:{flags:value.mode==='proxy'?3:1,server:value.mode==='proxy'?'127.0.0.1:'+value.port:''}}};}
   }});
   await controller.refresh();
 })()`);
-await evalJS(`document.querySelector('#proxyPort').value='65534'; document.querySelector('#proxyApply').click();`);
+const switching = await evalJS(`(() => {
+  const form=document.querySelector('#proxyForm'), button=document.querySelector('#proxyApply');
+  const height=form.offsetHeight;
+  document.querySelector('#proxyPort').value='65534';button.click();
+  return button.classList.contains('is-switching') && button.getAttribute('aria-busy')==='true' &&
+    button.parentElement.dataset.mode==='direct' && form.offsetHeight===height &&
+    !document.querySelector('#proxyResult').textContent && !document.querySelector('#proxyStatus');
+})()`);
+if (!switching) { electron.kill(); throw Error('Proxy switch must spin inline and retain the previous selection without changing card height'); }
 await sleep(400);
 const proxyState = await evalJS('window.__proxyFixture');
 if (proxyState?.mode !== 'proxy' || proxyState.port !== 65534) { electron.kill(); throw Error('Proxy UI did not apply'); }
+if (!await evalJS(`document.querySelector('.proxy-mode-tabs').dataset.mode==='proxy' && !document.querySelector('#proxyApply').classList.contains('is-switching')`)) {
+  electron.kill(); throw Error('Proxy selection must move only after success and clear the spinner');
+}
 for (const theme of ['light', 'dark']) {
   await evalJS(`document.documentElement.dataset.theme='${theme}'`);
   await sleep(350);
@@ -253,23 +375,52 @@ await evalJS(`document.querySelector('#proxyReset').click()`);
 await sleep(400);
 if (await evalJS('window.__proxyFixture.mode') !== 'direct') { electron.kill(); throw Error('Proxy reset failed'); }
 console.log('PASS proxy settings UI applies a port and restores direct');
-// Real relative tool-write preview: exercise URL encoding and dependent assets.
+await evalJS(`document.querySelector('#connectivityDomesticTab').click();document.querySelector('#connectivityTest').click();`);
+await sleep(100);
+const networkTabs = await evalJS(`(() => {
+  const panel=document.querySelector('#connectivityResults');
+  const domestic=panel.textContent.includes('百度') && !panel.textContent.includes('Google');
+  const calls=[...window.__connectivityCalls];
+  document.querySelector('#connectivityForeignTab').click();
+  const foreign=panel.textContent.includes('Google') && !panel.textContent.includes('百度') && panel.textContent.includes('未测试');
+  document.querySelector('#connectivityDomesticTab').click();
+  const retained=panel.querySelectorAll('[data-status="available"]').length===6;
+  document.querySelector('#connectivityForeignTab').click();
+  return {domestic,foreign,retained,calls};
+})()`);
+if (!networkTabs.domestic || !networkTabs.foreign || !networkTabs.retained ||
+    networkTabs.calls.join(',') !== 'baidu,bingcn,qq,bilibili,taobao,jd') {
+  electron.kill(); throw Error('Connectivity tabs failed: '+JSON.stringify(networkTabs));
+}
+console.log('PASS network tabs isolate tests and retain category results');
+// Generated files stay in the file list until explicitly opened. Exercise URL
+// encoding and dependent assets through that real preview entry.
+await evalJS(`document.querySelector('#settingsModal [data-close]').click()`);
 writeFileSync(path.join(workspace, '页面 #%.html'), '<!doctype html><script src="./preview-game.js"></script>');
 writeFileSync(path.join(workspace, 'preview-game.js'), 'parent.postMessage({previewRelativeReady:true},"*");');
+const beforeWrite = await evalJS(`({name:document.querySelector('#pvName').textContent,collapsed:document.body.classList.contains('preview-collapsed')})`);
 await evalJS(`window.__relativePreviewReady=false; addEventListener('message',e=>{if(e.data?.previewRelativeReady)window.__relativePreviewReady=true;});
 window.__haloDispatch({type:'agent_start'});
 window.__haloDispatch({type:'tool_execution_start',toolCallId:'relative-preview',toolName:'write',args:{path:'页面 #%.html'}});
 window.__haloDispatch({type:'tool_execution_end',toolCallId:'relative-preview',isError:false,result:{content:[{type:'text',text:'File written'}]}});
 window.__haloDispatch({type:'agent_settled'});`);
+for(let attempt=0;attempt<40;attempt++) {
+  if(await evalJS(`[...document.querySelectorAll('#wsTree .fname')].some(node=>node.textContent==='页面 #%.html')`)) break;
+  await sleep(100);
+}
+const afterWrite = await evalJS(`({name:document.querySelector('#pvName').textContent,collapsed:document.body.classList.contains('preview-collapsed')})`);
+if(JSON.stringify(afterWrite)!==JSON.stringify(beforeWrite)||await evalJS('window.__relativePreviewReady')){
+  electron.kill();throw Error('Background HTML generation changed the selected preview or opened it');
+}
+await evalJS(`[...document.querySelectorAll('#wsTree .fname')].find(node=>node.textContent==='页面 #%.html').closest('.trow').click()`);
 let relativeReady=false;
 for(let attempt=0;attempt<40;attempt++) {
   relativeReady=await evalJS('window.__relativePreviewReady');
   if(relativeReady)break;
   await sleep(100);
 }
-if(!relativeReady){electron.kill();throw Error('Relative tool path did not auto-open HTML and its script');}
-console.log('PASS relative HTML write auto-preview, Chinese/special-character paths and relative script loading');
-await evalJS(`document.querySelector('#settingsModal [data-close]').click()`);
+if(!relativeReady){electron.kill();throw Error('Explicit file preview did not load HTML and its relative script');}
+console.log('PASS background HTML stays unselected; explicit preview loads Chinese/special-character paths and relative scripts');
 for (const theme of ['light','dark']) {
   await evalJS(`document.documentElement.dataset.theme='${theme}'`);
   await sleep(350);

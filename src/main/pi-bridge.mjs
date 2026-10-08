@@ -23,6 +23,7 @@ import { iconLibraryTool } from './icon-library.mjs';
 import { previewControlTool } from './preview-control.mjs';
 import { createInterface } from "node:readline";
 import { resolvePiEntry } from "./pi-runtime.mjs";
+import { quotaAuthError, quotaAuthExpired, quotaFailure, quotaResponseError } from './quota-auth.mjs';
 
 /* ------------------------------------------------------------------ */
 /* load the Pi version bundled and tested with this app                */
@@ -360,6 +361,7 @@ export class PiBridge {
       ready: !!s,
       cwd: this.cwd,
       sessionId: s?.sessionId,
+      serverId: this.serverTargets?.get(s?.sessionId) || null,
       sessionFile: s?.sessionFile,
       model: s?.model
         ? { provider: s.model.provider, id: s.model.id, name: s.model.name || s.model.id, contextWindow: s.model.contextWindow }
@@ -1186,11 +1188,10 @@ async _doStart() {
     let quota = null;
     try {
       quota = await this.#quotaFetch(providerId, credential);
-      if (quota) {
-        this.#quotaCache.set(providerId, { ts: Date.now(), data: quota });
-        this.#accountQuotaCache.set(`${providerId}:${accountId}`, { ts: Date.now(), data: quota });
-      }
-    } catch {}
+    } catch (error) {
+      quota = quotaFailure(error, this.#quotaKindFor(providerId), this.#accountQuotaCache.get(`${providerId}:${accountId}`)?.data);
+    }
+    if (quota) this.#cacheLiveQuota(providerId, credential, quota);
     this.pushState();
     console.log(`[auth] account switched: ${providerId} -> ${entry.label}`);
     return { providerId, accountId, label: entry.label, quota };
@@ -1225,15 +1226,17 @@ async _doStart() {
       const hit = this.#accountQuotaCache.get(key);
       if (hit && Date.now() - hit.ts < 60_000) return { id: a.id, quota: hit.data };
       try {
-        // 当前生效账户直接用 auth.json 里的凭据（由 pi 管理新鲜度）；其余账户用保管库副本
+        // Active refresh uses the SDK's credential lock; dormant refresh only updates its vault copy.
         const isLive = a.fingerprint && a.fingerprint === liveFp;
-        const cred = isLive ? (live || a.credential) : await this.#freshCredential(providerId, a.credential);
+        const cred = isLive ? await this.#quotaCredential(providerId) : await this.#freshCredential(providerId, a.credential);
         const quota = await this.#quotaFetch(providerId, cred);
         this.#accountQuotaCache.set(key, { ts: Date.now(), data: quota });
+        if (isLive && quota) this.#cacheLiveQuota(providerId, cred, quota);
         return { id: a.id, quota };
-      } catch {
-        const quota = { kind, error: true };
+      } catch (error) {
+        const quota = quotaFailure(error, kind, hit?.data);
         this.#accountQuotaCache.set(key, { ts: Date.now(), data: quota });
+        if (a.fingerprint && a.fingerprint === liveFp) this.#cacheLiveQuota(providerId, live, quota);
         return { id: a.id, quota };
       }
     }));
@@ -1252,7 +1255,8 @@ async _doStart() {
       return cred;
     }
     const fresh = await oauth.refresh(cred, AbortSignal.timeout(15000));
-    if (cred.accountId && fresh?.accountId && cred.accountId !== fresh.accountId) throw new Error("刷新返回的账户身份不一致");
+    if (!fresh?.access || (providerId === 'openai-codex' && cred.accountId && !fresh.accountId)) throw quotaAuthError('刷新返回的登录信息不完整');
+    if (cred.accountId && fresh?.accountId && cred.accountId !== fresh.accountId) throw quotaAuthError("刷新返回的账户身份不一致");
     const entry = this.vault.list(providerId).find((a) => a.credential === cred);
     if (entry) {
       entry.credential = fresh;
@@ -1606,6 +1610,33 @@ async _doStart() {
     return "context"; // 未接入额度的 provider：显示占位提示
   }
 
+  #cacheLiveQuota(provider, credential, data) {
+    const fingerprint = HaloAuthVault.fingerprint(credential);
+    const cached = { ts: Date.now(), data, fingerprint };
+    this.#quotaCache.set(provider, cached);
+    const account = this.vault.list(provider).find(entry => fingerprint && entry.fingerprint === fingerprint);
+    if (account) this.#accountQuotaCache.set(`${provider}:${account.id}`, cached);
+  }
+
+  async #quotaCredential(provider) {
+    if (provider === 'autoclaw') return undefined;
+    let credential;
+    try { credential = this.#piCredential(provider); }
+    catch (error) {
+      if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+    }
+    if (!credential) throw quotaAuthError('账户登录信息缺失');
+    if (credential.type !== 'oauth' || !credential.expires || credential.expires > Date.now() + 300_000) return credential;
+    // The short-lived access token expiring is normal: refresh it under the same
+    // file lock used by model requests before deciding whether login has expired.
+    return this.#writeStoredCredential(provider, async current => {
+      if (!current) throw quotaAuthError('账户登录信息缺失');
+      const fresh = await this.#freshCredential(provider, current);
+      if (fresh && fresh !== current) this.vault.upsert(provider, fresh);
+      return fresh;
+    });
+  }
+
   /** 读取 pi 凭据（~/.pi/agent/auth.json），只取指定 provider 的字段 */
   #piCredential(providerId) {
     const file = path.join(os.homedir(), ".pi", "agent", "auth.json");
@@ -1623,7 +1654,7 @@ async _doStart() {
     const file = path.join(os.homedir(), ".openclaw-autoclaw", "request-headers.json");
     const j = JSON.parse(fs.readFileSync(file, "utf8"));
     let t = String(j?.headers?.["X-Authorization"] || "").trim();
-    if (!t) throw new Error("AutoClaw 令牌不存在（桌面端未登录？）");
+    if (!t) throw quotaAuthError("AutoClaw 令牌不存在（桌面端未登录？）");
     return t.startsWith("Bearer ") ? t : `Bearer ${t}`;
   }
 
@@ -1666,26 +1697,26 @@ async _doStart() {
     const headers = this.#autoclawHeaders();
     const r = await fetch(`${base}/agent-assetmgr/api/v2/wallets?biz_app_id=autoclaw`, { headers, signal: AbortSignal.timeout(8000) });
     const j = await r.json().catch(() => null);
-    if (j?.code !== 0 || !j?.data) throw new Error(j?.msg || `wallets HTTP ${r.status}`);
+    if (r.status >= 400 || j?.code !== 0 || !j?.data) throw quotaResponseError(r, j, 'wallets');
     return { kind: "points", label: "积分", value: Number(j.data.total_balance) || 0 };
   }
 
   async #quotaDeepSeek(cred) {
     cred = cred || this.#piCredential("deepseek");
-    if (!cred?.key) throw new Error("DeepSeek 未配置 API Key");
+    if (!cred?.key) throw quotaAuthError("DeepSeek 未配置 API Key");
     const r = await fetch("https://api.deepseek.com/user/balance", {
       headers: { Authorization: `Bearer ${cred.key}`, Accept: "application/json" },
       signal: AbortSignal.timeout(8000),
     });
     const j = await r.json().catch(() => null);
     const info = j?.balance_infos?.[0];
-    if (!info) throw new Error(j?.error?.message || `balance HTTP ${r.status}`);
+    if (r.status >= 400 || !info) throw quotaResponseError(r, j, 'balance');
     return { kind: "balance", label: "余额", value: Number(info.total_balance) || 0, currency: info.currency || "CNY" };
   }
 
   async #quotaCodex(cred) {
     cred = cred || this.#piCredential("openai-codex");
-    if (!cred?.access || !cred?.accountId) throw new Error("OpenAI Codex 未登录");
+    if (!cred?.access || !cred?.accountId) throw quotaAuthError("OpenAI Codex 登录信息不完整");
     const r = await this.#proxiedFetch("https://chatgpt.com/backend-api/wham/usage", {
       headers: {
         Authorization: `Bearer ${cred.access}`,
@@ -1698,6 +1729,7 @@ async _doStart() {
       signal: AbortSignal.timeout(12000),
     });
     const j = await r.json().catch(() => null);
+    if (r.status >= 400 || j?.error) throw quotaResponseError(r, j, 'usage');
     const rl = j?.rate_limit || j?.rate_limits || {};
     const mk = (w, fallbackSeconds) => {
       if (!w) return null;
@@ -1720,14 +1752,14 @@ async _doStart() {
   /** Z.AI / 智谱 GLM Coding 订阅：token 窗口用量百分比（认证为裸 token，无 Bearer 前缀） */
   async #quotaZai(provider, cred) {
     cred = cred || this.#piCredential(provider);
-    if (!cred?.key) throw new Error(provider === "zai" ? "Z.AI 未配置 API Key" : "智谱 GLM Coding 未配置 API Key");
+    if (!cred?.key) throw quotaAuthError(provider === "zai" ? "Z.AI 未配置 API Key" : "智谱 GLM Coding 未配置 API Key");
     const base = provider === "zai" ? "https://api.z.ai" : "https://open.bigmodel.cn";
     const r = await fetch(`${base}/api/monitor/usage/quota/limit`, {
       headers: { Authorization: cred.key, "Content-Type": "application/json", "Accept-Language": "en-US,en" },
       signal: AbortSignal.timeout(10000),
     });
-    if (!r.ok) throw new Error(`quota HTTP ${r.status}`);
     const j = await r.json().catch(() => null);
+    if (!r.ok) throw quotaResponseError(r, j, 'quota');
     const rows = Array.isArray(j?.limits) ? j.limits : [];
     const windows = [];
     for (const lim of rows) {
@@ -1748,13 +1780,13 @@ async _doStart() {
   /** Moonshot 平台预付余额：.ai 全球站 USD / .cn 国内站 CNY，含代金券 */
   async #quotaMoonshot(provider, base, currency, cred) {
     cred = cred || this.#piCredential(provider);
-    if (!cred?.key) throw new Error("Moonshot 未配置 API Key");
+    if (!cred?.key) throw quotaAuthError("Moonshot 未配置 API Key");
     const r = await this.#proxiedFetch(`${base}/v1/users/me/balance`, {
       headers: { Authorization: `Bearer ${cred.key}`, Accept: "application/json" },
       signal: AbortSignal.timeout(10000),
     });
-    if (!r.ok) throw new Error(`balance HTTP ${r.status}`);
     const j = await r.json().catch(() => null);
+    if (!r.ok) throw quotaResponseError(r, j, 'balance');
     const d = j?.data;
     const v = Number(d?.available_balance ?? d?.cash_balance);
     if (!d || !Number.isFinite(v)) throw new Error("balance 数据缺失");
@@ -1764,49 +1796,57 @@ async _doStart() {
   /** OpenRouter 预付信用：total_credits - total_usage，USD */
   async #quotaOpenrouter(cred) {
     cred = cred || this.#piCredential("openrouter");
-    if (!cred?.key) throw new Error("OpenRouter 未配置 API Key");
+    if (!cred?.key) throw quotaAuthError("OpenRouter 未配置 API Key");
     const r = await this.#proxiedFetch("https://openrouter.ai/api/v1/credits", {
       headers: { Authorization: `Bearer ${cred.key}` },
       signal: AbortSignal.timeout(12000),
     });
-    if (!r.ok) throw new Error(`credits HTTP ${r.status}`);
     const j = await r.json().catch(() => null);
+    if (!r.ok) throw quotaResponseError(r, j, 'credits');
     const total = Number(j?.data?.total_credits);
     if (!Number.isFinite(total)) throw new Error("credits 数据缺失");
     const used = Number(j?.data?.total_usage);
     return { kind: "balance", label: "余额", value: Math.max(0, total - (Number.isFinite(used) ? used : 0)), currency: "USD" };
   }
 
-  /** 尽力而为接口：拿不到就返回 null（渲染层显示 —，不显示错误态） */
+  /** 尽力而为接口：不支持余额查询时返回 null，只有明确凭据失效才报过期。 */
   async #quotaOpenaiPlatform(cred) {
     try {
       cred = cred || this.#piCredential("openai");
-      if (!cred?.key) return null;
+      if (!cred?.key) throw quotaAuthError('OpenAI 未配置 API Key');
       const r = await this.#proxiedFetch("https://api.openai.com/v1/dashboard/billing/credit_grants", {
         headers: { Authorization: `Bearer ${cred.key}` },
         signal: AbortSignal.timeout(10000),
       });
-      if (!r.ok) return null;
       const j = await r.json().catch(() => null);
+      if (!r.ok) {
+        // This legacy billing endpoint may require a browser session instead
+        // of an API key. Its generic 401 is not evidence that the key expired.
+        const failure = quotaResponseError(r, j, 'credits');
+        if (quotaAuthExpired({ status: r.status === 401 ? undefined : r.status, details: failure.details })) {
+          throw quotaAuthError('OpenAI 登录凭据已失效');
+        }
+        return null;
+      }
       const v = Number(j?.total_available);
       if (!Number.isFinite(v)) return null;
       return { kind: "balance", label: "赠金", value: Math.max(0, v), currency: "USD" };
-    } catch { return null; }
+    } catch (error) { if (quotaAuthExpired(error)) throw error; return null; }
   }
 
   async #quotaMinimax(provider, cred) {
     try {
       cred = cred || this.#piCredential(provider);
-      if (!cred?.key) return null;
+      if (!cred?.key) throw quotaAuthError('MiniMax 未配置 API Key');
       const base = provider === "minimax-cn" ? "https://api.minimaxi.com" : "https://api.minimax.io";
       const r = await fetch(`${base}/v1/get_balance?key=${encodeURIComponent(cred.key)}`, { signal: AbortSignal.timeout(8000) });
-      if (!r.ok) return null;
       const j = await r.json().catch(() => null);
+      if (!r.ok) throw quotaResponseError(r, j, 'balance');
       if (j?.base_resp?.status_code !== 0) return null;
       const v = Number(j?.balance);
       if (!Number.isFinite(v)) return null;
       return { kind: "balance", label: "余额", value: Math.max(0, v), currency: j?.currency || (provider === "minimax-cn" ? "CNY" : "USD") };
-    } catch { return null; }
+    } catch (error) { if (quotaAuthExpired(error)) throw error; return null; }
   }
 
   /** 按指定凭据拉取额度（cred 缺省 = auth.json 当前凭据） */
@@ -1834,17 +1874,31 @@ async _doStart() {
     const kind = this.#quotaKindFor(provider);
     if (kind === "context") return { kind: "context" };
     const hit = this.#quotaCache.get(provider);
-    if (!force && hit && Date.now() - hit.ts < 15_000) return hit.data;
+    let credential;
+    // Establish identity before a refresh can fail, so an external account
+    // change cannot reuse another account's healthy (or expired) cache.
+    try { if (provider !== 'autoclaw') credential = this.#piCredential(provider); } catch {}
+    let previous = hit?.fingerprint === HaloAuthVault.fingerprint(credential) ? hit?.data : null;
     try {
-      const data = await this.#quotaFetch(provider);
+      credential = await this.#quotaCredential(provider);
+      if (hit?.fingerprint !== HaloAuthVault.fingerprint(credential)) previous = null;
+      if (!force && previous && Date.now() - hit.ts < 15_000) return previous;
+      const data = await this.#quotaFetch(provider, credential);
       if (data) {
-        this.#quotaCache.set(provider, { ts: Date.now(), data });
+        this.#cacheLiveQuota(provider, credential, data);
         return data;
       }
       // 尽力而为接口无数据：按「无额度信息」处理
       return { kind: "context" };
-    } catch {}
-    return hit?.data || { kind, error: true };
+    } catch (error) {
+      const data = quotaFailure(error, kind, previous);
+      // Never hide confirmed invalid credentials behind an old successful quota.
+      if (data.authExpired) {
+        if (!credential) { try { credential = this.#piCredential(provider); } catch {} }
+        this.#cacheLiveQuota(provider, credential, data);
+      }
+      return data;
+    }
   }
 
   /** 打开会话：池中已有则仅切换焦点（任务后台继续），否则创建独立 runtime */

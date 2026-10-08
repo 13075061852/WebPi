@@ -23,6 +23,15 @@ const mock=http.createServer(async(req,res)=>{
   const body=JSON.parse(raw);calls.push(body);
   const done=body.messages.filter(m=>m.role==='tool').length;
   if(done===0)await new Promise(resolve=>setTimeout(resolve,1600));
+  if(done===2) {
+    const deadline=Date.now()+15000;
+    while(!fs.existsSync(path.join(workspace,'port.txt'))&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,100));
+    if(!fs.existsSync(path.join(workspace,'port.txt'))) {
+      res.writeHead(500,{'content-type':'application/json'});
+      res.end(JSON.stringify({error:{message:'Fixture service failed to publish its port: '+JSON.stringify(body.messages.filter(m=>m.role==='tool'))}}));
+      return;
+    }
+  }
   const action=done===0?{name:'project_service_start',arguments:JSON.stringify({command:"& '"+process.execPath.replaceAll("'","''")+"' './dev-server.cjs'",label:'Fixture frontend'})}
     :done===1?{name:'project_service_status',arguments:'{}'}
     :done===2?{name:'project_preview_ready',arguments:JSON.stringify({url:'http://127.0.0.1:'+fs.readFileSync(path.join(workspace,'port.txt'),'utf8')+'/base/'})}:null;
@@ -89,7 +98,12 @@ try {
   const progressShot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(fixture,'project-starting.png'),Buffer.from(progressShot.result.data,'base64'));
   const getRun=()=>evaluate('window.halo.projectRunList().then(r=>r.data.at(-1))');
   const ready=await waitFor(async()=>{const run=await getRun();if(run?.status==='error')throw Error(JSON.stringify(run));return run?.status==='running'?run:null;},'Background AI failed to start project',60000);
-  await waitFor(()=>evaluate('!!document.querySelector("#pvBody webview")'),'Automatic preview missing');
+  await waitFor(()=>evaluate('document.querySelector(".project-start").dataset.state === "running"'),'Run status did not update');
+  assert.equal(await evaluate('document.body.classList.contains("preview-collapsed")'),true,'Background readiness must keep preview collapsed');
+  assert.equal(await evaluate('!!document.querySelector("#pvBody webview")'),false,'Background readiness must not mount a preview');
+  await evaluate('document.querySelector(".project-start").click()');
+  await waitFor(()=>evaluate('!!document.querySelector("#pvBody webview")'),'Explicit running button preview missing');
+  await waitFor(()=>evaluate('!document.body.classList.contains("preview-collapsed")'),'Explicit running button did not expand preview');
   await waitFor(async()=>await evaluate('document.querySelector("#pvBody webview").getURL()')===ready.urls[0],'Preview did not navigate');
   const guestURL=await evaluate('document.querySelector("#pvBody webview").getURL()');
   assert.equal(guestURL,ready.urls[0]);
@@ -125,7 +139,7 @@ try {
   const third=await launchAgain();
   await evaluate('setTimeout(()=>window.halo.close(),30);true');await waitFor(()=>exitCode!==undefined,'App did not close');
   await waitStopped(third.urls[0]);
-  console.log(JSON.stringify({ok:true,fixture,calls:calls.length,checks:['independent real SDK agent','managed service','automatic webview','foreground history preserved','survives AI completion and session switch','port button','owner deletion cleanup','project removal cleanup','app close cleanup']}));
+  console.log(JSON.stringify({ok:true,fixture,calls:calls.length,checks:['independent real SDK agent','managed service','background readiness stays collapsed','explicit running button webview','foreground history preserved','survives AI completion and session switch','port button','owner deletion cleanup','project removal cleanup','app close cleanup']}));
 } finally {
   if(ws?.readyState===1 && exitCode===undefined){ws.send(JSON.stringify({id:++sequence,method:'Runtime.evaluate',params:{expression:'window.halo.close()'}}));await new Promise(resolve=>setTimeout(resolve,1500));}
   fs.writeFileSync(path.join(fixture, 'process.log'), output);

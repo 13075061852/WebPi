@@ -20,6 +20,7 @@ const record = (text) => {
 };
 try {
   await bridge.start(a);
+  assert.equal(bridge.publicState().serverId, null, 'Local workspace is distinguishable from server workspaces');
   const fileA = record('A');
   const message = { role: 'assistant', content: [{ type: 'text', text: 'done' }],
     usage: { input: 100, output: 20, cacheRead: 10, cacheWrite: 5, cost: { total: 0.1 } } };
@@ -75,8 +76,10 @@ try {
   await bridge.openSession(localB);
 
   await bridge.newSession('server-a');
+  assert.equal(bridge.publicState().serverId, 'server-a');
   const firstServer = record('server A older'), firstId = bridge.session.sessionId;
   await bridge.newSession('server-b');
+  assert.equal(bridge.publicState().serverId, 'server-b');
   const otherServer = record('server B'), otherId = bridge.session.sessionId;
   await bridge.newSession('server-a');
   const currentServer = record('server A newest'), currentId = bridge.session.sessionId;
@@ -86,6 +89,7 @@ try {
   assert.equal(bridge.serverTargets.has(currentId), false);
   await bridge.deleteSession(firstServer);
   assert.equal(bridge.session.sessionFile, localB, 'The last server session returns to the selected local project');
+  assert.equal(bridge.publicState().serverId, null);
   assert.equal(PiBridge.normPath(bridge.session.sessionManager.getCwd()), PiBridge.normPath(b));
   assert.equal(PiBridge.normPath(bridge.cwd), PiBridge.normPath(b));
   assert.equal(bridge.serverTargets.has(firstId), false);

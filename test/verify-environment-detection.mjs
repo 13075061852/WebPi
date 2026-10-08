@@ -4,14 +4,16 @@ import { detectEnvironment, refreshProcessPath } from '../src/main/environment-d
 const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 const windowsKey = (value) => value.replace(/\//g, '\\').toLowerCase();
 
-function windowsFixture({ env = {}, files = {}, persisted = {} } = {}) {
+function windowsFixture({ env = {}, files = {}, directories = {}, persisted = {} } = {}) {
   const runs = [];
   const executables = new Map(Object.entries(files).map(([file, result]) => [windowsKey(file), result]));
+  const installedDirectories = new Map(Object.entries(directories).map(([file, entries]) => [windowsKey(file), entries]));
   executables.set(windowsKey(powershell), { code: 0, stdout: JSON.stringify(persisted) });
   const options = {
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows', LOCALAPPDATA: 'C:\\Users\\Test\\AppData\\Local', Path: '', ...env },
-    exists: (file) => executables.has(windowsKey(file)),
+    exists: (file) => executables.has(windowsKey(file)) || installedDirectories.has(windowsKey(file)),
+    directories: (file) => installedDirectories.get(windowsKey(file)) || [],
     run: async (file, args, commandOptions) => {
       runs.push({ file, args, env: commandOptions.env });
       const result = executables.get(windowsKey(file));
@@ -21,6 +23,90 @@ function windowsFixture({ env = {}, files = {}, persisted = {} } = {}) {
     },
   };
   return { options, runs };
+}
+
+// WinGet can be present even when a customized PATH omits WindowsApps.
+{
+  const wingetPath = 'C:\\Users\\Test\\AppData\\Local\\Microsoft\\WindowsApps\\winget.exe';
+  const fixture = windowsFixture({ env: { Path: 'C:\\Windows' }, files: { [wingetPath]: { code: 0, stdout: 'v1.12.470' } } });
+  const original = { ...fixture.options.env };
+  const result = await detectEnvironment(fixture.options);
+  assert.equal(result.installer.available, true);
+  assert.equal(result.installer.path, wingetPath);
+  assert.deepEqual(fixture.options.env, original, 'Discovery must not repair PATH without the explicit configure action');
+}
+
+// Conventional installations outside PATH are repairable, but must not appear ready.
+{
+  const pythonRoot = 'C:\\Users\\Test\\AppData\\Local\\Programs\\Python';
+  const pythonPath = `${pythonRoot}\\Python313\\python.exe`;
+  const nodePath = 'C:\\Program Files\\nodejs\\node.exe';
+  const gitPath = 'C:\\Program Files\\Git\\cmd\\git.exe';
+  const fixture = windowsFixture({
+    env: { Path: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' },
+    directories: { [pythonRoot]: ['Python313', 'unrelated'], [`${pythonRoot}\\Python313\\Scripts`]: [] },
+    files: {
+      [pythonPath]: { code: 0, stdout: JSON.stringify({ version: '3.13.5', path: pythonPath }) },
+      [nodePath]: { code: 0, stdout: 'v24.20.0' },
+      [gitPath]: { code: 0, stdout: 'git version 2.55.0.windows.1' },
+    },
+  });
+  const result = await detectEnvironment(fixture.options);
+  assert.deepEqual(result.tools.map((tool) => [tool.installed, tool.problem]), [[false, 'path'], [false, 'path'], [false, 'path']]);
+  assert.deepEqual(result.tools[0].repairPaths, [`${pythonRoot}\\Python313`, `${pythonRoot}\\Python313\\Scripts`]);
+  assert.deepEqual(result.tools.map((tool) => tool.path), [pythonPath, nodePath, gitPath]);
+  // Simulate the explicit install flow applying the verified user PATH entries.
+  fixture.options.env.Path += ';' + result.tools.flatMap((tool) => tool.repairPaths).join(';');
+  assert.ok((await detectEnvironment(fixture.options)).tools.every((tool) => tool.installed));
+}
+
+// Portable Node installed by Halo is rediscovered after PATH loss; unknown folders are not executed.
+{
+  const local = 'D:\\Users\\环境 测试\\AppData\\Local';
+  const root = `${local}\\Pi Halo\\environment`;
+  const nodePath = `${root}\\node-v24.20.0-win-arm64\\node.exe`;
+  const fixture = windowsFixture({
+    env: { LOCALAPPDATA: local },
+    directories: { [root]: ['node-v24.20.0-win-arm64', 'unrelated', '..\\escape'] },
+    files: { [nodePath]: { code: 0, stdout: 'v24.20.0' } },
+  });
+  const result = await detectEnvironment(fixture.options);
+  assert.equal(result.tools[1].problem, 'path');
+  assert.equal(result.tools[1].path, nodePath);
+  assert.deepEqual(result.tools[1].repairPaths, [`${root}\\node-v24.20.0-win-arm64`]);
+}
+
+// Store runtime discovery uses its package-specific alias, never the global Store placeholder.
+{
+  const aliases = 'C:\\Users\\Test\\AppData\\Local\\Microsoft\\WindowsApps';
+  const packageName = 'PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0';
+  const pythonPath = `${aliases}\\${packageName}\\python.exe`;
+  const fixture = windowsFixture({
+    env: { Path: aliases }, directories: { [aliases]: [packageName, 'not-python'] },
+    files: {
+      [`${aliases}\\python.exe`]: () => assert.fail('Store acquisition placeholder was executed'),
+      [pythonPath]: { code: 0, stdout: JSON.stringify({ version: '3.13.5', path: pythonPath }) },
+    },
+  });
+  const tool = (await detectEnvironment(fixture.options)).tools[0];
+  assert.equal(tool.problem, 'path');
+  assert.equal(tool.path, pythonPath);
+}
+
+// A read-only Python check must disable both modern and legacy launcher auto-install.
+{
+  const pyPath = 'C:\\Users\\Test\\AppData\\Local\\Microsoft\\WindowsApps\\py.exe';
+  const fixture = windowsFixture({
+    env: { Path: 'C:\\Users\\Test\\AppData\\Local\\Microsoft\\WindowsApps', PYTHON_MANAGER_AUTOMATIC_INSTALL: '1', python_manager_automatic_install: 'true', PYLAUNCHER_ALLOW_INSTALL: '1', pylauncher_always_install: '1' },
+    files: { [pyPath]: { code: 1, stdout: 'No installed runtime' } },
+  });
+  const original = { ...fixture.options.env };
+  await detectEnvironment(fixture.options);
+  const probe = fixture.runs.find((run) => run.file === pyPath);
+  assert.equal(probe.env.PYTHON_MANAGER_AUTOMATIC_INSTALL, 'false');
+  assert.ok(!Object.keys(probe.env).some((key) => /^pylauncher_(?:allow|always)_install$/i.test(key)));
+  assert.equal(Object.keys(probe.env).filter((key) => /^python_manager_automatic_install$/i.test(key)).length, 1);
+  assert.deepEqual(fixture.options.env, original);
 }
 
 // Persisted PATH is picked up even if this Electron process was started before installation.

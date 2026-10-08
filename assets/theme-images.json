@@ -1,0 +1,302 @@
+{
+  "themes/collection/scene-alpine-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAehqxcnDRQ16Lu4bbqAD7Oi8d4SGSQAClBNrGzJ1KFZQ4ptPGgABK9UBAAMCAAN4AAM9BA.webp",
+    "sha256": "e4a020650a9146eea4421b20a460f2ec553f4880ad7fef80eaffcb004f4211d7",
+    "bytes": 32178
+  },
+  "themes/collection/scene-alpine.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAelqxcnHXLUDcBCc1kT609S1bIgy2AAClRNrGzJ1KFZMqZJb6IzkwgEAAwIAA3cAAz0E.webp",
+    "sha256": "d5e2ad574f5fa510dac265304fb959f76dbed6727fd24865070366d15e331df2",
+    "bytes": 317032
+  },
+  "themes/collection/scene-autumn-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAepqxcnKMKOrQXL-Gv_b1iD-Lff_WwAClhNrGzJ1KFa6B7fqXJXlYAEAAwIAA3gAAz0E.webp",
+    "sha256": "110c843ddbb5f32eba98e74b58701035c5d3e9fbbd16d3b6aac531826147f7c7",
+    "bytes": 55344
+  },
+  "themes/collection/scene-autumn.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAetqxcnOlMWG9HWfK8QdkhsMwqVN5AAClxNrGzJ1KFbL3HeA_7agXgEAAwIAA3cAAz0E.webp",
+    "sha256": "09050c46d2d053cba09132b6ac9a6af23c4b5ce6aa40015854d1743ecd5464c1",
+    "bytes": 592980
+  },
+  "themes/collection/scene-bamboo-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAexqxcnRuyNz9Y1Lcria5EF95YhwWgACmBNrGzJ1KFb651ZrIHIn_QEAAwIAA3gAAz0E.webp",
+    "sha256": "18e2a2797ed66fccc02a60eb96c17531380951f6032ecb1b97bff8ed086da6b2",
+    "bytes": 39310
+  },
+  "themes/collection/scene-bamboo.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAe1qxcnVAkRw-1Zn1cEnyq7mWDFSSwACmRNrGzJ1KFbbZsoVwJp32AEAAwIAA3cAAz0E.webp",
+    "sha256": "c5293796a91327c6713bf58374710208e04c851889af443160d1ef99f9560e50",
+    "bytes": 391338
+  },
+  "themes/collection/scene-canyon-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAe5qxcnXw4Zeaac-sbhr0aL5goPlAgACmhNrGzJ1KFZyYhWI3uC4zgEAAwIAA3gAAz0E.webp",
+    "sha256": "fee1d9004e006d4992e049f3601f406b32a09fbca2431aa837ec2c362ae8cf0f",
+    "bytes": 35286
+  },
+  "themes/collection/scene-canyon.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAe9qxcnaFc8P81RluCNgdgvLHN1BxwACmxNrGzJ1KFariTPcNLt3oAEAAwIAA3cAAz0E.webp",
+    "sha256": "1ef04ba9bae840a9f538bc272c69f4dd2b039bc8fe077cebb4b98abb4e72fcdd",
+    "bytes": 394510
+  },
+  "themes/collection/scene-coast-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfBqxcncNxF8BZlgO_ief8eI9K7rBwACnBNrGzJ1KFaPNAxVrXUcggEAAwIAA3gAAz0E.webp",
+    "sha256": "9740d54650ca86eda3b9841a56f1dfb0fac900d6074ff65cadb24a5cb598a5c8",
+    "bytes": 28368
+  },
+  "themes/collection/scene-coast.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfFqxcngsZGa3CQOs9neXPKsLNFDAAOdE2sbMnUoVtqE5PSeZhJrAQADAgADdwADPQQ.webp",
+    "sha256": "a505db62ac667558e8f78627ab36d02bef822dca4de337a45361f898f87a93f0",
+    "bytes": 270588
+  },
+  "themes/collection/scene-comet-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfJqxcniLO_IeWl9YaFhVVoKXJEHmwACnhNrGzJ1KFaJ7qrF_wU7aAEAAwIAA3gAAz0E.webp",
+    "sha256": "cba6284b90000dc1f793c160bccf9482557e3fb95c328952478966ba8e162c0f",
+    "bytes": 34524
+  },
+  "themes/collection/scene-comet.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfNqxcnlWCWxuZt0da9DkhiJxQkfKAACnxNrGzJ1KFaIeoLvfSj8BgEAAwIAA3cAAz0E.webp",
+    "sha256": "d385226c866e010f70d8b215f261dc30e90312afa681d22956bcc57aa29bdff8",
+    "bytes": 425048
+  },
+  "themes/collection/scene-eclipse-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfRqxcno310tqRTqoM2NHXo08wABii0AAqATaxsydShWve7gFdTNMEgBAAMCAAN4AAM9BA.webp",
+    "sha256": "575b005e0b033bce01f41da3058c6dc001365cb829da678eb02e197c3bfae14a",
+    "bytes": 7860
+  },
+  "themes/collection/scene-eclipse.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfVqxcnqU6lbF6jMYAJnJrslZ-daAwACoRNrGzJ1KFYCXOwob2HhUgEAAwIAA3cAAz0E.webp",
+    "sha256": "dedadcb08687f73e7bced379062f1ffc3abf3c651861bf7e8dc246a6412cced6",
+    "bytes": 83390
+  },
+  "themes/collection/scene-forest-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfZqxcntASsi2UXYlmqx4h4pXfzzwgACohNrGzJ1KFZLB8Bc_6xDjAEAAwIAA3gAAz0E.webp",
+    "sha256": "418637ca91d06dfa3bba0924ac40fa924c05b7f04da6f2808a28f4ee778d34d5",
+    "bytes": 45920
+  },
+  "themes/collection/scene-forest.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfdqxcnw13ARQY0zYvphWTepKdd0SwACoxNrGzJ1KFZtHO7JOR6MggEAAwIAA3cAAz0E.webp",
+    "sha256": "52ae4e50b7eaab690b90dcc72646929384a1cc742c87543c628981694952bfff",
+    "bytes": 484878
+  },
+  "themes/collection/scene-harbor-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfhqxcnzjGmteshFcLr2uKgAATT9i1UAAqQTaxsydShWOASdvN6mvjkBAAMCAAN4AAM9BA.webp",
+    "sha256": "233e2985d11d3d6fec95c71183ea209015eb917bb245fbb02da3ff722560b544",
+    "bytes": 27304
+  },
+  "themes/collection/scene-harbor.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAflqxcn2_3jJjscwbze6FQz17o6DHgACpRNrGzJ1KFa48ljwT4DFVwEAAwIAA3cAAz0E.webp",
+    "sha256": "e269eed61dc7b3164518e3418c7850a8a3c8ef0ff10f759b76d7db39375c5a2d",
+    "bytes": 271622
+  },
+  "themes/collection/scene-ink-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfpqxcn4v1oBqKEHpF9qRBfVcvReFwACphNrGzJ1KFbxkcmcTxr23QEAAwIAA3gAAz0E.webp",
+    "sha256": "e8b92fc4f85b777b1b92899769655c0c2c10fc414a2c33c0aa13c93a0bb3b0c0",
+    "bytes": 27186
+  },
+  "themes/collection/scene-ink.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAftqxcn8J_YH-aPamuLNBWLuk0S9SQACpxNrGzJ1KFZQFM_OSPIgtQEAAwIAA3cAAz0E.webp",
+    "sha256": "6f4b68fc07792ec18be94f349709b7ad1c7f061af0badfd38a774f3be717cbd9",
+    "bytes": 299444
+  },
+  "themes/collection/scene-island-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAfxqxcn-SwJy-hxyKtEYq4T3u-jExgACqBNrGzJ1KFbJiOSZO7eEVwEAAwIAA3gAAz0E.webp",
+    "sha256": "d461697ebdf99c4988fde5851468c80b73c3781b7ae2c313ae0db5eddb529a51",
+    "bytes": 38106
+  },
+  "themes/collection/scene-island.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAf1qxcoB3siCVBu9ZyekljLcCM4DAAOpE2sbMnUoVovaTrSeyLQDAQADAgADdwADPQQ.webp",
+    "sha256": "e2391c3cbe86e2d151477fb1fb1dbe8fdef948c934a6a59ca8bf4596bc1e1b3a",
+    "bytes": 439014
+  },
+  "themes/collection/scene-lagoon-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAf5qxcoFwiOXUYz2i-Ct8yubGDZ1SwACqhNrGzJ1KFaRBU6c6bR1WAEAAwIAA3gAAz0E.webp",
+    "sha256": "6db9772418e4cb3befb3974fa7137b27050cdbfe34a9add73c5158b810d06295",
+    "bytes": 39948
+  },
+  "themes/collection/scene-lagoon.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAf9qxcoIM0kDirLiMLbv_qQUmumFmwACqxNrGzJ1KFZtUtU0_9jmLAEAAwIAA3cAAz0E.webp",
+    "sha256": "b0cc9c9380f955f87c12415b9f898d9baab2440c35b6b6227728fb3ce98d19bf",
+    "bytes": 400212
+  },
+  "themes/collection/scene-lake-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgABasXKC4zhKH3-gBZU99AalfC9LDIAAqwTaxsydShWG-SrTdwb_XgBAAMCAAN4AAM9BA.webp",
+    "sha256": "a7a2b40dec221ce64c53600e2f75e2b27d9328bb579704dc6cbc5d56af9eb810",
+    "bytes": 24126
+  },
+  "themes/collection/scene-lake.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgFqxcoRbKJWMq8_AAE2BMXmstV-gm0AAq0TaxsydShWxao16BzAxaUBAAMCAAN3AAM9BA.webp",
+    "sha256": "b7963322e193dcbfc73bb50b29c0face1b9c315c8139c6c88a3734b0cbce529e",
+    "bytes": 198912
+  },
+  "themes/collection/scene-lotus-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgJqxcoTixbgbMGDbMuAeNeFyFJ8HAACrhNrGzJ1KFaPfLLhtVEOxwEAAwIAA3gAAz0E.webp",
+    "sha256": "0b5253f6efd2bee8dfa041460922711d1667ee0f857ec6cfd098865a6b443a4f",
+    "bytes": 32172
+  },
+  "themes/collection/scene-lotus.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgNqxcoYJctA-OnR054ZxaV67HvUPwACrxNrGzJ1KFZujpXk97HdxAEAAwIAA3cAAz0E.webp",
+    "sha256": "1d301fc119787647a0e98fba911b3238df2ad4b6ae794a71f777e77d9ecac706",
+    "bytes": 363270
+  },
+  "themes/collection/scene-lunar-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgRqxcoawWHzm0KWOk31MC4b9V4MEwACsBNrGzJ1KFYAAbjEsff1cZUBAAMCAAN4AAM9BA.webp",
+    "sha256": "535b5c76cdec6b3023805fe0b24b65841ba8f82c3125ba2bf040a6a22353e0d3",
+    "bytes": 36394
+  },
+  "themes/collection/scene-lunar.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgVqxcodnc7DoXpnv8nxqL902OiQSwACsRNrGzJ1KFbypWFcMbt6_QEAAwIAA3cAAz0E.webp",
+    "sha256": "a8859a8a2209a5240b47ed2cd4733510440ee50df0b4a0cbb83812a368ce1e55",
+    "bytes": 398722
+  },
+  "themes/collection/scene-meadow-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgZqxcogFHE_k_pQVWaKB05GIKzsfwACshNrGzJ1KFbCWQ1lUpPE4QEAAwIAA3gAAz0E.webp",
+    "sha256": "3ec30a914b3b7d3e44b205661b4a8414ab398735c0161ce4bf5fda59cf269d5a",
+    "bytes": 43710
+  },
+  "themes/collection/scene-meadow.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgdqxcojiMZ6PI2B1rIYkcK-QUpVBwACsxNrGzJ1KFYpDh8yEp4skwEAAwIAA3cAAz0E.webp",
+    "sha256": "990c079315a3ddfd722a0fa8032a2de2f80ade3aa1bd80f6b2e8c09c8b96822d",
+    "bytes": 441496
+  },
+  "themes/collection/scene-metro-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAghqxcom4aa9hDqhL4CRPfz2QFttGwACtBNrGzJ1KFYvWTjznsnjZwEAAwIAA3gAAz0E.webp",
+    "sha256": "4b4931a531c2adae5a1598fa0f576933226fc19da1a7e1c4cd278fa46fd2abda",
+    "bytes": 44024
+  },
+  "themes/collection/scene-metro.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAglqxcoqD7R6BnvrcMW-ZjItUeVWeAACtRNrGzJ1KFbxudmuD4-IWgEAAwIAA3cAAz0E.webp",
+    "sha256": "fd22ba02236ab87824fc06e5da316064cc60a841138c1dd06243fbf77f861835",
+    "bytes": 495662
+  },
+  "themes/collection/scene-midnight-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgpqxcosEn151SHrauRUCrra4WnJhgACthNrGzJ1KFay2IFFKM2wgAEAAwIAA3gAAz0E.webp",
+    "sha256": "cda932971bf5921cb6515925ff5c525729b6b9073243acdf2cbc20d9cbd8dc49",
+    "bytes": 36968
+  },
+  "themes/collection/scene-midnight.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgtqxcov-Pi1SyOXtcpihmPRHjjQHAACtxNrGzJ1KFbIQpOR5SN_RwEAAwIAA3cAAz0E.webp",
+    "sha256": "7035b38c062015476c73b82957f7bcf5d52bed0699e0a966242d9d9e33b153fb",
+    "bytes": 372730
+  },
+  "themes/collection/scene-moon-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAgxqxcoxZKEaMQexKa4MdPZMIeiNgwACuBNrGzJ1KFYbY4guUzehKQEAAwIAA3gAAz0E.webp",
+    "sha256": "7aa90cded35485f7c9ac503cf3d956f8033367dd6929e2564b830c90c7016b44",
+    "bytes": 34176
+  },
+  "themes/collection/scene-moon.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAg1qxco1uX0WdWX67bZ5dDm0Oj023AACuRNrGzJ1KFbnK38VwaAZ4gEAAwIAA3cAAz0E.webp",
+    "sha256": "d6a94e479ff6a2f09b2667bfdb0e0df7c2f8a7b20880a1d9f17c4dd6e41f61b4",
+    "bytes": 392754
+  },
+  "themes/collection/scene-nebularose-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAg5qxco3gXtVDheXY76fd0aD9NwcfAACuhNrGzJ1KFapPYzcRwABIoUBAAMCAAN4AAM9BA.webp",
+    "sha256": "f848611741759d549877bb83296c4b73aac665f6ec86bc72437c2952c0cf5f52",
+    "bytes": 31868
+  },
+  "themes/collection/scene-nebularose.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAg9qxco6maLbj7hl5CTieO66I0Tn4wACuxNrGzJ1KFYcGrqHJgiKYwEAAwIAA3cAAz0E.webp",
+    "sha256": "371a13e1fd9e7341884b714e18d9fa2fe8a9077b662b85b871eb8b61d9bcf094",
+    "bytes": 332810
+  },
+  "themes/collection/scene-orbit-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhBqxco8PZJFzi5CXOFGa1-SxUcFxgACvBNrGzJ1KFa3Ojq7Zixh3QEAAwIAA3gAAz0E.webp",
+    "sha256": "677c4db47660e0286aad7e7fdd64df34971f7bb67238716b117f37418a6d1c70",
+    "bytes": 28104
+  },
+  "themes/collection/scene-orbit.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhFqxcpAG9U4zSdS6l2YDPYCLf9Y-wACvRNrGzJ1KFbhK4HtTD6J5AEAAwIAA3cAAz0E.webp",
+    "sha256": "51644c6ac22ebb9286623f608ee7b939d54501db859a2ff3b765520b03219b60",
+    "bytes": 330376
+  },
+  "themes/collection/scene-pine-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhJqxcpDGAw4eL0rkFVZ0bqTx7Ag2gACvhNrGzJ1KFahqvp4q33xeQEAAwIAA3gAAz0E.webp",
+    "sha256": "e47a910152c0b00fa9691fe55009da8d13dedb051ddc2683fc0bdbf9eff7af39",
+    "bytes": 41878
+  },
+  "themes/collection/scene-pine.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhNqxcpGINd5aGlww30tOX27dtOnHQACvxNrGzJ1KFZsiG6MYy45DgEAAwIAA3cAAz0E.webp",
+    "sha256": "ea156b0dafd102f1b3f584f57050a997444f6f5137c9e5c6142ef1dadbcf8564",
+    "bytes": 436372
+  },
+  "themes/collection/scene-plum-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhRqxcpIJR4uEgqnEPKahlAlVlfgGQACwBNrGzJ1KFanU9VFMyBgjwEAAwIAA3gAAz0E.webp",
+    "sha256": "8c093ed09315cea1e308b06f29a4ea7b829cddce2d87031f4eb0440e68f8d4d7",
+    "bytes": 34812
+  },
+  "themes/collection/scene-plum.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhVqxcpPAW5rjdSWG6qaOJ_RCnaK7AACwRNrGzJ1KFboRl5RZOiSQwEAAwIAA3cAAz0E.webp",
+    "sha256": "e90418e29f2ebf8475f37c919b5d849d43b44dc6ef1ddef6bd3671de7fc3c3dc",
+    "bytes": 323184
+  },
+  "themes/collection/scene-polar-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhZqxcpRX9epGHcgAeNn4fgKmvOeDAACwhNrGzJ1KFYtwpwVjyxQIwEAAwIAA3gAAz0E.webp",
+    "sha256": "926b19cb16701966910d62dcc277849de7a80ad4130c4a2d092e9d0564c62c99",
+    "bytes": 20494
+  },
+  "themes/collection/scene-polar.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhdqxcpU5hwrR2kN3im6MBTlTG4xmAACwxNrGzJ1KFaXH1gmn257LwEAAwIAA3cAAz0E.webp",
+    "sha256": "54b6977415b4f2c276f2566eb94ac1368f3ae5aed3a3389553ff7895e5673467",
+    "bytes": 186106
+  },
+  "themes/collection/scene-raincity-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhhqxcpXU--jSarToXxu1GeaOCP8YQACxBNrGzJ1KFZUuvkLD8XuXAEAAwIAA3gAAz0E.webp",
+    "sha256": "e6656870cfd4af29ff4f5ff9b8c60703b947eac40f917e2c0036c0fb8a929f9b",
+    "bytes": 40536
+  },
+  "themes/collection/scene-raincity.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhlqxcpae9LAYOpNoJUIzdzdfZV9kwACxRNrGzJ1KFZM2-H9lp4CDQEAAwIAA3cAAz0E.webp",
+    "sha256": "9cee790fb56e536556a347d164e16679768d185fe1e6ffb788abce89fdff8b04",
+    "bytes": 420202
+  },
+  "themes/collection/scene-rooftop-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhpqxcpdNUvsM6k_8SYAAQjpLkARTJcAAsYTaxsydShWou9qHltmj6QBAAMCAAN4AAM9BA.webp",
+    "sha256": "a00ecf43cc18553ee0e62d99829399125d94b2e6e8bee30fcd3c640e89311dfe",
+    "bytes": 31216
+  },
+  "themes/collection/scene-rooftop.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhtqxcpgUlq7aihqvvWqEHtHEhaAAQACxxNrGzJ1KFYPS7NU9LibDgEAAwIAA3cAAz0E.webp",
+    "sha256": "f909491dd194abeeda958088deb343d2f7aaee9aa9935ab048acbd01d5fd4f94",
+    "bytes": 338964
+  },
+  "themes/collection/scene-sands-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAhxqxcpiUxcQ-6l7SqpGVPi1by607wACyBNrGzJ1KFYAAfAMj2cPQb4BAAMCAAN4AAM9BA.webp",
+    "sha256": "58bee7c81194a0868ad771d59d498e734d0ad0aca2eb72dd99d04ae56586098e",
+    "bytes": 36000
+  },
+  "themes/collection/scene-sands.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAh1qxcplU6LcSd8nhMoucSNYPMLRGAACyRNrGzJ1KFZBpwWxfVXZqQEAAwIAA3cAAz0E.webp",
+    "sha256": "5cbc73c2a2644de287a529667d514de6f5e7e672b4a606a6c6e6d1c72ef1d53a",
+    "bytes": 396070
+  },
+  "themes/collection/scene-skyline-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAh5qxcpnudHKNTMpaTs8uGlZ-tnxhwACyhNrGzJ1KFZt0QoAAZmZP3YBAAMCAAN4AAM9BA.webp",
+    "sha256": "36a4b78b33c37ea0baf696d8137a007b7c2e3d5d5092aebb555d795c988de220",
+    "bytes": 24032
+  },
+  "themes/collection/scene-skyline.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAh9qxcprzCFFr8ejVZIcstKID0dSDQACyxNrGzJ1KFYIlBf_CfSbFwEAAwIAA3cAAz0E.webp",
+    "sha256": "2859857e73b74df3939bae520df2537c2d108ac6b9fea382a6e049e2d35ce57c",
+    "bytes": 213300
+  },
+  "themes/collection/scene-stardust-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAiBqxcptca4nQLjULZDEPld5vZ7magACzBNrGzJ1KFabc8z06kW8CAEAAwIAA3gAAz0E.webp",
+    "sha256": "5a8cd62a10fbb0cfa4b9e9ee7d3e97c9c7370613fa98bffef69fbe410f2a8bea",
+    "bytes": 36478
+  },
+  "themes/collection/scene-stardust.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAiFqxcpx6gy2tzvYkCsfcwz7qLVy2wACzRNrGzJ1KFbMVaO8XzOaOgEAAwIAA3cAAz0E.webp",
+    "sha256": "1926af227dc6684f05b28aa38beac9a8f246ca859cf0ac8437056cb6bced970c",
+    "bytes": 390556
+  },
+  "themes/collection/scene-tide-thumb.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAiJqxcpziWyE0Tnb0AlBPyyyk_IQaAACzhNrGzJ1KFZd5DfJVFsSMgEAAwIAA3gAAz0E.webp",
+    "sha256": "a3ad6495effdd19bf45002feea4eb228bce47c4b7a5ef83924fc4fe7d8b2cdf7",
+    "bytes": 23894
+  },
+  "themes/collection/scene-tide.webp": {
+    "url": "https://telegraph-image-alx.pages.dev/file/AgACAgUAAyEGAAMBBgy2CgACAiNqxcp2ZfdZWJl1K0Y9U3E-2QgiRwACzxNrGzJ1KFY2WYrM7u99PgEAAwIAA3cAAz0E.webp",
+    "sha256": "f6421f453d4daf90bd1fb0c6308beedb96c880ecccf2a9fb09e7f6429a410ec5",
+    "bytes": 216230
+  }
+}

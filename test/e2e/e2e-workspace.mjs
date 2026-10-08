@@ -1,6 +1,6 @@
 /**
  * Workspace/Preview E2E: drives a REAL prompt asking the agent to create an
- * HTML page, then verifies auto-preview switch, file tree, session activity.
+ * HTML page, then verifies explicit preview opening, file tree, session activity.
  */
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -87,15 +87,25 @@ for (let i = 0; i < 90; i++) {
 }
 await sleep(2500);
 
-// verify: preview auto-switched, tree loaded, changed markers present
+// Generation refreshes the tree without opening the preview. A file click is
+// the explicit preview action, even when the generated file is HTML.
+const backgroundPreview = await evalJS(`({collapsed:document.body.classList.contains('preview-collapsed'),iframe:!!document.querySelector('#pvBody iframe')})`);
+if(!backgroundPreview.collapsed || backgroundPreview.iframe){electron.kill();throw Error('Background HTML generation opened preview');}
+await evalJS(`[...document.querySelectorAll('#wsTree .fname')].find(node=>node.textContent==='hello.html').closest('.trow').click()`);
+for(let attempt=0;attempt<30;attempt++){
+  if(await evalJS(`!!document.querySelector('#pvBody iframe') && !document.documentElement.classList.contains('layout-motion')`))break;
+  await sleep(100);
+}
 const check = await evalJS(`({
   pvName: document.querySelector("#pvName")?.textContent,
   iframe: !!document.querySelector("#pvBody iframe"),
+  collapsed: document.body.classList.contains('preview-collapsed'),
   treeRows: document.querySelectorAll("#wsTree .trow").length,
   changedRows: document.querySelectorAll("#wsTree .trow.changed").length,
 })`);
+if(check.collapsed || !check.iframe || check.pvName!=='hello.html'){electron.kill();throw Error('File click did not open generated HTML preview');}
 console.log("verify:", JSON.stringify(check));
-await screenshot("test/shot-autopreview.png");
+await screenshot("test/shot-workspace-preview.png");
 
 // screenshot the sidebar file tree (workspace tree lives in the sidebar since the UI restructure)
 await evalJS(`document.querySelector("#btnSidebar")?.click()`);

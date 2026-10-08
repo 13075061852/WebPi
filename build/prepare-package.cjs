@@ -50,7 +50,7 @@ function runtimeUnpackPatterns(project) {
 module.exports = function preparePackage(context) {
   const project = path.resolve(context.packager.projectDir);
   prepareInstaller();
-  const patterns = [...runtimeUnpackPatterns(project), 'src/main/windows-proxy.ps1'];
+  const patterns = [...runtimeUnpackPatterns(project), 'src/main/windows-proxy.ps1', 'src/main/store-proxy.ps1'];
   context.packager.config.asarUnpack = patterns;
   fs.writeFileSync(path.join(project, 'build/generated/runtime-unpack.json'), JSON.stringify({ roots: runtimeRoots, patterns }, null, 2) + '\n');
   console.log(`Preserving ${patterns.length} runtime package roots outside ASAR; other dependencies stay archived.`);

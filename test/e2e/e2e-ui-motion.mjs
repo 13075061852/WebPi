@@ -77,12 +77,23 @@ try {
   const initial = await guest();
   await evaluate(`(() => {
     window.__motionRecords=[];
+    window.__liveRecords=[];
     window.__modalRecords=[];
     window.__maskReveals=[];
+    window.__livePaneGeometry=()=>Object.fromEntries(['sidebar','center','chat'].map(name=>{
+      const node=document.querySelector('#'+name),r=node.getBoundingClientRect(),style=getComputedStyle(node);
+      return [name,{x:r.x,y:r.y,width:r.width,height:r.height,transform:style.transform,untransformed:new DOMMatrix(style.transform).isIdentity,opacity:+style.opacity,visibility:style.visibility}];
+    }));
+    const maskState=()=>[...document.querySelectorAll('.device-switch-mask')].map(mask=>{const r=mask.getBoundingClientRect(),screen=mask.parentElement.getBoundingClientRect(),style=getComputedStyle(mask);return {opacity:+style.opacity,background:style.backgroundColor,covers:r.width>=screen.width-1&&r.height>=screen.height-1};});
     const nativeAnimate=Element.prototype.animate;
     Element.prototype.animate=function(...args){
       const animation=nativeAnimate.apply(this,args);
       if(this.matches('.device-switch-mask'))window.__maskReveals.push(performance.now());
+      if(this.id==='layout'&&!animation.effect?.pseudoElement&&animation.effect.getKeyframes().some(frame=>frame.gridTemplateColumns)){
+        const record={created:performance.now(),ready:performance.now(),keyframes:animation.effect.getKeyframes(),masks:maskState(),samples:[]};window.__liveRecords.push(record);
+        const sample=now=>{if(record.finished)return;record.samples.push({at:now,panes:window.__livePaneGeometry()});requestAnimationFrame(sample);};requestAnimationFrame(sample);
+        animation.finished.then(()=>{record.finished=record.slideEnd=performance.now();record.motionStart=animation.startTime;}).catch(()=>{record.finished=performance.now();record.cancelled=true;});
+      }
       if(this.matches('.modal')){
         const record={created:performance.now()};window.__modalRecords.push(record);
         animation.finished.then(()=>{record.finished=performance.now();record.motionStart=animation.startTime}).catch(()=>{});
@@ -95,7 +106,7 @@ try {
       const t=native(options);
       t.ready.then(()=>{
         record.ready=performance.now();
-        record.masks=[...document.querySelectorAll('.device-switch-mask')].map(mask=>{const r=mask.getBoundingClientRect(),screen=mask.parentElement.getBoundingClientRect(),style=getComputedStyle(mask);return {opacity:+style.opacity,background:style.backgroundColor,covers:r.width>=screen.width-1&&r.height>=screen.height-1};});
+        record.masks=maskState();
         queueMicrotask(()=>{
           const groups=document.getAnimations().filter(a=>a.effect?.pseudoElement?.startsWith('::view-transition-group(layout-'));
           record.groups=groups.map(a=>({pseudo:a.effect.pseudoElement,keyframes:a.effect.getKeyframes()}));
@@ -108,33 +119,51 @@ try {
     };
   })()`);
   const results = [];
-  for (const [name, selector] of [['sidebar-close','#btnSidebar'],['sidebar-open','#btnSidebar'],['tablet','.pvdev[data-dev="tablet"]'],['phone','.pvdev[data-dev="mobile"]'],['desktop','.pvdev[data-dev="desktop"]'],['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['settings-open','#btnSettings'],['settings-close','#settingsModal [data-close]'],['model-open','#btnModel'],['model-close','#modelModal [data-close]'],['think-open','#btnThink'],['think-close','#thinkModal [data-close]']]) {
+  async function sampleMotion(name, selector) {
     const sample = await evaluate(`(async()=>{
-      const frames=[];window.__motionRecords=[];window.__modalRecords=[];window.__maskReveals=[];let last=performance.now(),running=true;
+      const frames=[];window.__motionRecords=[];window.__liveRecords=[];window.__modalRecords=[];window.__maskReveals=[];let last=performance.now(),running=true;
       const tick=now=>{frames.push({at:now,previous:last,gap:now-last});last=now;if(running)requestAnimationFrame(tick)};requestAnimationFrame(tick);
       document.querySelector(${JSON.stringify(selector)}).click();
       await new Promise(r=>setTimeout(r,1000));running=false;
       const transitions=window.__motionRecords.map(t=>{const motion=frames.filter(f=>f.previous>=t.motionStart&&f.at<=t.slideEnd);return {...t,frames:motion.length,maxGap:Math.round(Math.max(0,...motion.map(f=>f.gap)))};});
+      const live=window.__liveRecords.map(t=>{const motion=frames.filter(f=>f.previous>=t.motionStart&&f.at<=t.slideEnd);return {...t,frames:motion.length,maxGap:Math.round(Math.max(0,...motion.map(f=>f.gap)))};});
       const modals=window.__modalRecords.map(t=>{const motion=frames.filter(f=>f.previous>=t.motionStart&&f.at<=t.finished);return {...t,frames:motion.length,maxGap:Math.round(Math.max(0,...motion.map(f=>f.gap)))};});
-      return {transitions,modals,reveals:window.__maskReveals,frames:frames.length};
+      return {transitions,live,modals,reveals:window.__maskReveals,frames:frames.length};
     })()`);
     if (!name.includes('settings') && !name.includes('model') && !name.includes('think')) {
-      assert.ok(sample.transitions[0]?.finished, `${name} must contain an actual completed transition`);
-      assert.ok(sample.transitions[0].slideEnd - sample.transitions[0].ready >= 200, `${name} must not jump directly to the final layout`);
-      assert.ok(sample.transitions[0].frames >= 8, `${name} must present intermediate animation frames`);
-      for (const group of sample.transitions[0].groups) {
-        if (group.keyframes.length < 2 || !group.keyframes[0].width) continue;
-        assert.equal(group.keyframes[0].width, group.keyframes.at(-1).width, 'Snapshot width must remain fixed during compositor motion');
+      const device=['tablet','phone','desktop'].includes(name),motion=device?sample.transitions[0]:sample.live[0];
+      assert.ok(motion?.finished&&!motion.cancelled, `${name} must contain an actual completed animation`);
+      assert.ok(motion.slideEnd - motion.ready >= 200, `${name} must not jump directly to the final layout`);
+      assert.ok(motion.frames >= 8, `${name} must present intermediate animation frames`);
+      if (device) {
+        assert.equal(sample.live.length,0,'Pure device choices retain their dedicated chrome morph');
+        for (const group of motion.groups) {
+          if (group.keyframes.length < 2 || !group.keyframes[0].width) continue;
+          assert.equal(group.keyframes[0].width, group.keyframes.at(-1).width, 'Snapshot width must remain fixed during compositor motion');
+        }
+      } else {
+        assert.equal(sample.transitions.length,0,`${name} must move live panes without capturing scaled snapshots`);
+        assert.equal(sample.live.length,1,`${name} must commit a single grid animation`);
+        assert.equal(motion.keyframes.length,2);
+        assert.notEqual(motion.keyframes[0].gridTemplateColumns,motion.keyframes.at(-1).gridTemplateColumns,`${name} must change the live columns`);
+        assert.ok(motion.samples.length>=8,`${name} must paint intermediate live geometry`);
+        const widths=new Set(motion.samples.map(frame=>Object.values(frame.panes).map(pane=>Math.round(pane.width)).join(':')));
+        assert.ok(widths.size>=4,`${name} must visibly interpolate grid widths`);
+        for(const frame of motion.samples) for(const [paneName,pane] of Object.entries(frame.panes)) {
+          assert.equal(pane.untransformed,true,`${name}: ${paneName} text must not be transformed`);
+          assert.ok(Math.abs(pane.height-motion.samples[0].panes[paneName].height)<.6,`${name}: ${paneName} height must remain constant`);
+          assert.equal(pane.opacity,1,`${name}: live content must remain painted while clipped by its track`);
+        }
       }
-      {
-        assert.ok(sample.transitions[0].masks.length,'Device content must be covered before snapshot movement');
-        assert.ok(sample.transitions[0].masks.every(mask=>mask.opacity===1 && mask.covers && mask.background==='rgb(17, 19, 22)'), 'The device mask must be opaque and cover the whole screen: '+JSON.stringify(sample.transitions[0].masks));
-        assert.ok(sample.reveals.length && sample.reveals.every(time=>time>=sample.transitions[0].slideEnd), 'Only reveal content after geometry motion completes');
+      if (!name.includes('focus')) {
+        assert.ok(motion.masks.length,'Device content must be covered before geometry movement');
+        assert.ok(motion.masks.every(mask=>mask.opacity===1 && mask.covers && mask.background==='rgb(17, 19, 22)'), 'The device mask must be opaque and cover the whole screen: '+JSON.stringify(motion.masks));
+        assert.ok(sample.reveals.length && sample.reveals.every(time=>time>=motion.slideEnd), 'Only reveal content after geometry motion completes');
       }
-      if (['tablet','phone','desktop'].includes(name)) {
-        assert.equal(sample.transitions[0].chrome.length,2,'Device changes must morph chrome without stretching a page snapshot');
-        assert.ok(sample.transitions[0].chrome.every(skin=>skin.transform==='none'&&skin.keyframes.length===2));
-        assert.ok(!sample.transitions[0].groups.some(group=>group.pseudo.includes('layout-device')),'Device chrome must not be raster-scaled');
+      if (device) {
+        assert.equal(motion.chrome.length,2,'Device changes must morph chrome without stretching a page snapshot');
+        assert.ok(motion.chrome.every(skin=>skin.transform==='none'&&skin.keyframes.length===2));
+        assert.ok(!motion.groups.some(group=>group.pseudo.includes('layout-device')),'Device chrome must not be raster-scaled');
       }
     } else {
       assert.ok(sample.modals[0]?.finished, `${name} must have a completed fade animation`);
@@ -143,22 +172,41 @@ try {
     results.push({name, ...sample});
     assert.equal(await evaluate('document.querySelectorAll(".device-switch-mask").length'),0,'Completed transitions must remove their masks');
     assert.equal(await evaluate('document.querySelectorAll(".device-morph-overlay,.device-morph-hidden").length'),0,'Completed transitions must restore the live chrome');
+    assert.equal(await evaluate('document.querySelectorAll(".layout-motion,.layout-motion-live,.layout-live-visible").length'),0,'Completed animations must clear their live layout markers');
+    assert.equal(await evaluate('[...document.querySelectorAll("#pvBody iframe,#pvBody webview")].some(node=>node.getAttribute("style")?.includes("important"))'),false,'Completed animations must release held viewport dimensions');
+  }
+  for (const [name, selector] of [['sidebar-close','#btnSidebar'],['sidebar-open','#btnSidebar'],['tablet','.pvdev[data-dev="tablet"]'],['phone','.pvdev[data-dev="mobile"]'],['desktop','.pvdev[data-dev="desktop"]'],['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['settings-open','#btnSettings'],['settings-close','#settingsModal [data-close]'],['model-open','#btnModel'],['model-close','#modelModal [data-close]'],['think-open','#btnThink'],['think-close','#thinkModal [data-close]']]) {
+    await sampleMotion(name,selector);
   }
   // Capture real intermediate frames separately from the timing run.
   for (const [name, selector] of [['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['sidebar','#btnSidebar'],['phone','.pvdev[data-dev="mobile"]']]) {
+    const device=name==='phone';
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-    await waitFor(() => evaluate('document.getAnimations().some(a=>a.playState==="running"&&a.effect?.pseudoElement?.startsWith("::view-transition-group(layout-"))'), 'No running geometry animation');
-    await evaluate('window.__pausedAnimations=document.getAnimations().filter(a=>a.effect?.pseudoElement||a.effect?.target?.closest(".device-morph-overlay"));for(const a of __pausedAnimations){a.pause();a.currentTime=110;}');
-    if (name.startsWith('preview-')) {
+    await waitFor(() => evaluate(device
+      ? 'document.getAnimations().some(a=>a.playState==="running"&&a.effect?.pseudoElement?.startsWith("::view-transition-group(layout-"))'
+      : 'document.querySelector("#layout").getAnimations().some(a=>a.playState==="running"&&!a.effect?.pseudoElement&&a.effect.getKeyframes().some(frame=>frame.gridTemplateColumns))'), 'No running geometry animation');
+    await evaluate('window.__pausedAnimations=document.getAnimations().filter(a=>a.effect?.pseudoElement||a.effect?.target?.closest(".device-morph-overlay")||(a.effect?.target?.id==="layout"&&a.effect.getKeyframes().some(frame=>frame.gridTemplateColumns)));for(const a of __pausedAnimations){a.pause();a.currentTime=110;}');
+    if (!device) {
       const coverage = await evaluate(`(()=>{
-        const host=document.documentElement.classList.contains('layout-motion-global')?document.documentElement:document.querySelector('#layout');
-        return {opacity:getComputedStyle(host,'::view-transition-old(layout-center)').opacity,
-          clip:__pausedAnimations.some(a=>a.effect?.pseudoElement==='::view-transition-group(layout-center)'&&a.effect.getKeyframes().some(k=>k.clipPath)),
-          device:document.querySelector('#pvBody .dev-shell').style.viewTransitionName};
+        const center=document.querySelector('#center'),style=getComputedStyle(center),panes=__livePaneGeometry();
+        const animation=__pausedAnimations.find(a=>a.effect?.target?.id==='layout'&&!a.effect.pseudoElement);
+        const widths=animation.effect.getKeyframes().map(frame=>frame.gridTemplateColumns.split(' ').map(parseFloat));
+        return {panes,opacity:+style.opacity,visibility:style.visibility,clip:style.overflowX,
+          live:document.documentElement.classList.contains('layout-motion-live'),
+          snapshots:__pausedAnimations.filter(a=>a.effect?.pseudoElement).length,widths,
+          device:document.querySelector('#pvBody .dev-shell').style.viewTransitionName,
+          masks:[...document.querySelectorAll('.device-switch-mask')].map(mask=>+getComputedStyle(mask).opacity)};
       })()`);
-      assert.equal(coverage.opacity,'1','Outgoing preview must remain painted behind the sliding chat');
-      assert.equal(coverage.clip,true,'Preview reveal must track the chat edge');
-      assert.equal(coverage.device,'none','Device must stay inside the preview snapshot');
+      assert.equal(coverage.live,true,'Folding must animate the real grid');
+      assert.equal(coverage.snapshots,0,'Fold frames must not contain stretched snapshots');
+      assert.equal(coverage.opacity,1,'Preview must remain painted during the slide');
+      assert.equal(coverage.visibility,'visible','The outgoing preview must stay visible until fully clipped');
+      assert.equal(coverage.clip,'hidden','The preview must clip at its shrinking track');
+      assert.equal(coverage.device,'','Device must not be named as a snapshot during live motion');
+      assert.ok(coverage.masks.length&&coverage.masks.every(opacity=>opacity===1),'Content must stay covered at the live midpoint');
+      const index=name==='sidebar'?0:1,pane=coverage.panes[index===0?'sidebar':'center'];
+      assert.ok(pane.width>Math.min(coverage.widths[0][index],coverage.widths[1][index])+.6&&pane.width<Math.max(coverage.widths[0][index],coverage.widths[1][index])-.6,'Midpoint track width must lie strictly between its endpoints');
+      assert.ok(Math.abs(coverage.panes.center.x+coverage.panes.center.width-coverage.panes.chat.x)<.6,'Live preview and chat must share a continuous boundary');
     }
     if (name === 'phone') {
       const chrome=await evaluate('(()=>{const n=document.querySelector(".device-morph-shell"),s=getComputedStyle(n);return {transform:s.transform,radius:parseFloat(s.borderRadius),width:n.getBoundingClientRect().width,finalWidth:document.querySelector("#pvBody .dev-shell").getBoundingClientRect().width}})()');
@@ -305,7 +353,7 @@ try {
   await waitFor(()=>evaluate('document.querySelector("#pvBody").classList.contains("dev-mobile")&&!document.querySelector(".device-switch-mask")'),'Reduced motion must also clean up its mask');
   const report={fixture,previewFile:previewFile||'generated canvas',initial,final,results,chromeSamples};
   fs.writeFileSync(path.join(fixture,'motion-report.json'),JSON.stringify(report,null,2));
-  console.log(JSON.stringify({ok:true,fixture,results:results.map(r=>({name:r.name,motion:r.transitions.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.slideEnd-t.motionStart)})),modal:r.modals.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.finished-t.motionStart)}))}))}));
+  console.log(JSON.stringify({ok:true,fixture,results:results.map(r=>({name:r.name,motion:[...r.transitions,...r.live].map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.slideEnd-t.motionStart)})),modal:r.modals.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.finished-t.motionStart)}))}))}));
   await evaluate('setTimeout(()=>window.halo.close(),30);true');await waitFor(()=>exitCode!==undefined,'App did not close');
 
 } finally {

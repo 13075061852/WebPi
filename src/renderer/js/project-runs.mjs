@@ -1,5 +1,5 @@
 const norm = value => String(value || '').replace(/\\/g,'/').toLowerCase();
-export function initProjectRuns({api, context, switchProject, openPreview, showLogs, toast}) {
+export function initProjectRuns({api, context, switchProject, openPreview, showLogs, toast, capturePreviewIntent = () => () => true}) {
   const runs = new Map();
   const busy=run=>run && ['analyzing','starting'].includes(run.status);
   const projectRun=cwd=>{
@@ -70,8 +70,7 @@ export function initProjectRuns({api, context, switchProject, openPreview, showL
     clocks();
   }
   api.onProjectRun(run=>{
-    const previous=runs.get(run.id);runs.set(run.id,run);render();
-    if(run.status==='running'&&previous?.status!=='running'&&context()?.sessionId===run.sessionId&&norm(context()?.cwd)===norm(run.cwd))openPreview(run.urls[0], run);
+    runs.set(run.id,run);render();
   });
   void api.projectRunList().then(result=>{for(const run of result?.data||[])if(!runs.has(run.id))runs.set(run.id,run);render();});
   return {mount(group, project) {
@@ -86,9 +85,11 @@ export function initProjectRuns({api, context, switchProject, openPreview, showL
       try {
         if(norm(context()?.cwd)!==norm(project.cwd))await switchProject(project.cwd);
         if(norm(context()?.cwd)!==norm(project.cwd))return;
+        const owner = { cwd: context()?.cwd, sessionId: context()?.sessionId };
+        const stillWanted = capturePreviewIntent();
         const result=await api.projectRunStart();if(!result?.ok)throw Error(result?.error||'启动失败');
         runs.set(result.data.id,result.data);render();
-        if(result.data.status==='running')openPreview(result.data.urls[0], result.data);
+        if(result.data.status==='running' && context()?.sessionId === owner.sessionId && norm(context()?.cwd) === norm(owner.cwd) && stillWanted())openPreview(result.data.urls[0], result.data);
       }catch(error){toast(error.message,'err');}finally{render();}
     };
     group.querySelector('.project-new').before(start);

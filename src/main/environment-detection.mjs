@@ -65,6 +65,7 @@ function dependencies(options) {
     env: options.env || process.env,
     run: options.run || runCommand,
     exists: options.exists || executableExists,
+    directories: options.directories || ((directory) => fs.readdirSync(directory, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)),
     excludedDirectories: options.excludedDirectories || [],
   };
 }
@@ -152,6 +153,58 @@ function executableCandidates(names, deps) {
   return candidates;
 }
 
+function installedChildren(root, pattern, deps) {
+  if (!root || !deps.exists(root)) return [];
+  try {
+    // Inspect only conventional installation children, never projects or a whole drive.
+    return deps.directories(root).filter((name) => pattern.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).slice(0, 30).map((name) => path.win32.join(root, name));
+  } catch { return []; }
+}
+
+function knownCandidates(id, deps) {
+  if (deps.platform !== 'win32') return [];
+  const roots = [envValue(deps.env, 'ProgramFiles'), envValue(deps.env, 'ProgramW6432'), envValue(deps.env, 'ProgramFiles(x86)')].filter(Boolean);
+  const local = envValue(deps.env, 'LOCALAPPDATA');
+  const aliases = local ? path.win32.join(local, 'Microsoft', 'WindowsApps') : null;
+  const systemRoot = envValue(deps.env, 'SystemRoot') || 'C:\\Windows';
+  let files = [];
+  if (id === 'winget' && aliases) files.push(path.win32.join(aliases, 'winget.exe'));
+  if (id === 'node') {
+    files = [...roots, ...(local ? [path.win32.join(local, 'Programs')] : [])].map((root) => path.win32.join(root, 'nodejs', 'node.exe'));
+    if (local) files.push(...installedChildren(path.win32.join(local, 'Pi Halo', 'environment'), /^node-v\d+\.\d+\.\d+-win-(?:x64|arm64|x86)$/i, deps).map((root) => path.win32.join(root, 'node.exe')));
+  }
+  if (id === 'git') files = [...roots, ...(local ? [path.win32.join(local, 'Programs')] : [])].map((root) => path.win32.join(root, 'Git', 'cmd', 'git.exe'));
+  if (id === 'py') {
+    files = [path.win32.join(systemRoot, 'py.exe'), ...(local ? [path.win32.join(local, 'Programs', 'Python', 'Launcher', 'py.exe')] : [])];
+    files.push(...installedChildren(aliases, /^PythonSoftwareFoundation\.PythonManager_(?:3847v3x7pw1km|qbz5n2kfra8p0)$/i, deps).map((root) => path.win32.join(root, 'py.exe')));
+  }
+  if (id === 'python') {
+    const pythonRoots = [...roots, ...(local ? [path.win32.join(local, 'Programs', 'Python')] : [])];
+    for (const root of pythonRoots) files.push(...installedChildren(root, /^Python3\d{1,3}(?:-\d{2})?$/i, deps).map((directory) => path.win32.join(directory, 'python.exe')));
+    // Package-specific Store aliases belong to an installed runtime, unlike the
+    // global python.exe placeholder which may open Microsoft Store.
+    files.push(...installedChildren(aliases, /^PythonSoftwareFoundation\.Python\.3\.\d+_qbz5n2kfra8p0$/i, deps).map((root) => path.win32.join(root, 'python.exe')));
+  }
+  const seen = new Set();
+  return files.filter((file) => {
+    const key = pathKey(file, deps.platform);
+    if (!path.win32.isAbsolute(file) || seen.has(key) || privateRuntime(file, deps) || !deps.exists(file)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function pathProblem(tool, deps) {
+  const directory = path.win32.dirname(tool.path);
+  const repairPaths = [directory];
+  if (tool.id === 'python') {
+    const scripts = path.win32.join(directory, 'Scripts');
+    if (deps.exists(scripts)) repairPaths.push(scripts);
+  }
+  return { ...tool, installed: false, problem: 'path', repairPaths,
+    error: `已找到可用的 ${tool.name}，但尚未加入 PATH；一键配置将修复当前用户的命令路径。` };
+}
+
 async function probe(file, args, deps) {
   try {
     return await deps.run(file, args, { env: deps.env });
@@ -165,15 +218,28 @@ async function pythonStatus(deps) {
   const candidates = executableCandidates(names, deps).map((file) => ({ file, args: ['-I', '-c', PYTHON_PROBE] }));
   if (deps.platform === 'win32') {
     candidates.push(...executableCandidates(['py'], deps).map((file) => ({ file, args: ['-3', '-I', '-c', PYTHON_PROBE] })));
+    candidates.push(...knownCandidates('python', deps).map((file) => ({ file, args: ['-I', '-c', PYTHON_PROBE], needsPath: true })));
+    candidates.push(...knownCandidates('py', deps).map((file) => ({ file, args: ['-3', '-I', '-c', PYTHON_PROBE], needsPath: true })));
   }
-  for (const { file, args } of candidates) {
-    const result = await probe(file, args, deps);
+  // Both launchers can otherwise download/install Python during a status check.
+  const probeEnv = { ...deps.env, PYTHON_MANAGER_AUTOMATIC_INSTALL: 'false' };
+  for (const key of Object.keys(probeEnv)) {
+    if (['pylauncher_allow_install', 'pylauncher_always_install'].includes(key.toLowerCase())) delete probeEnv[key];
+    if (key !== 'PYTHON_MANAGER_AUTOMATIC_INSTALL' && key.toLowerCase() === 'python_manager_automatic_install') delete probeEnv[key];
+  }
+  const seen = new Set();
+  for (const { file, args, needsPath } of candidates) {
+    const key = pathKey(file, deps.platform);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const result = await probe(file, args, { ...deps, env: probeEnv });
     if (result.code !== 0) continue;
     try {
       const value = JSON.parse(result.stdout.trim());
       const api = deps.platform === 'win32' ? path.win32 : path.posix;
       if (!/^3\.\d+\.\d+(?:[\w.+-]*)$/.test(value.version) || !api.isAbsolute(value.path) || !deps.exists(value.path) || privateRuntime(value.path, deps)) continue;
-      return { id: 'python', name: 'Python', installed: true, version: value.version, path: value.path };
+      const tool = { id: 'python', name: 'Python', installed: true, version: value.version, path: value.path };
+      return needsPath ? pathProblem(tool, deps) : tool;
     } catch { /* An alias or another executable did not return a Python result. */ }
   }
   return { id: 'python', name: 'Python', installed: false, version: null, path: null,
@@ -183,15 +249,20 @@ async function pythonStatus(deps) {
 
 async function versionStatus(id, name, names, pattern, deps) {
   const candidates = executableCandidates(names, deps);
-  for (const file of candidates) {
+  const availablePaths = new Set(candidates.map((file) => pathKey(file, deps.platform)));
+  const known = knownCandidates(id, deps).filter((file) => !availablePaths.has(pathKey(file, deps.platform)));
+  for (const file of [...candidates, ...known]) {
     const result = await probe(file, ['--version'], deps);
     if (result.code !== 0) continue;
     const version = String(result.stdout || '').trim().match(pattern)?.[1];
-    if (version) return { id, name, installed: true, version, path: file };
+    if (version) {
+      const tool = { id, name, installed: true, version, path: file };
+      return id !== 'winget' && !availablePaths.has(pathKey(file, deps.platform)) ? pathProblem(tool, deps) : tool;
+    }
   }
   return { id, name, installed: false, version: null, path: null,
-    problem: candidates.length ? 'broken' : 'missing',
-    error: candidates.length ? `检测到 ${name} 命令，但无法正常运行；请检查安装或 PATH。` : `未在全局 PATH 中找到 ${name}。` };
+    problem: candidates.length || known.length ? 'broken' : 'missing',
+    error: candidates.length || known.length ? `检测到 ${name} 命令，但无法正常运行；请检查安装或 PATH。` : `未在全局 PATH 中找到 ${name}。` };
 }
 
 /** Detect only locally installed tools, independently of Electron's built-in Node. */

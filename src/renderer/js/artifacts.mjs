@@ -3,7 +3,7 @@ export function artifactPath(value, cwd) {
   let p = value.trim().replace(/^<|>$/g, '').replace(/\\/g, '/');
   if (p.startsWith('halo-preview://local/')) { try { p=decodeURIComponent(p.slice(21)); } catch {return null;} }
   else if (/^[a-z][a-z0-9+.-]*:/i.test(p) && !/^[a-z]:\//i.test(p)) return null;
-  if (!/\.(pdf|docx?|xlsx?|pptx?|png|jpe?g|webp|gif|svg|csv|html?|md|txt|zip|mp4|webm)$/i.test(p)) return null;
+  if (!/\.(pdf|docx?|xlsx?|pptx?|png|jpe?g|webp|gif|svg|csv|html?|md|txt|zip|mp4|webm|mp3|wav|m4a|aac|ogg|flac)$/i.test(p)) return null;
   if (!/^(?:[a-z]:\/|\/)/i.test(p)) p = cwd.replace(/\\/g,'/').replace(/\/$/,'')+'/'+p;
   const parts=[];
   for(const part of p.split('/')) {if(part==='..')parts.pop();else if(part!=='.')parts.push(part);}
@@ -24,7 +24,7 @@ export function replyArtifacts(text, cwd) {
   }
   // Models also deliver unlinked absolute paths, often wrapped in bold text.
   // Validate candidates through artifactFiles before displaying any cards.
-  const barePath = /(?:^|[\s*`("'：])((?:[a-z]:[\\/]|\/(?!\/))[^\r\n<>|"*`?]+?\.(?:pdf|docx?|xlsx?|pptx?|png|jpe?g|webp|gif|svg|csv|html?|md|txt|zip|mp4|webm))(?=$|[\s*`"')（），。；,;])/gim;
+  const barePath = /(?:^|[\s*`("'：])((?:[a-z]:[\\/]|\/(?!\/))[^\r\n<>|"*`?]+?\.(?:pdf|docx?|xlsx?|pptx?|png|jpe?g|webp|gif|svg|csv|html?|md|txt|zip|mp4|webm|mp3|wav|m4a|aac|ogg|flac))(?=$|[\s*`"')（），。；,;])/gim;
   for (const match of text.matchAll(barePath)) {
     const p = artifactPath(match[1], cwd);
     if (p) files.set(p.toLowerCase(), p);
@@ -33,6 +33,7 @@ export function replyArtifacts(text, cwd) {
 }
 
 const fileDesigns = {
+  audio: ['audio','音频','<path d="M9 18V5l12-2v13M9 9l12-2"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'],
   video: ['video','视频','<rect x="3" y="5" width="12" height="14" rx="2"/><path d="m15 10 6-4v12l-6-4"/>'],
   pptx: ['slides','演示文稿','<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21l4-4 4 4M8 8h8M8 12h4"/>'],
   pdf: ['pdf','PDF 文档','<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>'],
@@ -43,16 +44,24 @@ const fileDesigns = {
   zip: ['archive','压缩文件','<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M11 3v3h2v3h-2v3h2v3M10 15h4v3h-4z"/>'],
   text: ['text','文本文件','<path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4"/>']
 };
-export function decorateArtifactCard(button, file, imageURL) {
+export function decorateArtifactCard(button, file, imageURL, { bytes } = {}) {
   const name = file.split(/[\\/]/).pop();
   const ext = name.split('.').pop().toLowerCase();
-  const key = ({ppt:'pptx',doc:'docx',xls:'xlsx',csv:'xlsx',htm:'html',mp4:'video',webm:'video'})[ext] || (/^(png|jpe?g|gif|webp|svg)$/.test(ext) ? 'image' : ext);
+  const key = ({ppt:'pptx',doc:'docx',xls:'xlsx',csv:'xlsx',htm:'html',mp4:'video',webm:'video',mp3:'audio',wav:'audio',m4a:'audio',aac:'audio',ogg:'audio',flac:'audio'})[ext] || (/^(png|jpe?g|gif|webp|svg)$/.test(ext) ? 'image' : ext);
   const [kind,description,paths] = fileDesigns[key] || fileDesigns.text;
   button.className = 'artifact-card artifact-' + kind;
   button.title = file;
   button.setAttribute('aria-label', '预览' + description + '：' + name);
   const art = document.createElement('span');art.className='artifact-art';
   art.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true">'+paths+'</svg>';
+  const mediaInfo = document.createElement('span'); mediaInfo.className = 'artifact-media-info';
+  const size = Number.isFinite(bytes) && bytes >= 0 ? (bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1048576).toFixed(1)} MB`) : '大小未知';
+  const showDuration = duration => {
+    const seconds = Math.round(duration);
+    const time = Number.isFinite(duration) && duration >= 0 ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : '时长未知';
+    mediaInfo.textContent = `${size} · ${time}`;
+  };
+  showDuration(NaN);
   if(kind==='image') {
     const thumbnail=document.createElement('img');thumbnail.src=imageURL;thumbnail.alt='';thumbnail.loading='lazy';thumbnail.decoding='async';
     thumbnail.onerror=()=>thumbnail.remove();art.appendChild(thumbnail);
@@ -63,6 +72,7 @@ export function decorateArtifactCard(button, file, imageURL) {
     thumbnail.tabIndex = -1; thumbnail.setAttribute('aria-hidden', 'true');
     // Decode a single frame locally; playback belongs to the center preview.
     thumbnail.onloadedmetadata = () => {
+      showDuration(thumbnail.duration);
       if (Number.isFinite(thumbnail.duration) && thumbnail.duration > 0) {
         try { thumbnail.currentTime = Math.min(0.1, thumbnail.duration / 2); } catch {}
       }
@@ -73,6 +83,11 @@ export function decorateArtifactCard(button, file, imageURL) {
     play.setAttribute('aria-hidden', 'true');
     play.innerHTML = '<svg viewBox="0 0 16 16"><path d="m6 3 7 5-7 5z"/></svg>';
     art.append(thumbnail, play);
+  } else if (kind === 'audio') {
+    const audio = document.createElement('audio'); audio.preload = 'metadata'; audio.hidden = true;
+    audio.onloadedmetadata = () => showDuration(audio.duration);
+    audio.onerror = () => showDuration(NaN);
+    audio.src = imageURL; art.append(audio);
   }
   const copy=document.createElement('span');copy.className='artifact-copy';
   const label=document.createElement('span');label.className='artifact-name';label.textContent=name;
@@ -80,6 +95,7 @@ export function decorateArtifactCard(button, file, imageURL) {
   const badge=document.createElement('span');badge.className='artifact-kind';badge.textContent=ext.toUpperCase();
   const hint=document.createElement('span');hint.textContent=description;
   meta.append(badge,hint);copy.append(label,meta);
+  if (kind === 'video' || kind === 'audio') copy.append(mediaInfo);
   const arrow=document.createElement('span');arrow.className='artifact-open';arrow.setAttribute('aria-hidden','true');arrow.innerHTML='<svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>';
   button.append(art,copy,arrow);
 }

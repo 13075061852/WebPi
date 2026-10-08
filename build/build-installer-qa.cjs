@@ -48,7 +48,7 @@ console.log(`Prepared QA-only installer configuration: ${configPath}`);
 console.log('Before running it, isolate APPDATA and USERPROFILE for the launched app; do not run alongside the real Pi Halo.');
 
 if (fresh) {
-  const testVersion = '1.0.11-test.4';
+  const testVersion = `${manifest.version}-test.1`;
   config.appId = 'com.pihalo.test';
   config.productName = 'Pi Halo Test';
   config.extraMetadata = { name: 'pi-halo-test', version: testVersion, haloTestBuild: true };

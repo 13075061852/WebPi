@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
-import { EnvironmentManager, installArguments, runEnvironmentInstaller } from '../src/main/environment-manager.mjs';
+import { EnvironmentManager, installArguments, installerFailure, supportsWinGetProxy, runEnvironmentInstaller } from '../src/main/environment-manager.mjs';
 
 const ids = ['python', 'node', 'git'];
-function fixture(initial = [], installerAvailable = true) {
+function fixture(initial = [], installerAvailable = true, extra = {}) {
   const installed = new Set(initial), calls = [], changes = [];
   let refreshed = 0, response = { code: 0 }, apply = true;
   const manager = new EnvironmentManager({
+    env: {}, fallbackAvailable: () => false,
+    fallback: async () => assert.fail('Unexpected official installer'),
+    repairPath: async () => assert.fail('Unexpected PATH change'),
     detect: async () => ({ platform: 'win32', installer: { available: installerAvailable, path: 'C:\\WindowsApps\\winget.exe' },
       tools: ids.map(id => ({ id, name: id, installed: installed.has(id), version: installed.has(id) ? '1.2.3' : null })), updatedAt: new Date().toISOString() }),
     refreshPath: async () => { refreshed++; },
@@ -17,21 +20,26 @@ function fixture(initial = [], installerAvailable = true) {
       return response;
     },
     onChange: state => changes.push(state),
+    ...extra,
   });
   return { manager, installed, calls, changes, refreshed: () => refreshed,
     fail: result => { response = result; apply = false; }, succeed: () => { response = { code: 0 }; apply = true; } };
 }
 
-// Fixed package IDs and global installation; never take arbitrary commands from the renderer.
+// Fixed package IDs; user installations avoid requiring an administrator for Python/Git.
 for (const id of ids) {
   const args = installArguments(id, {});
-  assert.equal(args[args.indexOf('--scope') + 1], 'machine');
+  assert.equal(args[args.indexOf('--scope') + 1], id === 'node' ? 'machine' : 'user');
   assert.ok(!args.includes('--no-upgrade'));
   assert.ok(!args.includes('--disable-interactivity'), 'Support old WinGet versions');
   assert.equal(args[args.indexOf('--source') + 1], 'winget');
 }
 assert.throws(() => installArguments('arbitrary-package'), /不支持/);
-assert.deepEqual(installArguments('git', { HTTPS_PROXY: 'http://127.0.0.1:38471' }).slice(-2), ['--proxy', 'http://127.0.0.1:38471']);
+assert.match(installArguments('python', {})[installArguments('python', {}).indexOf('--override') + 1], /InstallAllUsers=0.*Include_launcher=0/);
+assert.deepEqual(installArguments('git', { HTTPS_PROXY: 'http://127.0.0.1:38471' }, { version: '1.8.1791' }).slice(-2), ['--proxy', 'http://127.0.0.1:38471']);
+assert.ok(!installArguments('git', { HTTPS_PROXY: 'http://127.0.0.1:38471' }, { version: '1.7.0' }).includes('--proxy'));
+for (const version of ['', undefined, 'unknown', '1.7.11261']) assert.equal(supportsWinGetProxy(version), false);
+for (const version of ['1.8.0', 'v1.12.0', '2.0.0']) assert.equal(supportsWinGetProxy(version), true);
 assert.ok(!installArguments('git', { ALL_PROXY: 'socks5://127.0.0.1:1080' }).includes('--proxy'));
 
 {
@@ -59,7 +67,7 @@ assert.ok(!installArguments('git', { ALL_PROXY: 'socks5://127.0.0.1:1080' }).inc
   assert.equal((await f.manager.status()).installing, true);
   await job;
   assert.deepEqual(f.calls.map(call => call.id), ['python', 'git']);
-  assert.equal(f.refreshed(), 2);
+  assert.equal(f.refreshed(), 4);
   assert.ok(f.manager.snapshot().tools.every(tool => tool.installed));
   assert.equal(f.manager.snapshot().installing, false);
   assert.equal(f.manager.snapshot().progress.at(-1).state, 'done');
@@ -111,6 +119,122 @@ for (const response of [{ code: -1, output: 'fixture download failed' }, { code:
   assert.equal(f.manager.snapshot().installing, false);
 }
 
+// Missing WinGet is supported without installing WinGet/Store or touching healthy tools.
+{
+  const fallbackCalls = [];
+  const f = fixture(['git'], false, {
+    fallbackAvailable: () => true,
+    fallback: async (id, options) => { fallbackCalls.push(id); options.onOutput('Official fixture'); f.installed.add(id); return { code: 0 }; },
+  });
+  assert.equal((await f.manager.status()).installer.automaticAvailable, true);
+  f.manager.start(); await f.manager.job;
+  assert.deepEqual(fallbackCalls, ['python', 'node']);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.manager.snapshot().progress.at(-1).state, 'done');
+}
+
+// Node's official ZIP avoids the machine-only MSI; old WinGet cannot receive --proxy.
+for (const initial of [['python', 'git'], ['node']]) {
+  const fallbackCalls = [];
+  const f = fixture(initial, true, {
+    env: { HTTPS_PROXY: 'http://127.0.0.1:38471' },
+    fallbackAvailable: () => true,
+    fallback: async id => { fallbackCalls.push(id); f.installed.add(id); return { code: 0 }; },
+  });
+  const original = f.manager.detect;
+  f.manager.detect = async () => { const value = await original(); value.installer.version = '1.7.0'; return value; };
+  f.manager.start(); await f.manager.job;
+  assert.deepEqual(fallbackCalls, ids.filter(id => !initial.includes(id)));
+  assert.equal(f.calls.length, 0, 'No unsupported flag or UAC prompt should be launched');
+}
+
+// A source/network/no-applicable-installer failure can use the official fallback.
+for (const code of [0x8a15000f, 0x8a150010, 0x8a150008]) {
+  const fallbacks = [];
+  const f = fixture(['node', 'git'], true, {
+    fallbackAvailable: () => true,
+    fallback: async id => { fallbacks.push(id); f.installed.add(id); return { code: 0 }; },
+  });
+  f.fail({ code: code | 0, output: 'Unavailable source fixture' });
+  f.manager.start(); await f.manager.job;
+  assert.deepEqual(fallbacks, ['python']);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.manager.snapshot().progress.at(-1).state, 'done');
+}
+
+// Explicit PATH repair must use the detected runtime, never download a duplicate.
+{
+  const repairs = [];
+  const f = fixture(['node', 'git'], true, {
+    fallbackAvailable: () => true,
+    repairPath: async dirs => { repairs.push(dirs); f.installed.add('python'); return { code: 0 }; },
+  });
+  const original = f.manager.detect;
+  f.manager.detect = async () => {
+    const value = await original();
+    if (!f.installed.has('python')) Object.assign(value.tools[0], { problem: 'path', path: 'C:\\Python\\python.exe', repairPaths: ['C:\\Python', 'C:\\Python\\Scripts'] });
+    return value;
+  };
+  f.manager.start(); await f.manager.job;
+  assert.deepEqual(repairs, [['C:\\Python', 'C:\\Python\\Scripts']]);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.manager.snapshot().tools[0].installed, true);
+}
+
+// Failure/partial PATH writes do not cause reinstalling an already located runtime.
+{
+  const f = fixture(['node', 'git'], true, { repairPath: async () => ({ code: 0 }) });
+  const original = f.manager.detect;
+  f.manager.detect = async () => { const value = await original(); Object.assign(value.tools[0], { problem: 'path', repairPaths: ['C:\\Python'] }); return value; };
+  f.manager.start(); await f.manager.job;
+  assert.equal(f.calls.length, 0);
+  assert.match(f.manager.snapshot().progress.find(p => p.id === 'python' && p.state === 'error').message, /PATH/);
+}
+
+// Never retry past cancellation, policy, tampered downloads, busy installers or reboot.
+for (const code of [0x800704c7, 0x8a15010c, 0x8a150005, 1602, 3010, 1641, 0x80070bc2, 0x8a150109, 0x8a15010a, 0x8a15010b, 0x8a150011, 0x8a15002d, 0x8a15003a, 0x8a15010f, 1625, 1618, 0x8a150102, 0x8a150105, 0x8a150113]) {
+  const f = fixture([], true, { fallbackAvailable: () => true });
+  f.fail({ code: code | 0, output: 'Stopped fixture https://user:secret@example.com' });
+  f.manager.start(); await f.manager.job;
+  assert.equal(f.calls.length, 1, `Stopped after ${code.toString(16)}`);
+  assert.equal(installerFailure({ code: code | 0 }).stop, true);
+  assert.doesNotMatch(JSON.stringify(f.manager.snapshot()), /secret/);
+}
+for (const result of [{ code: -1, integrityFailure: true }, { code: -1, timedOut: true }, { code: 0, rebootRequired: true }, { code: 5, cancelled: true }]) {
+  let calls = 0;
+  const f = fixture([], false, { fallbackAvailable: () => true, fallback: async () => { calls++; return result; } });
+  f.manager.start(); await f.manager.job;
+  assert.equal(calls, 1);
+  assert.equal(f.manager.snapshot().progress.at(-1).state, 'error');
+}
+
+// Every stage honors injected environments; tests must never fall through to host PATH.
+{
+  const env = { Path: 'C:\\Fixture' }, optionsSeen = [];
+  const f = fixture(ids, false, { env, detect: async options => { optionsSeen.push(options); return { platform: 'win32', installer: { available: false }, tools: ids.map(id => ({ id, installed: true })) }; } });
+  await f.manager.status(); f.manager.start(); await f.manager.job;
+  assert.ok(optionsSeen.length >= 2);
+  assert.ok(optionsSeen.every(options => options.env === env));
+}
+
+// One throwing tool should not prevent unrelated missing tools from being configured.
+{
+  const f = fixture([], false, { fallbackAvailable: () => true,
+    fallback: async id => { if (id === 'python') throw Error('download fixture failed'); f.installed.add(id); return { code: 0 }; },
+  });
+  f.manager.start(); await f.manager.job;
+  assert.deepEqual([...f.installed], ['node', 'git']);
+  assert.equal(f.manager.snapshot().progress.at(-1).state, 'error');
+}
+
+// A zero exit code must not start another installer if the new runtime is not usable.
+{
+  const f = fixture(['node', 'git'], true, { fallbackAvailable: () => true });
+  f.fail({ code: 0 }); f.manager.start(); await f.manager.job;
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.manager.snapshot().progress.at(-1).state, 'error');
+}
+
 // Exercise the process wrapper with harmless Node fixtures, never a real installer.
 {
   const chunks = [];
@@ -124,4 +248,4 @@ for (const response of [{ code: -1, output: 'fixture download failed' }, { code:
   assert.equal(missing.code, -1);
   assert.ok(missing.error);
 }
-console.log('PASS global environment installation: missing-only, single job, verification, failures, cancellation, retries and process wrapper');
+console.log('PASS environment configuration: current-user fallback, old WinGet/proxy, PATH repair, missing-only, single job, verification, cancellation/policy/integrity/reboot, retries and process wrapper');

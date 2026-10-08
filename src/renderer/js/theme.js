@@ -1,8 +1,11 @@
 /* Restore both palette and wallpaper before first paint. */
 try {
-  const selected = localStorage.getItem('halo-theme') || 'dark';
-  document.documentElement.dataset.theme = window.HALO_THEME_PALETTES?.[selected] || (['light','mist','dunes','scholar','studio', 'garden'].includes(selected) ? 'light' : 'dark');
-  document.documentElement.dataset.wallpaper = [...Object.keys(window.HALO_THEME_PALETTES || {}), 'nebula','mist','dunes','scholar','studio', 'garden','spacepig','blueprint','executive'].includes(selected) ? selected : '';
+  const saved = localStorage.getItem('halo-theme') || 'dark';
+  const selected = [...Object.keys(window.HALO_THEME_PALETTES || {}), 'light', 'dark', 'glass'].includes(saved) ? saved : 'dark';
+  if (selected !== saved) localStorage.setItem('halo-theme', selected);
+  document.documentElement.dataset.theme = window.HALO_THEME_PALETTES?.[selected] || (selected === 'glass' ? 'light' : selected);
+  document.documentElement.dataset.surface = selected === 'glass' ? 'glass' : '';
+  document.documentElement.dataset.wallpaper = Object.hasOwn(window.HALO_THEME_PALETTES || {}, selected) ? selected : '';
 } catch {}
 
 try {

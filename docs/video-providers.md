@@ -80,7 +80,9 @@ APIMart 使用独立密钥，获取地址：[API Key 管理](https://apimart.ai/
 
 ### 费用预估
 
-设置参数下方显示费用预估。APIMart 从[官方价格页](https://apimart.ai/pricing)的公开结构化数据读取 `fixed_prices.items[].after_discount`，按 1 USD = 10 Credits 换算。整张报价表共享缓存 5 分钟，模型列表不再逐个请求。只解析页面内 JSON 数据，不执行远程脚本；结构变化、档位缺失时显示暂无可靠折后报价。
+设置参数下方显示费用预估。APIMart 从[官方价格页](https://apimart.ai/pricing)使用的公开目录接口 `/api/pricing/models/all` 读取 `data.models.video[].fixed_prices.items[].after_discount`，按 1 USD = 10 Credits 换算。整张报价表共享缓存 5 分钟，模型列表不再逐个请求。只解析 JSON 数据；网络和格式错误会显示具体原因，目录未收录的模型显示“平台暂未提供该模型报价”。
+
+2026-10-06 核对：价格页已改为在浏览器中加载报价目录，HTML 不再含旧版内嵌报价数据。直接读取公开目录后，应用现有 18 个型号中 16 个可获得报价；`sora-2`、`sora-2-pro` 当时未出现在目录中。MiniMax-H3 768P 的公开折后报价为 0.5712 积分/秒，5 秒预估 2.856 积分。公开报价不包含个人账户额外会员折扣，最终以平台实际扣费为准。
 
 2026-09-14 核对：`/api/pricing/model` 返回的 Seedance Mini 720P 原价为 0.0286 USD/秒、`discount_percent=0`，但官方价格页明确给出 `original_price=0.0286`、`after_discount=0.02288`。因此正确预估是 **0.02288 × 10 × 5 = 1.144 积分**，不是 1.43。代码直接采用折后字段，不写死 0.8，也不根据某次账单拟合折扣。对应任务保存的实际平台扣费为 1.144 积分，视频时长约 5.088 秒，差额并非只生成了 4 秒。
 

@@ -7,7 +7,7 @@ function within(promise, ms) {
   });
 }
 
-// Animate composed snapshots. The embedded page only receives its final viewport.
+// Animate the workspace while holding embedded pages at their settled viewport.
 export function createLayoutMotion({ setPaused }) {
   const root = document.documentElement;
   const layout = document.querySelector('#layout');
@@ -66,6 +66,50 @@ export function createLayoutMotion({ setPaused }) {
     maskFades = [];
     for (const mask of fading) { mask.remove(); masks.delete(mask); }
   }
+  async function slideLivePanes(changes) {
+    // Panes must stay live in every theme: scaling captured textures can stretch
+    // the entire text layer during Chromium's snapshot capture/handoff.
+    const panes = [...layout.children].filter(element => element.matches('#sidebar, #center'));
+    const visible = panes.filter(element => element.getBoundingClientRect().width > 1 && element.checkVisibility({ visibilityProperty: true }));
+    const before = getComputedStyle(layout).gridTemplateColumns;
+    const restoreViewports = holdViewports();
+    let restoreOpenedViewports = () => {};
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+    let animation;
+    const cancel = () => animation?.cancel();
+    const hidden = () => { if (document.hidden) cancel(); };
+    const reduce = () => { if (reduced.matches) cancel(); };
+    root.classList.add('layout-motion', 'layout-motion-live');
+    root.classList.remove('layout-motion-global', 'layout-sidebar-enter', 'layout-sidebar-leave', 'layout-device-held', 'layout-preview-fold');
+    for (const selector of Object.values(selectors)) document.querySelector(selector)?.style.removeProperty('view-transition-name');
+    try {
+      // Read, commit and animate in one task so the final layout never flashes
+      // before the animation's first frame. State/ARIA are committed just once.
+      changes.forEach(item => item.change());
+      const after = getComputedStyle(layout).gridTemplateColumns;
+      // A folded guest starts at zero width. Hold its final dimensions now,
+      // before interpolation, while already-held guests keep their old size.
+      restoreOpenedViewports = holdViewports();
+      for (const element of visible) element.classList.add('layout-live-visible');
+      animation = layout.animate({ gridTemplateColumns: [before, after] }, {
+        duration: 280, easing: 'cubic-bezier(.22,.68,0,1)', fill: 'both',
+      });
+      window.addEventListener('resize', cancel);
+      document.addEventListener('visibilitychange', hidden);
+      reduced.addEventListener('change', reduce);
+      await within(animation.finished, 1500).catch(() => {});
+    } finally {
+      window.removeEventListener('resize', cancel);
+      document.removeEventListener('visibilitychange', hidden);
+      reduced.removeEventListener('change', reduce);
+      animation?.cancel();
+      panes.forEach(element => element.classList.remove('layout-live-visible'));
+      restoreOpenedViewports();
+      restoreViewports();
+      root.classList.remove('layout-motion-live');
+    }
+    await within(setPaused(true), 350).catch(() => {});
+  }
   async function drain() {
     running = true;
     try {
@@ -73,9 +117,15 @@ export function createLayoutMotion({ setPaused }) {
       while (pending.length) {
         const changes = pending.splice(0);
         if (masks.size || changes.some(item => item.maskPreview)) coverPreview();
-        if (document.hidden || !document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        const livePanes = changes.some(item => !item.device);
+        if (document.hidden || (!livePanes && !document.startViewTransition) || matchMedia('(prefers-reduced-motion: reduce)').matches) {
           changes.forEach(item => item.change());
           await within(setPaused(true), 350).catch(() => {});
+          if (!pending.length) await revealPreview();
+          continue;
+        }
+        if (livePanes) {
+          await slideLivePanes(changes);
           if (!pending.length) await revealPreview();
           continue;
         }
@@ -207,7 +257,7 @@ export function createLayoutMotion({ setPaused }) {
       maskFades = [];
       for (const mask of masks) mask.remove();
       masks.clear();
-      root.classList.remove('layout-motion', 'layout-motion-global', 'layout-sidebar-enter', 'layout-sidebar-leave', 'layout-device-held', 'layout-preview-fold');
+      root.classList.remove('layout-motion', 'layout-motion-live', 'layout-motion-global', 'layout-sidebar-enter', 'layout-sidebar-leave', 'layout-device-held', 'layout-preview-fold');
       for (const selector of Object.values(selectors)) document.querySelector(selector)?.style.removeProperty('view-transition-name');
       running = false;
       void setPaused(false);

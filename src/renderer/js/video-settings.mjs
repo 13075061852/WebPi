@@ -77,7 +77,9 @@ export function initVideoSettings({ root = document, api = window.halo, onSaved 
         const reply = await api.videoEstimate({ provider, model, resolution, duration, ratio, network });
         if (version !== estimateVersion) return;
         if (!reply?.ok || !reply.data?.available) {
-          price.textContent = reply?.data?.message || '报价暂不可用'; return;
+          price.textContent = reply?.data?.message || '报价暂不可用';
+          detail.textContent = reply?.data?.detail || reply?.error || '';
+          return;
         }
         const value = reply.data;
         const amount = n => Number(n.toFixed(6)).toLocaleString('en-US', { maximumFractionDigits: 6 });

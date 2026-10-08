@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { VIDEO_PROVIDERS, createVideoProviders, validateVideoOptions, videoSpec, videoModelDefaults } from './video-providers.mjs';
 import { writeVideoJSON, validateVideoNetwork } from './video-settings.mjs';
 import { VideoHTTP } from './video-http.mjs';
+import { videoHistoryLocation, videoHistoryURL } from './video-history.mjs';
 
 const DOWNLOAD_LIMIT = 512 * 1024 * 1024;
 const sameCwd = (a, b) => process.platform === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
@@ -32,6 +33,7 @@ export class VideoGeneration {
       duration: job.duration, resolution: job.resolution,
       actual: job.billing?.actual || job.usage || null,
       estimate: job.billing?.estimate || null,
+      ...videoHistoryLocation(job),
     })).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   }
   provider(id, network = this.settings.publicConfig(id).network) {
@@ -195,6 +197,7 @@ export class VideoGeneration {
         const result = await provider.query(key, job.id, signal);
         if (delivered && result.status !== 'succeeded') return { ...publicJob(job), message: '本地视频已交付，平台结算状态尚未更新' };
         job.status = result.status;
+        if (result.status === 'succeeded' && videoHistoryURL(result.url)) job.url = videoHistoryURL(result.url);
         if (result.usage) job.usage = result.usage;
         recordBilling();
         if (result.billing) job.billing.platform = result.billing;
