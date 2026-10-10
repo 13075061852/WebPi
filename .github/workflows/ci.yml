@@ -8,29 +8,43 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      HALO_DOCUMENT_FONT: ${{ runner.temp }}/halo-document-font/gbsn00lp.ttf
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - name: Provide a Chinese TrueType font for document regressions
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Restore Chinese document regression font
+        id: font-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/halo-document-font
+          key: ubuntu-24.04-document-font-gbsn00lp-v1
+      - name: Provide a Chinese TrueType font on a cold cache
+        if: steps.font-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y fonts-arphic-gbsn00lp
           font="$(dpkg -L fonts-arphic-gbsn00lp | grep '/gbsn00lp\.ttf$')"
           test -s "$font"
-          printf 'HALO_DOCUMENT_FONT=%s\n' "$font" >> "$GITHUB_ENV"
-      # 全量语法检查（ESM/CJS 混合，node --check 逐个验证）
-      - run: npm run check
-      # 注入脚本语法（离线验证 executeJavaScript 的字符串）
-      - run: node test/check-touch-script.mjs
-      # 静态检查
-      - run: npm run lint
+          mkdir -p "$(dirname "$HALO_DOCUMENT_FONT")"
+          cp "$font" "$HALO_DOCUMENT_FONT"
+      - name: Verify the cached font includes Chinese glyphs
+        run: |
+          node -e "const f=require('fontkit').openSync(process.env.HALO_DOCUMENT_FONT); for(const c of '中文项目报告') if(!f.hasGlyphForCodePoint(c.codePointAt(0))) throw Error('Document font is missing '+c); console.log('Chinese document font verified');"
+      # Read-only syntax, lint and fixture portability gates run together.
+      - run: node scripts/check-source.mjs
       # 离线功能回归：隔离会话/认证夹具，不需要模型账户或全局 pi SDK
+      # Includes check-touch-script.mjs exactly once.
       - run: npm run test:regressions

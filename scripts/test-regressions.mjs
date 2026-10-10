@@ -7,15 +7,16 @@ import { fileURLToPath } from 'node:url';
 // Local regressions: bundled/offline Pi only; no saved accounts, GUI or Office installation required.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tests = [
-  'verify-release-workflow', 'verify-workspace-import', 'verify-installer-native',
+  'verify-release-workflow', 'verify-fixture-portability', 'verify-release-preflight', 'verify-release-upload', 'verify-release-inputs', 'verify-release-local',
+  'verify-workspace-import', 'verify-installer-native',
   'verify-release-history', 'verify-release-history-ui', 'verify-release-history-fetch',
-  'verify-app-updates', 'verify-image-generation', 'verify-image-card-timing',
+  'verify-app-updates', 'verify-image-generation', 'verify-image-card-timing', 'verify-artifact-files',
   'verify-turn-cost', 'verify-subscription-usage', 'verify-quota-refresh', 'verify-quota-auth',
   'verify-context-rate', 'verify-compaction-feedback',
   'verify-package-search', 'verify-global-proxy', 'verify-windows-proxy', 'verify-store-proxy',
   'verify-icon-library',
-  'verify-project-fast-start',
-  'verify-env-proxy', 'verify-pi-command', 'verify-bundled-pi', 'verify-kernel-prompts', 'verify-server-prompt', 'verify-environment-detection', 'verify-environment-manager', 'verify-environment-fallback', 'verify-video-generation',
+  'verify-project-fast-start', 'verify-git-commit-message',
+  'verify-env-proxy', 'verify-pi-command', 'verify-bundled-pi', 'verify-kernel-prompts', 'verify-server-prompt', 'verify-environment-detection', 'verify-environment-manager', 'verify-environment-fallback', 'verify-github-auth', 'verify-git-repositories', 'verify-video-generation',
   'verify-video-domestic', 'verify-video-international', 'verify-video-platforms', 'verify-video-apimart', 'verify-video-pricing', 'verify-video-workflow', 'verify-video-billing', 'verify-video-confirmations',
   'verify-video-history', 'verify-video-history-ui',
   'verify-digital-human', 'verify-voice-sample',
@@ -23,6 +24,7 @@ const tests = [
   'verify-session-integrity', 'verify-conversation-meta', 'verify-conversation-switch', 'verify-project-runs', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-server-tools', 'verify-server-delete',
   'verify-composer-events', 'verify-queue-images', 'verify-office-protocol', 'verify-ipc-sender',
   'verify-session-queue', 'verify-preview-races', 'verify-preview-refresh', 'verify-preview-motion',
+  'verify-server-preview', 'verify-preview-cleanup', 'verify-preview-performance',
   'verify-preview-file', 'verify-preview-inspection', 'verify-workspace-path',
   'verify-trusted-ui-url', 'verify-thinking-batch', 'verify-user-message',
   'verify-office', 'verify-office-failures', 'verify-office-efficiency',

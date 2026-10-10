@@ -376,6 +376,16 @@ export class PiBridge {
     };
   }
 
+  isProjectBusy(cwd) {
+    const canonical = value => {
+      try { return PiBridge.normPath(fs.realpathSync.native(value)); }
+      catch { return PiBridge.normPath(value); }
+    };
+    const project = canonical(cwd);
+    return [...this.#pool.values()].some(context => canonical(context.cwd) === project &&
+      !this.serverTargets.get(context.runtime.session.sessionId) && (context.busy || context.runtime.session.isStreaming));
+  }
+
   /* ---------------- lifecycle ---------------- */
 
   async start(cwd) {

@@ -1,5 +1,5 @@
 import { resolvePreviewPath } from './preview-path.mjs';
-import { artifactPath, replyArtifacts, decorateArtifactCard } from "./artifacts.mjs";
+import { artifactPath, replyArtifacts, decorateArtifactCard, filterArtifactPlayback } from "./artifacts.mjs";
 import { initAppUpdates } from './app-updates.mjs';
 import { initProxySettings } from './proxy-settings.mjs';
 import { initThemePreviews } from './theme-previews.mjs';
@@ -18,6 +18,7 @@ import { initVideoHistory } from './video-history.mjs';
 import { initDigitalHuman } from './digital-human.mjs';
 import { initProjectRuns } from './project-runs.mjs';
 import { initSidebarHeight } from './sidebar-height.mjs';
+import { initGitRepositories } from './git-repositories.mjs';
 import { OutputRate } from './output-rate.mjs';
 import { createQuotaRefreshQueue } from './quota-refresh.mjs';
 import { toolIcon, thinkingIcon } from './tool-icons.mjs';
@@ -38,6 +39,8 @@ let videoSettings;
 let proxySettings;
 let videoUsage;
 let digitalHuman;
+let gitRepositoriesUI;
+let projectRows = [];
 
 /* ---- 渲染层常量（与主进程 LIMITS 对应，收敛魔法数字） ---- */
 const CONFIRM_RESET_MS = 2600;        // 两步删除确认：未二次确认时恢复的毫秒数
@@ -127,6 +130,23 @@ document.addEventListener("DOMContentLoaded", () => {
     else setTimeout(background, 0);
   });
   initServerUI();
+  gitRepositoriesUI = initGitRepositories({ api: window.halo, context: () => S.state, modalMotion,
+    onOpenProject: openGitProject,
+    renderLocalProjects: (container, repositories, onManage) => {
+      const projects = repositories.map(repository => ({
+        name: repository.name || repository.fullName.split('/').at(-1),
+        cwd: repository.localPath, sessions: [],
+        ...projectRows.find(project => normPath(project.cwd) === normPath(repository.localPath)),
+        active: !S.state?.serverId && normPath(S.state?.cwd) === normPath(repository.localPath),
+        repository,
+      }));
+      renderProjectGroups(container, projects, { onManage });
+    },
+    onChanged: async cwd => {
+      await loadProjects();
+      if (normPath(S.state?.cwd) === normPath(cwd)) await loadTree(true);
+    },
+  });
   void window.halo.getState().then(reply => {
     if (!reply?.ok) throw Error(reply?.error || '无法读取启动状态');
     if (!S.state?.ready || reply.data?.ready) applyState(reply.data);
@@ -319,26 +339,36 @@ async function loadServerPorts(force = false) {
     row.tabIndex = 0; row.setAttribute("role", "button"); row.title = "点击预览端口 " + item.port;
     const open = async () => {
       setPreviewCollapsed(false);
+      const key = portKey(id, item), body = $("#pvBody");
+      const sameService = selectedPortKey === key && previewService?.kind === "service" && previewService.serverId === id;
+      // Keep pending tunnel work and the current browser, including navigation and form state.
+      if (sameService && ((previewService.status === "opening" && previewService.request === portPreviewRequest) ||
+          (["loading", "loaded"].includes(previewService.status) && $("webview", body)?.isConnected))) {
+        updatePortSelection();
+        return;
+      }
       const request = ++portPreviewRequest;
-      selectedPortKey = portKey(id, item); updatePortSelection();
-      previewService = {kind:"service", serverId:id, port:item.port, protocol:item.protocol, address:item.address, process:item.process, status:"loading"};
+      selectedPortKey = key; updatePortSelection();
+      previewService = {kind:"service", serverId:id, port:item.port, protocol:item.protocol, address:item.address, process:item.process, status:"opening", request};
       S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true;
       const serverLabel = document.querySelector('.server-group[data-server-id="' + CSS.escape(id) + '"] .server-group-toggle span')?.textContent || "服务器";
       $("#pvName").textContent = serverLabel + " · " + item.port;
-      const body = $("#pvBody"); body.innerHTML = '<div class="pv-empty"><p>正在连接网页服务…</p></div>';
+      body.innerHTML = '<div class="pv-empty"><p>正在连接网页服务…</p></div>';
       const result = await window.halo.serverPreview(id, item);
       if (request !== portPreviewRequest || id !== portServerId) return;
       if (!result?.ok) { previewService.status = "failed"; body.innerHTML = '<div class="pv-empty"><p>' + esc(result?.error || "预览失败") + "</p></div>"; return; }
       body.innerHTML = '<div class="dev-shell"><div class="dev-screen"><webview title="服务器端口预览" partition="server-preview"></webview></div></div>';
-      const guest = $("webview", body);
+      const guest = $("webview", body), service = previewService;
+      const currentGuest = () => previewService === service && $("webview", body) === guest;
       guest.addEventListener("did-fail-load", event => {
-        if (request === portPreviewRequest && event.isMainFrame && event.errorCode !== -3) {
-          if (previewService) previewService.status = "failed";
+        if (currentGuest() && event.isMainFrame && event.errorCode !== -3) {
+          service.status = "failed";
           body.innerHTML = '<div class="pv-empty"><p>网页加载失败：' + esc(event.errorDescription || "请重新点击端口重试") + '</p></div>';
         }
       });
-      previewService.url = result.data;
-      guest.addEventListener("did-finish-load", () => { if (request === portPreviewRequest && previewService) previewService.status = "loaded"; });
+      previewService.url = result.data; previewService.status = "loading";
+      guest.addEventListener("did-start-loading", () => { if (currentGuest()) service.status = "loading"; });
+      guest.addEventListener("did-finish-load", () => { if (currentGuest()) service.status = "loaded"; });
       guest.src = result.data;
       updatePortSelection();
       window.halo.previewTouch?.(previewUsesTouch());
@@ -918,10 +948,13 @@ function ensureTurn() {
   return wrap;
 }
 
-// Progress text stays visible; each following run of execution steps has its own fold.
+// Keep the latest step visible; archive it only when a newer step arrives.
+// Move the original nodes so live output, detail toggles and confirmations survive.
 function compactToolTimeline(turn) {
+  const latest = [...turn.children].findLast(node => node.matches('.tool, .think, .stall-hint'));
   let archive = null;
   for (const node of Array.from(turn.children)) {
+    if (node === latest) continue;
     if (node.matches('.md, .error-card') || node.querySelector('.video-confirmation')) { archive = null; continue; }
     if (node.matches('.tool-history')) { archive = node; continue; }
     if (!node.matches('.tool, .think, .stall-hint')) continue;
@@ -943,7 +976,7 @@ function updateProcessActivity(turn) {
   for (const group of groups) {
     const running = !!group.querySelector('.tool.running');
     const thinking = !!S.thinking && group.contains(S.thinking.el);
-    const waiting = S.streaming && !S.assistant && !anyTools && !S.thinking && group === groups.at(-1);
+    const waiting = S.streaming && !S.assistant && !anyTools && !S.thinking && group === turn.lastElementChild;
     const active = running || thinking || waiting;
     group.classList.toggle('is-running', active);
     group.setAttribute('aria-busy', String(active));
@@ -959,20 +992,23 @@ function formatDuration(seconds) {
   return [hours ? hours + '小时' : '', minutes ? minutes + '分钟' : '', secs || !total ? secs + '秒' : ''].filter(Boolean).join(' ');
 }
 
-function updateVideoArtifactCard(button, file, turn, cwd) {
+function updateVideoArtifactCard(button, file, turn, cwd, hash) {
   if (!button?.classList.contains('artifact-video')) return;
-  const result = [...(turn.__videoResults?.values() || [])].find(item => {
-    const recorded = artifactPath(item.file, cwd);
-    return recorded && normPath(recorded) === normPath(file);
-  });
+  const results = [...(turn.__videoResults?.values() || [])];
+  const result = results.find(item => hash && item.sha256 === hash)
+    || results.find(item => (!hash || !item.sha256) && normPath(artifactPath(item.file, cwd) || '') === normPath(file));
   if (!result) return;
   const meta = button.querySelector('.artifact-meta');
   meta.classList.add('artifact-video-details');
   let model = meta.querySelector('.artifact-video-model');
   if (!model) {
     model = document.createElement('span'); model.className = 'artifact-video-model';
+    const summary = document.createElement('span'); summary.className = 'artifact-video-summary';
+    summary.append(model);
+    const mediaInfo = button.querySelector('.artifact-media-info');
+    if (mediaInfo) summary.append(mediaInfo);
     const metrics = document.createElement('span'); metrics.className = 'artifact-video-metrics';
-    meta.replaceChildren(model, metrics);
+    meta.replaceChildren(summary, metrics);
   }
   model.textContent = `${result.provider_name || result.provider} · ${result.model}`;
   const duration = result.timing?.totalMs;
@@ -1022,6 +1058,17 @@ function updateImageArtifactCard(button, file, turn, cwd, hash) {
   label.title = '从图片生成指令开始执行，到图片返回并保存完成（含请求、生成与下载）';
 }
 
+function filterTurnArtifactPlayback(turn) {
+  const files = turn.__playbackFiles || [];
+  // Ordinary text replies retain their incremental-rendering fast path.
+  // After removing media cards, restore hidden content once before skipping.
+  if (!files.length && !turn.__playbackFiltered) return;
+  for (const md of turn.querySelectorAll(':scope > .md')) {
+    filterArtifactPlayback(md, S.state?.cwd || '', files);
+  }
+  turn.__playbackFiltered = !!files.length;
+}
+
 async function showTurnArtifacts(turn) {
   renderWebsiteCards(turn, openWebsite);
   const request = turn.__artifactRequest = (turn.__artifactRequest || 0) + 1;
@@ -1032,16 +1079,36 @@ async function showTurnArtifacts(turn) {
     const p = artifactPath(file, cwd);
     if (p && !paths.some(x => normPath(x) === normPath(p))) paths.push(p);
   }
-  if (!paths.length) { turn.querySelector(':scope > .turn-artifacts')?.remove(); return; }
+  if (!paths.length) {
+    turn.querySelector(':scope > .turn-artifacts')?.remove();
+    turn.__playbackFiles = []; filterTurnArtifactPlayback(turn); return;
+  }
   // Resolve delivery paths after renames; never advertise vanished intermediate files.
-  const checked=await window.halo.artifactFiles(paths.slice(0,100), {imageHashes:!!turn.__imageResults?.size,mediaMetadata:true}).catch(()=>null);
+  const checked=await window.halo.artifactFiles(paths.slice(0,100), {imageHashes:!!turn.__imageResults?.size,videoHashes:!!turn.__videoResults?.size,mediaMetadata:true}).catch(()=>null);
   if (!turn.isConnected || request !== turn.__artifactRequest || switchSeq !== S.sessionSwitchSeq ||
       cwd !== (S.state?.cwd || '') || !checked?.ok) return;
   const mediaSizes = new Map(checked.data.filter(item => typeof item === 'object').map(item => [normPath(item.file), item.bytes]));
   const hashes = new Map(checked.data.filter(item => typeof item === 'object').map(item => [normPath(item.file), item.sha256]));
   paths = [...new Map(checked.data.map(item => { const file = typeof item === 'string' ? item : item.file; return [normPath(file), file]; })).values()];
+  // Older saved tool results have no fingerprint. Match their still-existing
+  // downloads before dropping duplicate paths so the final copy keeps its metadata.
+  for (const result of turn.__videoResults?.values() || []) {
+    if (!result.sha256) result.sha256 = hashes.get(normPath(artifactPath(result.file, cwd) || ''));
+  }
+  // Final-reply paths come first. Only identical video bytes are duplicates;
+  // filenames, dimensions and durations cannot identify a different edit.
+  const seenVideos = new Set();
+  paths = paths.filter(file => {
+    const hash = /\.(mp4|webm)$/i.test(file) && hashes.get(normPath(file));
+    if (!hash) return true;
+    if (seenVideos.has(hash)) return false;
+    seenVideos.add(hash);
+    return true;
+  });
   let box = turn.querySelector(':scope > .turn-artifacts');
-  if (!paths.length) { box?.remove(); return; }
+  if (!paths.length) {
+    box?.remove(); turn.__playbackFiles = []; filterTurnArtifactPlayback(turn); return;
+  }
   box ||= document.createElement('div');
   box.className = 'turn-artifacts';
   box.setAttribute('aria-label','生成文件');
@@ -1053,9 +1120,15 @@ async function showTurnArtifacts(turn) {
   let index = 0;
   for (const file of paths) {
     const key = normPath(file);
-    const previous = existing.get(key);
+    let previous = existing.get(key);
+    const hash = hashes.get(key);
+    if (previous?.dataset.artifactHash && hash && previous.dataset.artifactHash !== hash) {
+      previous.remove();
+      previous = null;
+    }
     if (previous) {
-      updateVideoArtifactCard(previous.querySelector('.artifact-video'), file, turn, cwd);
+      previous.dataset.artifactHash = hash || previous.dataset.artifactHash || '';
+      updateVideoArtifactCard(previous.querySelector('.artifact-video'), file, turn, cwd, hash);
       updateImageArtifactCard(previous.matches('.artifact-image') ? previous : previous.querySelector('.artifact-image'), file, turn, cwd, hashes.get(key));
       if (box.children[index] !== previous) box.insertBefore(previous, box.children[index] || null);
       index++;
@@ -1063,7 +1136,7 @@ async function showTurnArtifacts(turn) {
     }
     const button=document.createElement('button');
     decorateArtifactCard(button, file, previewURL(file), { bytes: mediaSizes.get(key) });
-    updateVideoArtifactCard(button, file, turn, cwd);
+    updateVideoArtifactCard(button, file, turn, cwd, hash);
     updateImageArtifactCard(button, file, turn, cwd, hashes.get(key));
     button.onclick=async()=>{
       try { await setPreview(file,true); saveWorkspace(); } catch(error){toast(error.message,'err');}
@@ -1086,9 +1159,17 @@ async function showTurnArtifacts(turn) {
       row.append(button); entry = row;
     }
     entry.dataset.artifactPath = key;
+    entry.dataset.artifactHash = hash || '';
     box.insertBefore(entry, box.children[index++] || null);
   }
   if (!box.isConnected) turn.appendChild(box);
+  // A renamed identical copy also belongs to the delivered video card. Match
+  // only verified paths/hashes, never a basename or a similar-looking clip.
+  const deliveredVideoHashes = new Set(paths.filter(file => /\.(mp4|webm)$/i.test(file)).map(file => hashes.get(normPath(file))).filter(Boolean));
+  turn.__playbackFiles = checked.data.map(item => typeof item === 'string' ? item : item.file).filter(file =>
+    /\.(mp4|webm|mp3|wav|m4a|aac|ogg|flac)$/i.test(file) &&
+    (wanted.has(normPath(file)) || (/\.(mp4|webm)$/i.test(file) && deliveredVideoHashes.has(hashes.get(normPath(file))))));
+  filterTurnArtifactPlayback(turn);
   // The file card is the preview entry; avoid repeating the same image at full size.
   for (const img of turn.querySelectorAll('.md img')) {
     const file = artifactPath(img.getAttribute('src'), cwd);
@@ -1120,6 +1201,7 @@ function collectArtifactResult(turn, toolName, text, toolDurationMs, details) {
       const key = `${result.provider}:${result.task_id}`;
       const previous = records.get(key);
       records.set(key, { ...previous, ...result, file: result.file || previous?.file,
+        sha256: result.sha256 || previous?.sha256,
         usage: result.usage || previous?.usage, timing: result.timing || previous?.timing,
         __toolDurationMs: previous?.__toolDurationMs ?? toolDurationMs });
     }
@@ -1254,6 +1336,7 @@ function finalizeMessage() {
     // 最终渲染：去掉流式光标
     S.assistant.innerHTML = rich(S.assistantText);
     if (S.assistantText.trim() && S.turn) S.turn.__texts.push(S.assistantText);
+    if (S.turn) filterTurnArtifactPlayback(S.turn);
   }
   S.assistant = null;
   updateTurnStatus();
@@ -1356,6 +1439,7 @@ function renderAssistant() {
   if (!el) return;
   // 增量流式渲染：已冻结段落不重渲，只有尾部随 delta 更新（长回复 O(n) 而非 O(n²)）
   streamRender(el, S.assistantText);
+  if (S.turn) filterTurnArtifactPlayback(S.turn);
   scrollDown();
 }
 
@@ -2264,7 +2348,7 @@ function wireUI() {
   document.querySelectorAll('[data-starter]').forEach(button => {
     button.addEventListener('click', () => {
       const input = $("#input");
-      input.value = input.value.trim() ? input.value + '\n' + button.dataset.starter : button.dataset.starter;
+      input.value = button.dataset.starter;
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
@@ -2426,7 +2510,7 @@ function wireUI() {
   });
 
   // modals: close on backdrop / X / Esc; bare Esc aborts task
-  $$(".modal").forEach((m) => {
+  $$(".modal:not(#gitRepositoryDialog)").forEach((m) => {
     m.addEventListener("click", (e) => { if (e.target === m) closeModal(m); });
     $$("[data-close]", m).forEach((b) => b.addEventListener("click", () => closeModal(m)));
   });
@@ -2435,6 +2519,7 @@ function wireUI() {
     if (document.querySelector("select:open")) return;
     if (document.querySelector(".image-viewer[open]")) return;
     const open = $(".modal.show");
+    if (open?.id === 'gitRepositoryDialog') return; // Its cancel handler keeps running Git operations visible.
     if (open) { closeModal(open); return; }
     if (S.streaming) abort();
   });
@@ -3248,9 +3333,17 @@ async function switchProjectViaAdd(dir) {
     }
   }
 }
+async function openGitProject(cwd) {
+  if (normPath(S.state?.cwd) !== normPath(cwd) || S.state?.serverId) {
+    if (projectRows.some(project => normPath(project.cwd) === normPath(cwd))) await switchProject(cwd);
+    else await switchProjectViaAdd(cwd);
+  }
+  if (S.state?.serverId || normPath(S.state?.cwd) !== normPath(cwd)) throw Error('项目未打开，请重试');
+  $('#input').focus();
+}
 
 /* ---- 项目：一个项目 = 一个文件夹，各自记住上一个对话 ---- */
-function addConversationFold(toggle, children, collapsed, key, name, onChange = () => {}) {
+function addConversationFold(toggle, children, collapsed, key, name, onChange = () => {}, toggleWithName = true) {
   const fold = document.createElement('button');
   fold.className = 'conversation-fold';
   fold.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>';
@@ -3292,7 +3385,7 @@ function addConversationFold(toggle, children, collapsed, key, name, onChange = 
     animation.onfinish = finish;
   };
   fold.addEventListener('click', toggleExpanded);
-  toggle.addEventListener('click', toggleExpanded);
+  if (toggleWithName) toggle.addEventListener('click', toggleExpanded);
   toggle.before(fold);
   return sync;
 }
@@ -3316,8 +3409,17 @@ async function loadProjects() {
   if (request !== projectListRequest) return;
   if (!r?.ok) { toast(r?.error || "项目列表读取失败", "err"); return; }
   const list = r?.data || [];
+  projectRows = list;
+  renderProjectGroups(box, list);
+  gitRepositoriesUI?.updateProjects();
+}
+function renderProjectGroups(box, list, { onManage } = {}) {
   box.replaceChildren();
-  if (!list.length) { box.innerHTML = '<div class="res-empty">还没有项目，点上方“＋ 添加”</div>'; return; }
+  if (!list.length) {
+    const empty = document.createElement('div'); empty.className = onManage ? 'res-empty git-empty-local' : 'res-empty';
+    empty.textContent = onManage ? '暂无本地仓库' : '还没有项目，点上方“＋ 添加”';
+    box.append(empty); return;
+  }
   for (const p of list) {
     const group = document.createElement("div"); group.className = "project-group server-group" + (p.active ? " current" : "");
     group.innerHTML = '<div class="project-group-head server-group-head"><button class="project-toggle server-group-toggle"><svg viewBox="0 0 24 24" class="ic"><path d="M3 7h6l2 2h10l-3 11H3Z M3 7V4h6l2 3h8v2"/></svg><span></span></button><details class="server-group-menu" name="server-actions"><summary title="项目操作">···</summary><div><button class="project-remove server-group-remove" title="移除项目（不删除文件）">移除项目</button></div></details><button class="project-new server-group-new" title="新建对话"><svg viewBox="0 0 24 24" class="ic"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6M14 5l5 5M10 14l1-5 7-7 5 5-7 7Z"/></svg></button></div><div class="project-conversations server-conversations"></div>';
@@ -3326,7 +3428,17 @@ async function loadProjects() {
     toggle.title = p.cwd;
     children.hidden = collapsedProjects.has(normPath(p.cwd));
     addConversationFold(toggle, children, collapsedProjects, normPath(p.cwd), p.name, saveProjectFolds);
-    $(".project-remove", group).addEventListener("click", () => removeWorkspaceItem(() => window.halo.projectRemove(p.cwd)));
+    if (p.repository) {
+      group.dataset.repository = p.repository.fullName;
+      group.dataset.account = p.repository.account || '';
+      toggle.title = p.repository.fullName + '\n' + p.cwd;
+      toggle.addEventListener('click', () => void openGitProject(p.cwd).catch(error => toast(error.message, 'err')));
+      const manage = $(".project-remove", group);
+      manage.classList.remove('project-remove'); manage.classList.add('git-repository-manage');
+      manage.textContent = '仓库操作'; manage.title = '同步或推送仓库';
+      manage.addEventListener('click', () => { closeServerMenus(); onManage?.(p.repository); });
+      $('summary', group).title = '仓库操作';
+    } else $(".project-remove", group).addEventListener("click", () => removeWorkspaceItem(() => window.halo.projectRemove(p.cwd)));
     $(".project-new", group).addEventListener("click", async () => {
       if (!p.active) { await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
       collapsedProjects.delete(normPath(p.cwd)); saveProjectFolds(); await newSession(); await loadProjects(); $("#input").focus();

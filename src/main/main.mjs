@@ -9,6 +9,7 @@ import { createReleaseHistoryFetch } from './release-history-fetch.mjs';
 import { createStartupLifecycle } from './startup-lifecycle.mjs';
 import { inspectPreview } from "./preview-inspection.mjs";
 import { createPreviewControl } from './preview-control.mjs';
+import { createArtifactFileInspector } from './artifact-files.mjs';
 import { previewDocument } from "./document-preview.mjs";
 /**
  * Pi Halo — Electron main process
@@ -18,7 +19,7 @@ import { previewDocument } from "./document-preview.mjs";
 import { app, BrowserWindow, session, ipcMain, dialog, shell, protocol, safeStorage, clipboard, nativeImage, ClipboardItem } from "electron";
 import path from "node:path";
 import fs from "node:fs";
-import { X509Certificate, createHash } from "node:crypto";
+import { X509Certificate } from "node:crypto";
 import { spawnPi as runPiCommand } from "./pi-command.mjs";
 import { ServerManager, parseListeningPorts } from "./servers.mjs";
 import { TerminalPool } from "./terminal-pool.mjs";
@@ -31,6 +32,8 @@ import { WindowsSystemProxy } from './windows-system-proxy.mjs';
 import { StoreProxy } from './store-proxy.mjs';
 import { EnvironmentManager } from "./environment-manager.mjs";
 import { GitHubAuth } from './github-auth.mjs';
+import { GitRepositories } from './git-repositories.mjs';
+import { generateGitCommitMessage } from './git-commit-message.mjs';
 import { CloudflareService } from './cloudflare.mjs';
 import os from "node:os";
 import { VideoSettings } from "./video-settings.mjs";
@@ -197,7 +200,8 @@ function bootstrap() {
     fetcher: (...args) => session.defaultSession.fetch(...args),
     onChange: state => emit('halo:environment-progress', state),
   });
-  const githubAuth = new GitHubAuth();
+  const githubAuth = new GitHubAuth({ store });
+  const gitRepositories = new GitRepositories({ auth: githubAuth, store, fetchImpl: (...args) => fetch(...args) });
   const cloudflareDir = path.join(app.getPath('userData'), 'cloudflare');
   fs.mkdirSync(cloudflareDir, { recursive: true });
   const cloudflare = new CloudflareService({ cwd: cloudflareDir });
@@ -554,11 +558,76 @@ function bootstrap() {
   handle("halo:server-remove", (id) => switchSession(() => bridge.removeServer(id)));
   handle("halo:environment-status", () => environment.status());
   handle('halo:github-status', () => githubAuth.status());
+  handle('halo:github-select', account => githubAuth.select(account));
+  handle('halo:git-repositories', input => gitRepositories.list(input));
+  handle('halo:git-local-repositories', input => gitRepositories.local(input));
+  handle('halo:git-file-preview', input => gitRepositories.filePreview(input));
+  handle('halo:git-repository-open-folder', async input => {
+    const local = await gitRepositories.local({ account: input?.account });
+    const repository = local.repositories.find(repo => repo.fullName === input?.fullName);
+    if (!repository?.localPath || !fs.statSync(repository.localPath).isDirectory()) throw Error('仓库本地目录不存在');
+    const error = await shell.openPath(repository.localPath);
+    if (error) throw Error(error);
+    return true;
+  });
+  const defaultCloneDirectory = () => {
+    const saved = store.data.gitCloneDirectory;
+    try { if (typeof saved === 'string' && path.isAbsolute(saved) && fs.statSync(saved).isDirectory()) return saved; } catch { /* Fall back when the saved directory was removed. */ }
+    try { return app.getPath('documents'); } catch { return app.getPath('home'); }
+  };
+  handle('halo:git-repository-status', async input => ({ ...await gitRepositories.status(input), cloneDirectory: defaultCloneDirectory() }));
+  const validateCloneDirectory = value => {
+    if (typeof value !== 'string' || !path.isAbsolute(value.trim())) throw Error('请输入完整的本地目录路径');
+    const directory = path.resolve(value.trim());
+    try { if (fs.statSync(directory).isDirectory()) return directory; } catch { /* Report a usable validation error below. */ }
+    throw Error('目录不存在，请选择已有目录或通过浏览新建文件夹');
+  };
+  handle('halo:git-clone-directory', async input => {
+    let directory = input?.directory;
+    if (input?.browse) {
+      const picked = await dialog.showOpenDialog(mainWin, {
+      title: '选择克隆目录（将记为默认位置）',
+      defaultPath: defaultCloneDirectory(),
+      properties: ['openDirectory', 'createDirectory'],
+      });
+      if (picked.canceled || !picked.filePaths[0]) return null;
+      directory = picked.filePaths[0];
+    }
+    directory = validateCloneDirectory(directory);
+    store.set('gitCloneDirectory', directory);
+    return directory;
+  });
+  handle('halo:git-repository-clone', async input => {
+    const parent = validateCloneDirectory(input?.parent ?? defaultCloneDirectory());
+    const result = await gitRepositories.clone({ ...input, parent });
+    store.set('gitCloneDirectory', parent);
+    return result;
+  });
+  const repositoryMutation = async (input, action) => {
+    const state = await gitRepositories.status(input);
+    if (state.localPath && bridge.isProjectBusy(state.localPath)) throw Error('该项目的任务正在执行，请等待结束后再操作仓库');
+    return action(input);
+  };
+  handle('halo:git-repository-update', input => {
+    const target = { account: input?.account, fullName: input?.fullName };
+    return repositoryMutation(target, value => gitRepositories.update(value));
+  });
+  handle('halo:git-repository-upload', input => repositoryMutation(input, value => gitRepositories.upload(value)));
+  handle('halo:git-commit-message', input => {
+    const target = { account: input?.account, fullName: input?.fullName, files: input?.files };
+    const runtime = bridge.modelRuntime, model = bridge.session?.model;
+    return repositoryMutation(target, async value => generateGitCommitMessage({ runtime, model, context: await gitRepositories.commitContext(value) }));
+  });
+  handle('halo:git-repository-create', input => gitRepositories.create(input));
   handle('halo:cloudflare-status', () => cloudflare.status());
   handle('halo:cloudflare-login', () => cloudflare.auth('login'));
   handle('halo:cloudflare-logout', () => cloudflare.auth('logout'));
   handle('halo:github-login', () => githubAuth.login());
-  handle('halo:github-logout', account => githubAuth.logout(account));
+  handle('halo:github-logout', async account => {
+    const state = await githubAuth.logout(account);
+    gitRepositories.invalidate(account);
+    return state;
+  });
   handle("halo:environment-install", () => {
     if (environmentRepairBusy) throw Error('请等待 AI 修复结束');
     return environment.start();
@@ -822,23 +891,14 @@ function bootstrap() {
     return true;
   });
 
+  const inspectArtifactFile = createArtifactFileInspector();
   handle("halo:artifact-files", async (files, options) => {
     if (!Array.isArray(files) || files.length > 100) throw Error('产物列表无效');
     const found=await Promise.all(files.map(async file=>{
       if(typeof file !== 'string') return null;
       const abs=path.resolve(bridge.cwd || '.',file);
       if(!isInsideProject(abs)) return null;
-      const stat=await fs.promises.stat(abs).catch(()=>null);
-      if (!stat?.isFile()) return null;
-      if (options?.imageHashes && /\.(png|jpe?g|webp)$/i.test(abs) && stat.size <= 32 * 1024 * 1024) {
-        try {
-          const hash = createHash('sha256');
-          for await (const chunk of fs.createReadStream(abs)) hash.update(chunk);
-          return {file,sha256:hash.digest('hex')};
-        } catch { return file; }
-      }
-      if (options?.mediaMetadata && /\.(mp4|webm|mp3|wav|m4a|aac|ogg|flac)$/i.test(abs)) return { file, bytes: stat.size };
-      return file;
+      return inspectArtifactFile(file, abs, options);
     }));
     return found.filter(Boolean);
   });

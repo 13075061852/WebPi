@@ -33,13 +33,20 @@ export class ServerManager {
     await this.connect(id);
     const client = this.clients.get(id), sockets = new Set();
     if (!client) throw Error('服务器已断开连接');
+    let firstForwardReady;
+    const initialForward = new Promise(resolve => { firstForwardReady = resolve; });
     const listener = net.createServer(socket => {
+      socket.setNoDelay(true);
       sockets.add(socket); socket.on('close', () => sockets.delete(socket)); socket.on('error', () => {});
-      client.forwardOut('127.0.0.1', socket.remotePort || 0, host, port, (error, stream) => {
-        if (error || socket.destroyed) { stream?.destroy(); socket.destroy(); return; }
-        stream.on('error', () => socket.destroy()); socket.on('close', () => stream.destroy());
-        stream.pipe(socket).pipe(stream);
-      });
+      try {
+        client.forwardOut('127.0.0.1', socket.remotePort || 0, host, port, (error, stream) => {
+          firstForwardReady();
+          if (error || socket.destroyed) { stream?.destroy(); socket.destroy(); return; }
+          stream.on('error', () => socket.destroy()); stream.on('close', () => socket.destroy());
+          socket.on('close', () => stream.destroy());
+          stream.pipe(socket).pipe(stream);
+        });
+      } catch { firstForwardReady(); socket.destroy(); }
     });
     let closed = false;
     const pendingProbes = new Set();
@@ -47,6 +54,7 @@ export class ServerManager {
     const close = () => {
       if (closed) return;
       closed = true;
+      firstForwardReady();
       listener.close();
       for (const cancel of pendingProbes) cancel();
       pendingProbes.clear();
@@ -57,79 +65,149 @@ export class ServerManager {
     await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', resolve); });
     client.once('close', close);
     try {
-    ensureOpen();
-    this.previews.set(key, { id, close, url: null });
-    const base = '127.0.0.1:' + listener.address().port;
-    const probe = (scheme, destination = base) => new Promise(resolve => {
       ensureOpen();
-      const request = (scheme === 'https' ? https : http).request(scheme + '://' + destination, { method: 'GET' }, response => { response.resume(); resolve(true); });
-      const cancel = () => { request.destroy(); resolve(false); };
-      pendingProbes.add(cancel);
-      request.once('close', () => pendingProbes.delete(cancel));
-      request.setTimeout(4000, cancel); request.on('error', () => resolve(false)); request.end();
-    });
-    let scheme = await probe('https') ? 'https' : null;
-    ensureOpen();
-    if (!scheme) {
+      this.previews.set(key, { id, close, url: null });
+      const localPort = listener.address().port, base = '127.0.0.1:' + localPort;
+      // A wall-clock deadline also covers stalled SSH forwarding, DNS and TLS handshakes.
+      // Socket inactivity timers alone can restart during a handshake or a trickled response.
+      const startProbe = (deadline, operation) => {
+        let cancel;
+        const promise = new Promise(resolve => {
+          let settled = false, resource;
+          const finish = result => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer); pendingProbes.delete(cancel); resource?.destroy(); resolve(result);
+          };
+          cancel = () => finish(null);
+          const timer = setTimeout(cancel, Math.max(0, deadline - performance.now()));
+          pendingProbes.add(cancel);
+          if (closed || deadline <= performance.now()) { cancel(); return; }
+          try {
+            resource = operation(finish);
+            if (settled) resource?.destroy();
+          } catch { finish(null); }
+        });
+        return { promise, cancel };
+      };
+      const headerProbe = (scheme, destination, deadline, { method = 'HEAD', direct = false } = {}) => startProbe(deadline, finish => {
+        const request = (scheme === 'https' ? https : http).request(scheme + '://' + destination + '/', { method, ...(direct ? { agent: false } : {}) }, response => {
+          const upgrade = String(response.headers.upgrade || '');
+          const location = String(response.headers.location || '');
+          const needsTls = scheme === 'http' && (response.statusCode === 426 || /\b(?:https|tls)\b/i.test(upgrade));
+          // TLS listeners can answer plaintext with HTTP 400. Prefer a successful TLS
+          // handshake before accepting it, but retain genuine HTTP error/redirect pages.
+          const preferTls = scheme === 'http' && (response.statusCode === 400 || /^https:\/\//i.test(location));
+          // HEAD avoids downloading the homepage twice. 405/501 still identify an HTTP
+          // service. GET is only a fallback for servers that do not answer HEAD; stop
+          // either method at headers instead of downloading the page in a probe.
+          response.destroy(); finish(needsTls ? null : { scheme, ...(preferTls ? { preferTls: true } : {}) });
+        });
+        request.on('error', () => finish(null)); request.on('close', () => finish(null)); request.end(); return request;
+      });
+      const certificateProbe = (destination, destinationPort, deadline) => startProbe(deadline, finish => {
+        const socket = tls.connect({ host: destination, port: destinationPort, rejectUnauthorized: false }, () => {
+          finish(socket.getPeerCertificate());
+        });
+        socket.on('error', () => finish(null)); socket.on('close', () => finish(null)); return socket;
+      });
+      const compatibleHeaders = (scheme, destination, deadline) => {
+        let cancelled = false, request = headerProbe(scheme, destination, deadline);
+        return {
+          cancel: () => { cancelled = true; request.cancel(); },
+          promise: (async () => {
+            const result = await request.promise;
+            if (result || cancelled || closed || deadline <= performance.now()) return result;
+            request = headerProbe(scheme, destination, deadline, { method: 'GET' });
+            return request.promise;
+          })(),
+        };
+      };
+      const firstValid = async probes => {
+        const selected = await new Promise(resolve => {
+          let remaining = probes.length, deferred = null;
+          if (!remaining) { resolve(null); return; }
+          for (const probe of probes) probe.promise.then(result => {
+            if (result?.preferTls) deferred = result;
+            else if (result) resolve(result);
+            if (--remaining === 0) resolve(deferred);
+          });
+        });
+        for (const probe of probes) probe.cancel();
+        ensureOpen(); return selected;
+      };
+      const started = performance.now(), deadline = started + this.previewTimeoutMs;
+      let httpCancelled = false;
+      let httpRequest = headerProbe('http', base, deadline, { direct: true });
+      const httpProbe = {
+        cancel: () => { httpCancelled = true; httpRequest.cancel(); },
+        promise: (async () => {
+          const result = await httpRequest.promise;
+          if (result || httpCancelled || closed) return result;
+          // Give a slow but valid HEAD its full budget. A failed HEAD may mean this
+          // endpoint is TLS; finish that negotiation before issuing any fallback GET.
+          // This also releases a silent TLS connection on single-threaded HTTP servers.
+          if (await secureProbe.promise || httpCancelled || closed) return null;
+          httpRequest = headerProbe('http', base, performance.now() + this.previewTimeoutMs, { method: 'GET', direct: true });
+          return httpRequest.promise;
+        })(),
+      };
+      // Open the HEAD channel first: a single-threaded HTTP server must not accept a
+      // silent TLS ClientHello ahead of its real HTTP request. Once that remote TCP
+      // connection exists, HTTP response discovery and TLS negotiation run in parallel.
+      const forwardReady = startProbe(deadline, finish => { initialForward.then(() => finish(true)); });
+      let tlsCancelled = false, tlsRequest;
       // Certificate identity comes from the authenticated SSH tunnel, never the public network.
-      const fingerprint = await new Promise(resolve => {
-        const socket = tls.connect({host:'127.0.0.1', port:listener.address().port, rejectUnauthorized:false}, () => {
-          const value = socket.getPeerCertificate().fingerprint256;
-          socket.destroy(); resolve(value || null);
-        });
-        const cancel = () => { socket.destroy(); resolve(null); };
-        pendingProbes.add(cancel);
-        socket.once('close', () => pendingProbes.delete(cancel));
-        socket.setTimeout(4000, cancel);
-        socket.on('error', () => resolve(null));
-      });
-      ensureOpen();
-      if (fingerprint) {
-        const url = 'https://' + base + '/';
-        this.previews.set(key, {id, url, fingerprint, close}); return url;
+      const secureProbe = {
+        cancel: () => { tlsCancelled = true; forwardReady.cancel(); tlsRequest?.cancel(); },
+        promise: (async () => {
+          if (!await forwardReady.promise || tlsCancelled || closed || deadline <= performance.now()) return null;
+          tlsRequest = certificateProbe('127.0.0.1', localPort, deadline);
+          const certificate = await tlsRequest.promise;
+          return certificate?.fingerprint256 ? { scheme: 'https', fingerprint: certificate.fingerprint256 } : null;
+        })(),
+      };
+      const selected = await firstValid([httpProbe, secureProbe]);
+      if (selected) {
+        const url = selected.scheme + '://' + base + '/';
+        this.previews.set(key, { id, url, ...(selected.fingerprint ? { fingerprint: selected.fingerprint } : {}), close });
+        return url;
       }
-    }
-    if (!scheme) {
       const row = this.list().find(s => s.id === id);
-      const publicHost = row?.host.includes(':') ? '[' + row.host + ']' : row?.host;
-      // Inspect only the certificate here; no HTTP data or credentials are sent.
-      // Any discovered hostname must resolve to this server and pass normal TLS validation.
-      const names = !row ? [] : await new Promise(resolve => {
-        const socket = tls.connect({host: row.host, port, rejectUnauthorized: false}, () => {
-          const alt = socket.getPeerCertificate().subjectaltname || '';
-          socket.destroy(); resolve(alt.split(', ').filter(n => n.startsWith('DNS:')).map(n => n.slice(4)).filter(n => /^[a-z0-9.-]+$/i.test(n)).slice(0, 5));
-        });
-        const cancel = () => { socket.destroy(); resolve([]); };
-        pendingProbes.add(cancel);
-        socket.once('close', () => pendingProbes.delete(cancel));
-        socket.setTimeout(4000, cancel); socket.on('error', () => resolve([]));
-      });
-      ensureOpen();
-      for (const name of names) {
-        try {
-          const [target, candidate] = await Promise.all([lookup(row.host, {all:true}), lookup(name, {all:true})]);
-          if (!candidate.some(a => target.some(b => a.address === b.address))) continue;
-          ensureOpen();
-          if (await probe('https', name + ':' + port)) {
-            ensureOpen();
-            const url = 'https://' + name + ':' + port + '/';
-            this.previews.set(key, {id, url, close}); return url;
-          }
-        } catch { /* Try the next verified address. */ }
-      }
-      ensureOpen();
-      if (publicHost && await probe('https', publicHost + ':' + port)) {
+      if (row) {
+        const fallbackDeadline = performance.now() + this.previewTimeoutMs;
+        const publicHost = row.host.includes(':') ? '[' + row.host + ']' : row.host;
+        // Public certificate discovery is a last resort. DNS candidates must still resolve
+        // to this server and every public HTTP request uses normal TLS validation.
+        const certificate = await certificateProbe(row.host, port, fallbackDeadline).promise;
         ensureOpen();
-        const url = 'https://' + publicHost + ':' + port + '/';
-        this.previews.set(key, {id, url, close}); return url;
+        const names = String(certificate?.subjectaltname || '').split(', ').filter(n => n.startsWith('DNS:')).map(n => n.slice(4)).filter(n => /^[a-z0-9.-]+$/i.test(n)).slice(0, 5);
+        const probes = names.map(name => {
+          let cancelled = false, header;
+          const candidate = startProbe(fallbackDeadline, finish => {
+            Promise.all([lookup(row.host, { all: true }), lookup(name, { all: true })]).then(([target, addresses]) => {
+              finish(addresses.some(a => target.some(b => a.address === b.address)) ? name : null);
+            }, () => finish(null));
+          });
+          return {
+            cancel: () => { cancelled = true; candidate.cancel(); header?.cancel(); },
+            promise: candidate.promise.then(async verified => {
+              if (!verified || cancelled || closed || fallbackDeadline <= performance.now()) return null;
+              header = compatibleHeaders('https', name + ':' + port, fallbackDeadline);
+              const result = await header.promise;
+              return result ? { url: 'https://' + name + ':' + port + '/' } : null;
+            }),
+          };
+        });
+        const direct = compatibleHeaders('https', publicHost + ':' + port, fallbackDeadline);
+        probes.push({ ...direct, promise: direct.promise.then(result => result ? { url: 'https://' + publicHost + ':' + port + '/' } : null) });
+        const fallback = await firstValid(probes);
+        // DNS-to-HEAD candidates may have entered their second phase after the DNS probe
+        // completed; stop every outstanding request once one validated URL wins.
+        for (const cancel of [...pendingProbes]) cancel();
+        if (fallback) { this.previews.set(key, { id, url: fallback.url, close }); return fallback.url; }
       }
-    }
-    ensureOpen();
-    if (!scheme && await probe('http')) scheme = 'http';
-    ensureOpen();
-    if (!scheme) { close(); client.removeListener('close', close); throw Error('该端口不是可访问的网页服务，或 HTTPS 证书无法验证'); }
-    const url = scheme + '://' + base + '/';
-    this.previews.set(key, {id, url, close}); return url;
+      throw Error('该端口不是可访问的网页服务，或 HTTPS 证书无法验证');
     } catch (error) { close(); throw error; }
   }
   latencyCache = new Map();
@@ -167,7 +245,10 @@ export class ServerManager {
     return results;
   }
 
-  constructor(store, seal, unseal) { this.store = store; this.seal = seal; this.unseal = unseal; this.clients = new Map(); }
+  constructor(store, seal, unseal, { previewTimeoutMs = 4000 } = {}) {
+    this.store = store; this.seal = seal; this.unseal = unseal; this.clients = new Map();
+    this.previewTimeoutMs = Number.isFinite(previewTimeoutMs) && previewTimeoutMs > 0 ? previewTimeoutMs : 4000;
+  }
   list() { return (this.store.data.servers || []).map(({ secret: _secret, ...s }) => ({ ...s, connected: this.clients.has(s.id) })); }
   save(input) {
     const name = String(input.name || '').trim(), host = String(input.host || '').trim(), username = String(input.username || '').trim();

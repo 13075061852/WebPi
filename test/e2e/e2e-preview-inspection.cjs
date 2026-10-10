@@ -37,7 +37,14 @@ app.whenReady().then(async()=>{
  const loaded=new Promise(r=>guest.once('did-finish-load',r));
  const source=fs.readFileSync('src/renderer/js/app.js','utf8');
  const refresh=source.slice(source.indexOf('function refreshCompletedPreview('),source.indexOf('const portKey ='));
- await win.webContents.executeJavaScript(`{let previewService={serverId:'hk'};${refresh};refreshCompletedPreview({event:{type:'agent_settled'},serverId:'hk',sessionId:'background'});}`);
+ const hook=await win.webContents.executeJavaScript(`(()=>{
+  const S={state:{sessionId:'focused'},switchingSession:false,previewFile:null};
+  let previewService={serverId:'hk'};
+  try{${refresh};refreshCompletedPreview({event:{type:'agent_settled'},serverId:'hk',sessionId:'background'});return {status:previewService.status};}
+  catch(error){return {error:error.stack||String(error)};}
+ })()`);
+ assert.equal(hook.error,undefined,hook.error);
+ assert.equal(hook.status,'loading','The production completion hook must request a real guest refresh');
  await loaded;
  const updated=await inspectPreview({...options,screenshot:false});
  assert.match(updated.content[0].text,/revision 2/);

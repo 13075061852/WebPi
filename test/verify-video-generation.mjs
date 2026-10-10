@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { VideoSettings } from '../src/main/video-settings.mjs';
 import { MiniMaxVideoProvider, validateVideoOptions } from '../src/main/video-providers.mjs';
 import { VideoGeneration, videoTool } from '../src/main/video-generation.mjs';
@@ -59,6 +60,10 @@ try {
   const response = await tool.execute('call-1', { action: 'generate', prompt: '测试视频' }, undefined, result => progress.push(result));
   assert.ok(response.details.file.endsWith('.mp4'));
   assert.deepEqual(fs.readFileSync(response.details.file), video);
+  const videoHash = createHash('sha256').update(video).digest('hex');
+  assert.equal(response.details.sha256, videoHash);
+  assert.equal(JSON.parse(response.content[0].text).sha256, videoHash, 'The fingerprint must survive saved conversation history');
+  assert.equal(service.jobs()[0].sha256, videoHash, 'The persisted job must retain video identity after the original is moved');
   assert.equal(progress.length, 5);
   assert.equal(progress[0].details.model, 'MiniMax-H3');
   assert.equal(progress[0].details.provider, 'minimax');
@@ -66,7 +71,10 @@ try {
   assert.match(progress[1].content[0].text, /MiniMax-H3/);
   const created = requests.find(request => request.init.method === 'POST');
   assert.deepEqual(JSON.parse(created.init.body), { model: 'MiniMax-H3', resolution: '768P', duration: 7, ratio: '16:9', content: [{ type: 'text', text: '测试视频' }] });
-  await tool.execute('call-1', { action: 'generate', prompt: '测试视频' });
+  const repeated = await tool.execute('call-1', { action: 'generate', prompt: '测试视频' });
+  assert.equal(repeated.details.sha256, videoHash);
+  const settled = await service.run('settlement', { action: 'status', task_id: 'task-123' }, root);
+  assert.equal(settled.sha256, videoHash, 'Status refresh must preserve the original download fingerprint');
   assert.equal(requests.filter(request => request.init.method === 'POST').length, 1, 'Repeated tool call ID must reuse task');
   assert.equal((await service.run('list', { action: 'list' }, path.join(root, 'other'))).tasks.length, 0);
   await assert.rejects(service.run('status', { action: 'status', task_id: 'task-123' }, path.join(root, 'other')), /没有此视频任务/);
@@ -77,6 +85,7 @@ try {
   failDownload = false;
   const recovered = await service.run('status', { action: 'status', task_id: 'task-123' }, root);
   assert.ok(fs.existsSync(recovered.file));
+  assert.equal(recovered.sha256, videoHash);
   assert.equal(requests.filter(request => request.init.method === 'POST').length, 1, 'Download retry must not regenerate');
 
   const range = videoResponse(new Request('https://local/video', { headers: { range: 'bytes=4-11' } }), recovered.file, video.length, 'video/mp4');

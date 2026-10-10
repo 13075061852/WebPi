@@ -4,7 +4,8 @@ import vm from 'node:vm';
 import { OutputRate } from '../src/renderer/js/output-rate.mjs';
 
 const source = fs.readFileSync('src/main/pi-bridge.mjs', 'utf8');
-const method = source.slice(source.indexOf('  publicState() {'), source.indexOf('  /* ---------------- lifecycle'));
+const method = source.match(/^  publicState\(\) \{[\s\S]*?^  \}/m)?.[0];
+assert.ok(method, 'publicState method must exist');
 const state = vm.runInNewContext(`({${method}})`, { pi: { estimateTokens: m => m.estimate } });
 state.session = { messages: [{ role: 'assistant', usage: { input: 223500 }, estimate: 2000 }],
   getContextUsage: () => ({ tokens: null }) };

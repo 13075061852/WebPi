@@ -32,6 +32,63 @@ export function replyArtifacts(text, cwd) {
   return [...files.values()];
 }
 
+const playableFile = /\.(mp4|webm|mp3|wav|m4a|aac|ogg|flac)$/i;
+const playbackWords = /^(?:(?:点击|直接|立即|在线|播放|观看|查看|预览|打开|试听|视频|音频|成片|短片|录音|片段|play|watch|preview|listen|open|video|audio|clip|film|the))+$/i;
+function playbackLabel(text, file) {
+  const name = file.split('/').pop().toLowerCase();
+  let label = text.trim().toLowerCase();
+  const named = label.includes(name);
+  if (named) label = label.replace(name, '');
+  label = label.replace(/[\s\p{P}▶▷►⏵🎬🎥🔊🔈🔉⏯️]/gu, '');
+  return !label ? named : playbackWords.test(label);
+}
+
+// Only hide redundant playback rows once their local file has a usable card.
+// Keep the original nodes so a later file check can restore unavailable links.
+// This also works with frozen streaming paragraphs without changing raw text.
+export function filterArtifactPlayback(root, cwd, files = []) {
+  for (const node of root.querySelectorAll('[data-artifact-playback]')) {
+    if (node.dataset.artifactPlayback === 'line') node.replaceWith(...node.childNodes);
+    else { node.hidden = false; delete node.dataset.artifactPlayback; }
+  }
+  const delivered = new Set(files.filter(file => playableFile.test(file)).map(file => file.toLowerCase()));
+  if (!delivered.size) return;
+  for (const block of root.querySelectorAll('p, li')) {
+    if (block.closest('blockquote, table, pre') || block.querySelector('ul, ol, input, img, video, audio')) continue;
+    const lines = [{ nodes: [] }], breaks = [];
+    for (const node of block.childNodes) {
+      if (node.nodeName === 'BR') { breaks.push(node); lines.push({ nodes: [] }); }
+      else lines.at(-1).nodes.push(node);
+    }
+    for (const line of lines) {
+      const links = line.nodes.flatMap(node => node.nodeType === 1
+        ? [...(node.matches('a[href]') ? [node] : []), ...node.querySelectorAll('a[href]')] : []);
+      if (links.length !== 1 || links[0].closest('code')) continue;
+      const file = artifactPath(links[0].getAttribute('href'), cwd);
+      if (!file || !delivered.has(file.toLowerCase())) continue;
+      const elements = line.nodes.flatMap(node => node.nodeType === 1 ? [node, ...node.querySelectorAll('*')] : []);
+      if (elements.some(node => !/^(A|B|STRONG|I|EM|SPAN|CODE|DEL)$/.test(node.nodeName))) continue;
+      if (!playbackLabel(line.nodes.map(node => node.textContent).join(''), file)) continue;
+      const hidden = root.ownerDocument.createElement('span');
+      hidden.dataset.artifactPlayback = 'line'; hidden.hidden = true;
+      line.nodes[0].before(hidden); hidden.append(...line.nodes);
+      line.hidden = true;
+    }
+    if (!lines.some(line => line.hidden)) continue;
+    const visible = lines.map((line, index) => !line.hidden && line.nodes.some(node => node.textContent.trim()) ? index : -1).filter(index => index >= 0);
+    const keepBreaks = new Set(visible.slice(1).map(index => index - 1));
+    breaks.forEach((node, index) => {
+      if (!keepBreaks.has(index)) { node.dataset.artifactPlayback = 'space'; node.hidden = true; }
+    });
+    if (!visible.length) { block.dataset.artifactPlayback = 'empty'; block.hidden = true; }
+  }
+  for (const list of root.querySelectorAll('ul, ol')) {
+    if (list.children.length && [...list.children].every(node => node.hidden)) {
+      list.dataset.artifactPlayback = 'empty'; list.hidden = true;
+    }
+  }
+}
+
 const fileDesigns = {
   audio: ['audio','音频','<path d="M9 18V5l12-2v13M9 9l12-2"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'],
   video: ['video','视频','<rect x="3" y="5" width="12" height="14" rx="2"/><path d="m15 10 6-4v12l-6-4"/>'],

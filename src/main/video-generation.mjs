@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { VIDEO_PROVIDERS, createVideoProviders, validateVideoOptions, videoSpec, videoModelDefaults } from './video-providers.mjs';
 import { writeVideoJSON, validateVideoNetwork } from './video-settings.mjs';
@@ -76,12 +76,14 @@ export class VideoGeneration {
     await fs.mkdir(directory, { recursive: true });
     const file = path.join(directory, `video-${Date.now()}-${randomUUID().slice(0, 8)}.mp4`), partial = `${file}.part`;
     const handle = await fs.open(partial, 'wx');
+    const hash = createHash('sha256');
     let bytes = 0, header = Buffer.alloc(0), complete = false;
     try {
       for await (const chunk of response.body || []) {
         signal?.throwIfAborted();
         bytes += chunk.length;
         if (bytes > DOWNLOAD_LIMIT) throw Error('视频超过 512 MB');
+        hash.update(chunk);
         if (header.length < 12) header = Buffer.concat([header, chunk.subarray(0, 12 - header.length)]);
         await handle.writeFile(chunk);
       }
@@ -90,12 +92,13 @@ export class VideoGeneration {
       complete = true;
     } finally { await handle.close(); if (!complete) await fs.unlink(partial).catch(() => {}); }
     await fs.rename(partial, file);
-    return { file, bytes };
+    return { file, bytes, sha256: hash.digest('hex') };
   }
   async run(callId, args, cwd, signal, onUpdate) {
     signal?.throwIfAborted();
     const publicJob = job => ({ task_id: job.id, provider: job.provider, model: job.model, provider_name: videoSpec(job.provider).name, status: job.status, usage: job.usage || null,
-      timing: job.timing || null, billing: job.billing || null, ...(job.file ? { file: job.file } : {}) });
+      timing: job.timing || null, billing: job.billing || null, ...(job.file ? { file: job.file } : {}),
+      ...(job.sha256 ? { sha256: job.sha256 } : {}) });
     if (args.action === 'list') return { tasks: this.jobs().filter(job => sameCwd(job.cwd, cwd)).slice(-20).map(publicJob) };
     if (args.action === 'models') {
       const state = this.settings.publicState();
@@ -241,7 +244,9 @@ export function videoTool(cwd, getService) {
     name: 'video_generate', label: '视频生成',
     description: '“动起来”“做动画”等请求优先使用 Three.js、Canvas、CSS 等本地动画方式，不要自行理解为调用视频模型。调用收费视频生成 API 前必须由用户在对话内的视频参数确认区域明确同意，即使用户说生成视频也不能跳过确认。未确认或拒绝时改用其他实现方式，禁止通过脚本或其他工具绕过确认直接调用视频 API。先用 models 查看同一套 default_config 和参数要求。用户未指定厂家、模型、分辨率、时长或比例时，generate 省略对应参数，使用保存的默认配置，不从历史模型沿用参数。用户明确指定时才覆盖相应参数。参数校验失败时按错误说明修正，不更换模型。generate 提交并等待视频，可指定本地首帧 first_frame；status 用原 provider/task_id 继续查询或下载；list 查当前项目最近任务。成功取得 file 后立即返回 Markdown 视频链接，说明实际 provider_name、model 和 usage.amount/usage.unit；usage 为 null 时说明平台未返回实际消耗，不以预估代替。文件已下载并完成 MP4 基本校验，界面可播放；用户未要求画面验收时，不再搜索 ffmpeg、运行抽帧/解码脚本或调用 preview_inspect，不以额外检查拖延交付；用户未明确要求时不发送到微信等外部渠道。失败/超时不要重新 generate，先 status，避免重复计费。',
     parameters: { type: 'object', properties: {
-      action: { type: 'string', enum: ['generate', 'status', 'list', 'models'] }, prompt: { type: 'string' }, task_id: { type: 'string' },
+      action: { type: 'string', enum: ['generate', 'status', 'list', 'models'] },
+      prompt: { type: 'string', description: '完整视频场景文本。用户已有完整可执行场景、连续动作脚本、分镜或多项具体视觉约束时，默认原文保留措辞、分段、时序与细节，不润色、概括或压缩；后续只说生成也沿用该脚本。仅明确要求优化或场景信息不足的简单请求才按 halo-video-prompt 补全，用户禁止改写时始终用原文。' },
+      task_id: { type: 'string' },
       provider: { type: 'string', enum: Object.keys(VIDEO_PROVIDERS) }, model: { type: 'string' },
       first_frame: { type: 'string', description: '可选，用户指定的首帧图片本地路径' },
       duration: { type: 'integer', minimum: 1, maximum: 30 }, resolution: { type: 'string' }, ratio: { type: 'string' },

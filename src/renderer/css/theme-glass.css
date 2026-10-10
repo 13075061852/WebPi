@@ -127,6 +127,7 @@
 }
 :root[data-surface="glass"] :is(.theme-base-modes .mini-btn, .connectivity-tabs button, .proxy-mode-tabs button, .set-nav, #sideNav .nav-item) { border-radius: 999px; }
 :root[data-surface="glass"] .theme-base-modes .mini-btn { border-color: transparent; }
+:root[data-surface="glass"] #gitCloneBrowse { border-color: #ffffff30; }
 :root[data-surface="glass"] :is(.theme-base-modes [aria-pressed="true"], .set-nav.active, #sideNav .nav-item.active, .pvdev.active) { color: var(--txt); }
 :root[data-surface="glass"] .connectivity-tabs [aria-selected="true"] { background: var(--glass-fill); box-shadow: var(--glass-shadow); }
 :root[data-surface="glass"] #btnSend:not(.streaming) {

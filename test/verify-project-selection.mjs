@@ -50,6 +50,25 @@ try {
   assert.equal(bridge.cwd, b.replaceAll('\\', '/'));
   assert.ok(sa.isStreaming && sc.isStreaming, 'Adding a project must preserve both background tasks');
   assert.equal(aborts, 0);
+  assert.equal(bridge.isProjectBusy(a), true, 'The Git mutation guard sees an active background project');
+  assert.equal(bridge.isProjectBusy(c), true, 'The Git mutation guard checks every pooled session, not only the focused project');
+  assert.equal(bridge.isProjectBusy(b), false, 'An idle focused project does not inherit another project\'s busy state');
+
+  let alias = path.join(fixture.dir, 'alias-a');
+  try {
+    fs.symlinkSync(a, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    if (!['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(error.code)) throw error;
+    console.log(`SKIP directory alias capability: ${process.platform} ${error.code}`);
+    alias = null;
+  }
+  if (alias) assert.equal(bridge.isProjectBusy(alias), true, 'A junction or directory symlink cannot bypass the busy project guard');
+  bridge.serverTargets.set(sc.sessionId, 'fixture-remote');
+  try {
+    assert.equal(bridge.isProjectBusy(c), false, 'A remote server session must not block a local Git project with the same cwd');
+    assert.equal(bridge.isProjectBusy(a), true, 'Excluding a remote session preserves the other local project guard');
+  } finally { bridge.serverTargets.delete(sc.sessionId); }
+  assert.equal(bridge.isProjectBusy(c), true, 'Removing the remote marker restores the active local guard');
   await bridge.openSession(sa.sessionFile);
   assert.equal(bridge.session, sa, 'The original running runtime remains available');
 
@@ -77,6 +96,8 @@ try {
   releases.forEach(release => release());
   await Promise.all([pa, pc]);
   assert.equal(aborts, 0);
+  for (const dir of [a, b, c]) assert.equal(bridge.isProjectBusy(dir), false, 'Completing a task releases its project mutation guard');
+  if (alias) assert.equal(bridge.isProjectBusy(alias), false, 'The canonical alias also becomes idle when the task finishes');
   const beforeRemoval = bridge.session;
   assert.equal((await bridge.removeProject(b)).switched, false);
   assert.equal(bridge.session, beforeRemoval);
@@ -86,7 +107,7 @@ try {
   assert.equal((await bridge.projectsList()).length, 0);
   assert.equal(bridge.cwd, path.join(fixture.dir, 'workspace').replaceAll('\\', '/'));
   for (const dir of [a, b, c]) assert.ok(fs.existsSync(dir), 'Removing a project must preserve its files');
-  console.log('PASS folder selection, two background tasks, cancellation, startup ordering and workspace recovery');
+  console.log('PASS folder selection, two background tasks, canonical busy guards, remote exclusion, cancellation, startup ordering and workspace recovery');
 } finally {
   releases.forEach(release => release());
   await bridge.dispose();

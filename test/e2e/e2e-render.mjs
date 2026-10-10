@@ -278,7 +278,7 @@ await evalJS(`
 await sleep(700);
 const errorCollapsed = await evalJS("document.querySelector('.tool.error .tool-out').hidden");
 if (!errorCollapsed) { electron.kill(); throw new Error('Failed tools should start collapsed'); }
-await evalJS("document.querySelector('.tool-history').open=true;document.querySelector('.tool.error .tool-line').click()");
+await evalJS("const errorTool=document.querySelector('.tool.error');const history=errorTool.closest('.tool-history');if(history)history.open=true;errorTool.querySelector('.tool-line').click()");
 for (const theme of ['light', 'dark']) {
   await evalJS(`document.documentElement.dataset.theme = '${theme}'`);
   const layout = await evalJS(`(() => {
@@ -322,6 +322,12 @@ await screenshot("test/shot-error.png");
 console.log("console errors during test:", consoleLogs.length ? consoleLogs : "none");
 
 // Windows Markdown documents: real headings and readable document layout.
+// The preview starts collapsed; open it before measuring document geometry.
+await evalJS("if(document.body.classList.contains('preview-collapsed'))document.querySelector('#btnPreviewToggle').click()");
+for (let attempt = 0; attempt < 40; attempt++) {
+  if (await evalJS("!document.documentElement.classList.contains('layout-motion') && document.querySelector('#pvBody').clientWidth > 0")) break;
+  await sleep(50);
+}
 await evalJS(`
   const source = ['# AI 模型能力排行榜汇总', '', '> 数据抓取时间：**2026-09-11** ｜ 来源：示例数据', '', '## 1. 综合能力', '', '这是一份用于检查文档排版的示例，**并非真实排名**。', '', '### 1.1 文本综合', '', '| 排名 | 模型 | 分数 | 机构 |', '| ---: | --- | ---: | --- |', '| 1 | Example Alpha | 1507.2 | 示例机构 |', '| 2 | Example Beta | 1488.7 | 示例机构 |', '', '## 2. 使用说明', '', '- 标题层级清晰', '- 表格在窄窗口内滚动', '', '\`\`\`python', 'print("Hello, Markdown")', '\`\`\`'].join('\\r\\n');
   document.querySelector('#pvBody').innerHTML = '<div class="md-view">' + mdRender(source) + '</div>';
