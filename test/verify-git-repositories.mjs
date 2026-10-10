@@ -10,7 +10,11 @@ const home = path.join(root, 'isolated-home'), remotes = path.join(root, 'remote
 await fs.promises.mkdir(home); await fs.promises.mkdir(remotes); await fs.promises.mkdir(checkoutParent);
 const globalConfig = path.join(home, 'empty-gitconfig'); await fs.promises.writeFile(globalConfig, '');
 const env = { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: home, GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: '1' };
-const raw = (args, options = {}) => runRepositoryGit(args, { ...options, env });
+const raw = async (args, options = {}) => {
+  const caller = new Error('Fixture Git caller').stack;
+  try { return await runRepositoryGit(args, { ...options, env }); }
+  catch (error) { error.stack += `\nFixture command: ${JSON.stringify(args)}\n${caller}`; throw error; }
+};
 const operations = []; let failPush = false;
 const runGit = async (args, options) => {
   operations.push(args);
@@ -176,7 +180,7 @@ try {
   assert.match((await localPreview.commitContext({ fullName: 'octocat/empty', files: ['改名 文件.md'] })).files[0].diff, /deleted file mode/);
   await repositories.upload({ fullName: 'octocat/empty', files: ['改名 文件.md'], message: 'delete selected' });
   assert.equal((await raw(['ls-tree', '-z', '--name-only', 'main'], { cwd: emptyBare })).includes('改名 文件.md'), false);
-  await raw(['rm', '--', weird], { cwd: newProject });
+  await raw(['--literal-pathspecs', 'rm', '--', weird], { cwd: newProject });
   await repositories.upload({ fullName: 'octocat/empty', files: [weird], message: 'staged deletion selected' });
   assert.equal((await raw(['ls-tree', '-z', '--name-only', 'main'], { cwd: emptyBare })).includes(weird), false);
   await assert.rejects(repositories.upload({ fullName: 'octocat/empty', files: ['../outside'], message: 'reject' }), /已变化/);
