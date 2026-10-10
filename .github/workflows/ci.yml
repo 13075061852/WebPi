@@ -16,8 +16,6 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      HALO_DOCUMENT_FONT: ${{ runner.temp }}/halo-document-font/gbsn00lp.ttf
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,6 +23,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Set the document font path
+        run: echo "HALO_DOCUMENT_FONT=$RUNNER_TEMP/halo-document-font/gbsn00lp.ttf" >> "$GITHUB_ENV"
       - name: Restore Chinese document regression font
         id: font-cache
         uses: actions/cache@v4

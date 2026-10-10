@@ -86,6 +86,9 @@ assert.match(thrown.error, /unreadable input/);
 
 const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
 const steps = ci.jobs.check.steps;
+assert.ok(!JSON.stringify(ci.jobs.check.env || {}).includes('runner.'), 'Runner context is unavailable in job-level env');
+const fontPathStep = steps.findIndex(step => step.run?.includes('HALO_DOCUMENT_FONT=$RUNNER_TEMP/') && step.run.includes('"$GITHUB_ENV"'));
+assert.ok(fontPathStep >= 0 && fontPathStep < steps.findIndex(step => step.id === 'font-cache'), 'Set the runtime font path before cache restoration and font checks');
 assert.equal(steps.filter(step => step.run === 'node scripts/check-source.mjs').length, 1);
 assert.equal(steps.filter(step => step.run === 'npm run test:regressions').length, 1);
 assert.ok(!steps.some(step => step.run?.includes('node test/check-touch-script.mjs')), 'The regression runner already covers touch script syntax');
