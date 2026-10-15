@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const source = fs.readFileSync('src/renderer/js/app.js','utf8');
-const code = source.slice(source.indexOf('const compactingSessions ='),source.indexOf('async function send(queueMode'));
+const start = source.indexOf('const compactingSessions ='), end = source.indexOf('async function send(', start);
+assert.ok(start >= 0 && end > start, 'Compaction fixture must end before the send handler');
+const code = source.slice(start, end);
 for (const [response, expected] of [
   [{ok:false,error:'Nothing to compact (session too small)'},'当前上下文较短'],
   [{ok:false,error:'Already compacted'},'当前上下文已压缩'],

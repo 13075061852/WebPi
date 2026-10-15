@@ -7,11 +7,14 @@ const directory = path.resolve('tmp/tool-details');
 fs.mkdirSync(directory, {recursive:true});
 app.setPath('userData', path.join(directory,'profile'));
 app.whenReady().then(async()=>{
-  const win = new BrowserWindow({show:false,webPreferences:{backgroundThrottling:false}});
+  const win = new BrowserWindow({show:true,webPreferences:{backgroundThrottling:false}});
   try {
     const file = path.join(directory,'fixture.html');
     fs.writeFileSync(file, `<link rel="stylesheet" href="${pathToFileURL(path.resolve('src/renderer/css/app.css'))}"><div class="tool running"><div class="tool-line">image_generate</div><div class="tool-out" hidden></div></div>`);
     await win.loadFile(file);
+    win.webContents.debugger.attach('1.3');
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
+    await win.webContents.debugger.sendCommand('Page.bringToFront');
     const module = pathToFileURL(path.resolve('src/renderer/js/tool-details.mjs')).href;
     const result = await win.webContents.executeJavaScript(`(async()=>{
       const {wireToolDetails}=await import(${JSON.stringify(module)});
@@ -20,13 +23,46 @@ app.whenReady().then(async()=>{
       line.click();
       const running=!out.hidden && out.textContent.includes('正在执行') && getComputedStyle(card.querySelector('.tool-input')).display==='block';
       const safe=card.querySelector('.tool-input').querySelector('img')===null;
+      const body=card.querySelector('.tool-details');
+      const opening=body.getAnimations()[0]; opening.pause();opening.currentTime=80;
+      const midway=body.getBoundingClientRect().height;
+      const animated=midway>0&&midway<body.scrollHeight;
+      line.click();
+      const reversing=body.getAnimations()[0];reversing.pause();reversing.currentTime=0;
+      const continuous=Math.abs(body.getBoundingClientRect().height-midway)<1;
+      reversing.finish();await reversing.finished;await new Promise(resolve=>setTimeout(resolve,0));
+      const closed=out.hidden && line.getAttribute('aria-expanded')==='false';
+      line.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+      const reopening=body.getAnimations()[0];reopening.finish();await reopening.finished;await new Promise(resolve=>setTimeout(resolve,0));
       out.textContent='final result'; card.classList.replace('running','done');
       const staysOpen=!out.hidden;
-      line.click(); const closed=out.hidden && line.getAttribute('aria-expanded')==='false';
-      line.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
-      return {running,safe,staysOpen,closed,reopened:!out.hidden&&out.textContent==='final result'};
+      line.click();line.click();
+      const rapid=body.getAnimations()[0];rapid.finish();await rapid.finished;await new Promise(resolve=>setTimeout(resolve,0));
+      return {running,safe,animated,continuous,staysOpen,closed,reopened:!out.hidden&&out.textContent==='final result',clean:body.getAnimations().length===0};
     })()`);
-    assert.deepEqual(result,{running:true,safe:true,staysOpen:true,closed:true,reopened:true});
-    console.log('PASS running tool expands before result, full safe arguments, completion preserves expansion, click and keyboard toggle');
+    assert.deepEqual(result,{running:true,safe:true,animated:true,continuous:true,staysOpen:true,closed:true,reopened:true,clean:true});
+    const processMotion=await win.webContents.executeJavaScript(`(async()=>{
+      const group=document.createElement('details');group.className='process-group';
+      group.innerHTML='<summary>执行过程</summary><div class="process-body">工具调用步骤</div>';
+      document.body.append(group);group.getBoundingClientRect();
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      group.open=true;group.getBoundingClientRect();
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      const openingHeight=parseFloat(getComputedStyle(group,'::details-content').height);
+      await new Promise(resolve=>setTimeout(resolve,250));
+      const fullHeight=parseFloat(getComputedStyle(group,'::details-content').height);
+      const expands=openingHeight>0&&openingHeight<fullHeight;
+      group.open=false;group.getBoundingClientRect();
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      const closingHeight=parseFloat(getComputedStyle(group,'::details-content').height);
+      await new Promise(resolve=>setTimeout(resolve,250));
+      const collapses=closingHeight>0&&closingHeight<fullHeight&&parseFloat(getComputedStyle(group,'::details-content').height)===0;
+      return {expands,collapses};
+    })()`);
+    assert.ok(processMotion.expands&&processMotion.collapses,JSON.stringify(processMotion));
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+    const reduced=await win.webContents.executeJavaScript(`(()=>{const card=document.querySelector('.tool');card.querySelector('.tool-line').click();return card.querySelector('.tool-out').hidden&&card.querySelector('.tool-details').getAnimations().length===0})()`);
+    assert.equal(reduced,true,'Reduced motion closes immediately without leaving animations');
+    console.log('PASS visible animated tool expansion/collapse, continuous reversal, rapid toggles, safe args, keyboard control, result retention and reduced motion');
   } finally {win.destroy();app.quit();}
 }).catch(error=>{console.error(error);app.exit(1);});

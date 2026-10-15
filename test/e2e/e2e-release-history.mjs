@@ -100,7 +100,7 @@ try {
   assert.ok(Array.isArray(ipc.versions) && ipc.versions.length > 0);
   if (providedVersion) assert.equal(ipc.versions[0], expectedVersion, 'IPC must return the expected public latest version');
   else assert.ok(atLeast(ipc.versions[0], expectedVersion), 'IPC must not stop at the outdated bundled 1.0.9 record');
-  for (const version of ['1.0.10', expectedVersion]) assert.ok(ipc.versions.includes(version), `Live IPC is missing ${version}`);
+  for (const version of ['1.0.10', '1.0.13', expectedVersion]) assert.ok(ipc.versions.includes(version), `Live IPC is missing ${version}`);
   await evaluate('document.querySelector("#btnSettings").click();true');
   await waitFor(() => evaluate('!document.querySelector("#settingsModal").hidden'), 'Settings did not open');
   await evaluate('document.querySelector("#settingsModal .set-nav[data-pane=history]").click();true');
@@ -113,7 +113,7 @@ try {
   }))()`);
   assert.equal(rendered.versions[0], ipc.versions[0], 'History navigation must show the live latest release');
   assert.equal(rendered.latest, ipc.versions[0], 'History content must show the live latest release');
-  for (const version of ['1.0.10', expectedVersion]) assert.ok(rendered.versions.includes(version));
+  for (const version of ['1.0.10', '1.0.13', expectedVersion]) assert.ok(rendered.versions.includes(version));
   const current = await evaluate('window.halo.appUpdateState().then(result => result.data.currentVersion)');
   assert.equal(rendered.current, `当前安装 v${current}`);
   const refreshing = await evaluate(`(() => {

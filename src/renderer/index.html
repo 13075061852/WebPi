@@ -130,9 +130,6 @@
       <!-- ======== preview ======== -->
       <section id="cpane-preview" class="cpane active">
         <div class="pv-head">
-          <button id="btnSidebar" title="收起/展开侧栏">
-            <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16"/></svg>
-          </button>
           <span id="pvName" class="pv-name">未选择文件</span>
           <span class="ct-spacer"></span>
           <span id="wsPath" class="ct-path"></span>
@@ -140,11 +137,17 @@
           <div class="pv-actions" role="group" aria-label="预览操作">
           <button id="pvMode" class="pv-mode pv-action" type="button" hidden title="查看源代码" aria-label="查看源代码" aria-controls="pvBody">源码</button>
           <button id="btnOpenFile" class="pv-action" type="button" hidden title="使用系统默认应用打开文件" aria-label="使用默认应用打开文件"><svg viewBox="0 0 24 24" class="ic"><path d="M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg></button>
+          <button id="btnBrowser" class="pv-action" type="button" aria-label="浏览器预览" title="浏览器预览" aria-expanded="false" aria-controls="previewAddressForm"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg></button>
           <button id="btnTerm" class="pv-term-btn pv-action" type="button" aria-label="打开控制台" title="控制台 · 命令提示符">
             <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9.5l2.8 2.5L7 14.5M13 15h4"/></svg>
           </button>
           </div>
         </div>
+        <form id="previewAddressForm" class="preview-address-form" hidden>
+          <input id="previewAddress" type="text" inputmode="url" aria-label="输入预览网址" placeholder="输入网址，如 example.com 或 localhost:3000" autocomplete="off" spellcheck="false" required />
+          <button type="submit" class="mini-btn">前往</button>
+          <button id="previewAddressClose" type="button" class="mini-icon" aria-label="关闭网址输入" title="关闭"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </form>
         <div class="pv-body dev-desktop" id="pvBody">
           <div class="pv-empty">
             <div class="pv-ghost">
@@ -190,7 +193,8 @@
     <!-- ------------- chat panel ------------- -->
     <section id="chat" class="fx t-r">
       <header id="chatHead">
-        <button id="btnPreviewToggle" title="展开预览区" aria-label="展开预览区" aria-expanded="false" aria-controls="center"><svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16"/></svg></button>
+        <button id="btnChatSidebar" title="收起/展开侧栏" aria-label="收起/展开侧栏" aria-controls="sidebar"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M11 4v16M6 8h2M6 12h2M6 16h2"/></svg></button>
+        <button id="btnPreviewToggle" title="展开预览区" aria-label="展开预览区" aria-expanded="false" aria-controls="center"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v5M8 21h8"/></svg></button>
         <div class="chat-stats" id="chatStats">
           <span title="输入 tokens">↑ 0</span><span title="输出 tokens">↓ 0</span>
           <span title="缓存读取">R 0</span><span title="缓存写入">W 0</span>
@@ -215,17 +219,17 @@
         <div class="welcome-inner">
           <h2>今天想完成什么？</h2>
           <div class="welcome-prompts">
-            <button type="button" data-starter="请以科幻电影动作导演、摄影指导和视效总监的标准，制作原创战斗短片《雨夜交锋》，目标约15秒、横版16:9，直接推进到可播放的成片。重点是清晰连贯的近身攻防、真实的力量反馈与有层次的科技视觉，让观众看得懂每次进攻如何被化解、反击如何改变局势。&#10;&#10;【角色与场景】近未来城市的高空检修平台，雨水覆盖金属地面，远处是纵深分明的城市灯光。左侧是一位穿银白轻型外骨骼、佩戴封闭头盔的成年战士，左臂有蓝白能量盾，右手持短能量棍；右侧是一台体型更大的黑色重型无人机甲，关节亮着琥珀色指示灯。双方轮廓、体型和灯色始终明确区分，场地内没有其他角色。&#10;【四镜头分镜，以15秒为例】&#10;① 0–3秒，低机位中远景：黑色机甲突然前冲，重踏溅起积水；银白战士侧滑闪避，攻击擦过肩侧。镜头短距离横向跟随，立即建立双方位置与攻击方向。&#10;② 3–7秒，侧面中景：机甲转身横击，战士抬起左臂能量盾硬接，盾面沿受力点展开一圈电弧，脚下向后滑出两道水痕。撞击瞬间短暂放慢，随后恢复正常速度，保持接触点清晰。&#10;③ 7–11秒，侧后方跟拍：战士借格挡空隙启动背部推进器，低空短距离突进，以右手能量棍击中机甲肩部护甲；金属火花迸开，机甲失去平衡向后退。镜头沿同一交战轴线推进，完整呈现突进、接触与受力。&#10;④ 11–15秒，广角拉远：机甲撞上平台边缘的空货箱，箱体变形、碎屑与雨雾向后散开；战士落地制动，推进器熄灭，稳住姿态。镜头拉出城市纵深，保留约1秒清晰的战后定格感。&#10;【动作与电影质感】每镜突出一个攻防节拍，保持上一镜的站位、速度和受力方向，避免人物突然换边或瞬移。肢体、关节、盾牌和武器形态稳定，攻击有明确接触和惯性反馈。用雨水、火花、护甲划痕、局部电弧与蒸汽体现冲击；冷色环境光配暖色机械灯，保留暗部细节。正常速度为主，只在一次关键撞击使用短暂慢动作；不要持续晃屏、频繁闪切或用大面积炫光遮住动作，也不要做成角色站着发光或原地摆动。无需字幕；模型支持音轨时加入金属碰撞、推进器喷流和低频节奏。&#10;【时长与交付】先读取当前模型能力，在当前模型支持范围内选择接近15秒的时长，通过现有参数确认后再生成，不更改保存的默认设置。若最终确认仅4–6秒，精简为两镜完成一次闪避与反击；7–11秒保留格挡、突进和收尾三镜；12秒及以上采用完整四镜并按比例分配时间。保留明确分镜和动作因果，不把剧本简化成单镜头角色展示。优先一次生成，不擅自切换模型或批量提交。检查实际画面、动作连贯性和时长，交付一个最终视频文件及预览；未实现的部分如实说明，不自动重复计费重试。文件保存到当前项目的新目录，保留已有内容；缺少视频能力时说明配置入口。">
-              <span class="starter-icon" aria-hidden="true"><svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 9 5 3-5 3Z"/></svg></span><span><strong>制作科幻动作大片</strong><small>雨夜机甲对决 · 连贯攻防与电影运镜</small></span><span class="starter-arrow" aria-hidden="true">↗</span>
+            <button type="button" data-starter-id="video">
+              <span class="starter-icon" aria-hidden="true"><svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 9 5 3-5 3Z"/></svg></span><span><strong>制作定格动画短片</strong><small>露营奇遇 · Veo 官方成片</small></span><span class="starter-arrow" aria-hidden="true">↗</span>
             </button>
-            <button type="button" data-starter="请直接生成一张适合设计作品集展示的超现实微缩世界海报，主题为「把一座雨林装进玻璃里」。&#10;&#10;【构图】竖版画面，一颗切面清晰的透明水滴悬浮在深墨绿色背景中，占画面约三分之二；水滴内部是一座比例可信的微缩雨林，包含层叠树冠、蜿蜒溪流、苔藓岩石和一间暖光小屋，形成由近至远的空间层次。四周留白，焦点集中在玻璃轮廓和屋内的一点暖光。&#10;【材质与光线】以高端静物摄影结合精细微缩模型的质感呈现，玻璃有自然折射、反射和边缘高光；水体通透，植物纹理细腻，柔和侧逆光穿过薄雾。以墨绿、银白为主，只用少量琥珀暖光点睛，避免过度饱和、塑料感、杂乱装饰和不合理透视。&#10;【交付】使用可用的图片生成工具产出一张高清图片，不以文字方案或占位图代替。画面不添加文字、商标或水印；检查主体完整、边缘干净、细节协调，提供原图预览和文件链接。使用新文件保留已有作品；若缺少生图能力，明确说明需要配置的入口。">
-              <span class="starter-icon" aria-hidden="true"><svg viewBox="0 0 24 24" class="ic"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 6-6 4 4 3-3 5 5"/></svg></span><span><strong>生成创意海报</strong><small>玻璃雨林 · 超现实微缩世界</small></span><span class="starter-arrow" aria-hidden="true">↗</span>
+            <button type="button" data-starter-id="poster">
+              <span class="starter-icon" aria-hidden="true"><svg viewBox="0 0 24 24" class="ic"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 6-6 4 4 3-3 5 5"/></svg></span><span><strong>生成咖啡促销海报</strong><small>Sunrise Coffee · OpenAI 评测案例</small></span><span class="starter-arrow" aria-hidden="true">↗</span>
             </button>
-            <button type="button" data-starter="请制作一个可直接打开游玩的网页小游戏「霓虹疾驰」，达到独立游戏试玩 Demo 的完成度，直接实现并运行。&#10;&#10;【美术方向】玩家驾驶悬浮赛车穿越雨夜未来城市。用有纵深的透视赛道、远近分层的楼群、路面反光和短促粒子尾迹营造速度感；深蓝夜景搭配青色引导线与少量橙色危险标识，车辆、障碍和奖励清晰可辨。开始界面就呈现一段流动的赛道实景，不用静态大图冒充游戏。&#10;【玩法闭环】三车道自动前进，方向键或 A/D 切换车道，手机端支持左右触控；躲避路障、收集能量，连续收集获得连击加分。难度逐步提升，生成障碍时始终保留可通过的路线；碰撞有短促反馈，结束后显示分数、最高纪录和一键重开。包含开始、暂停、继续、重开、静音；音效在首次交互后启用。&#10;【完成标准】操作跟手，运动速度不随帧率变化，桌面与手机布局均可用；控制特效数量，避免频繁闪屏。实际试玩并检查计分、碰撞、暂停及重开，修复报错后交付源码、启动方式和预览入口。优先使用轻量方案，资源本地可用；放入当前项目的新目录，不覆盖已有文件。">
-              <span class="starter-icon" aria-hidden="true"><svg viewBox="0 0 24 24" class="ic"><path d="M8 7h8a4 4 0 0 1 4 3l1 6a2 2 0 0 1-3.4 1.7L15 15H9l-2.6 2.7A2 2 0 0 1 3 16l1-6a4 4 0 0 1 4-3Z"/><path d="M6 11h4m-2-2v4m7-2h.01M18 13h.01"/></svg></span><span><strong>打造竞速小游戏</strong><small>霓虹疾驰 · 可玩关卡与速度反馈</small></span><span class="starter-arrow" aria-hidden="true">↗</span>
+            <button type="button" data-starter-id="game">
+              <span class="starter-icon" aria-hidden="true"><svg viewBox="0 0 24 24" class="ic"><path d="M8 7h8a4 4 0 0 1 4 3l1 6a2 2 0 0 1-3.4 1.7L15 15H9l-2.6 2.7A2 2 0 0 1 3 16l1-6a4 4 0 0 1 4-3Z"/><path d="M6 11h4m-2-2v4m7-2h.01M18 13h.01"/></svg></span><span><strong>制作恐龙跳跃游戏</strong><small>体感与空格操作 · Google 可玩案例</small></span><span class="starter-arrow" aria-hidden="true">↗</span>
             </button>
-            <button type="button" data-starter="请为虚构精品山野旅居品牌「松间 / PINE RETREAT」设计并实现一个可交互的品牌网站，目标是可以直接放进设计作品集展示，直接完成首版，不停留在方案。&#10;&#10;【设计方向】以清晨薄雾中的森林木屋为主视觉，采用建筑杂志式编排：大幅摄影、精炼中文标题、细线分隔、克制留白和有节奏的不对称布局。主色为暖纸白与深松绿，以少量铜色点缀；避免每一屏都套同样的卡片，也不要用渐变色块或 Emoji 代替主视觉。&#10;【内容与交互】首屏具有清晰的品牌宣言和探索入口，后续包含三种独立设计的房型、四季体验、图片画廊、位置交通和页脚。房型可以筛选并查看详情，画廊可放大切换；「预约入住」打开日期与人数表单，校验日期和必填项，提交后明确显示为演示预约，不声称真实下单。文案具体自然，不使用占位文字或虚构获奖背书。&#10;【完成标准】优先使用可用的真实或生成摄影素材，确保图片能加载且风格统一。滚动动效轻盈，支持减少动态效果；适配手机与桌面，按钮、键盘焦点和弹窗关闭行为完整。实际运行并检查布局、图片和关键交互后，交付源码与本地预览入口。放入当前项目的新目录，保留已有文件，无需上线发布。">
-              <span class="starter-icon" aria-hidden="true"><svg viewBox="0 0 24 24" class="ic"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 8h18M8 8v13M6 5.5h.01M9 5.5h.01"/></svg></span><span><strong>设计品牌网站</strong><small>松间旅居 · 杂志排版与沉浸交互</small></span><span class="starter-arrow" aria-hidden="true">↗</span>
+            <button type="button" data-starter-id="website">
+              <span class="starter-icon" aria-hidden="true"><svg viewBox="0 0 24 24" class="ic"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 8h18M8 8v13M6 5.5h.01M9 5.5h.01"/></svg></span><span><strong>设计项目管理网站</strong><small>SaaS 落地页 · Anthropic 对照案例</small></span><span class="starter-arrow" aria-hidden="true">↗</span>
             </button>
           </div>
         </div>
@@ -539,7 +543,7 @@
     <div class="modal-head"><h3>帮助 · 快捷键</h3><button class="modal-x" data-close>&times;</button></div>
     <div class="modal-body help-body">
       <div class="help-grid">
-        <div class="help-kv"><span class="kbd">Enter</span><span>发送 / 运行中插入引导（steer）</span></div>
+        <div class="help-kv"><span class="kbd">Enter</span><span>发送 / 运行中排队，完成后逐条执行</span></div>
         <div class="help-kv"><span class="kbd">Alt+Enter</span><span>排队追加消息（follow-up）</span></div>
         <div class="help-kv"><span class="kbd">Shift+Enter</span><span>换行</span></div>
         <div class="help-kv"><span class="kbd">Esc</span><span>中止当前任务</span></div>

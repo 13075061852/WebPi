@@ -59,6 +59,7 @@ async function probe() {
       return response;
     };
     const normal = await createReleaseHistory({ fetchImpl: tracedFetch })();
+    assert.ok(normal.some(item => item.version === '1.0.13'), 'Normal history must retain 1.0.13');
     assert.equal(normal[0]?.version, expectedVersion, 'Normal system-routed history must retrieve the latest public release');
     historySession = session.fromPartition('halo-release-history', { cache: false });
     assert.equal(transport.ownsSession(historySession), true);
@@ -83,6 +84,7 @@ async function probe() {
       return response;
     };
     const fallback = await createReleaseHistory({ fetchImpl: rateLimitedFetch })();
+    assert.ok(fallback.some(item => item.version === '1.0.13'), 'Rate-limited website fallback must retain 1.0.13');
     assert.equal(fallback[0]?.version, expectedVersion, 'Live website fallback must retrieve the latest public release');
     for (const source of ['latest', 'atom']) {
       assert.ok(requests.some(row => row.scenario === 'rate-limit' && row.source === source && row.status === 200));

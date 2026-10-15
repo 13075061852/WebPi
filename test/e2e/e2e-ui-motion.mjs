@@ -175,11 +175,11 @@ try {
     assert.equal(await evaluate('document.querySelectorAll(".layout-motion,.layout-motion-live,.layout-live-visible").length'),0,'Completed animations must clear their live layout markers');
     assert.equal(await evaluate('[...document.querySelectorAll("#pvBody iframe,#pvBody webview")].some(node=>node.getAttribute("style")?.includes("important"))'),false,'Completed animations must release held viewport dimensions');
   }
-  for (const [name, selector] of [['sidebar-close','#btnSidebar'],['sidebar-open','#btnSidebar'],['tablet','.pvdev[data-dev="tablet"]'],['phone','.pvdev[data-dev="mobile"]'],['desktop','.pvdev[data-dev="desktop"]'],['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['settings-open','#btnSettings'],['settings-close','#settingsModal [data-close]'],['model-open','#btnModel'],['model-close','#modelModal [data-close]'],['think-open','#btnThink'],['think-close','#thinkModal [data-close]']]) {
+  for (const [name, selector] of [['sidebar-close','#btnChatSidebar'],['sidebar-open','#btnChatSidebar'],['tablet','.pvdev[data-dev="tablet"]'],['phone','.pvdev[data-dev="mobile"]'],['desktop','.pvdev[data-dev="desktop"]'],['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['settings-open','#btnSettings'],['settings-close','#settingsModal [data-close]'],['model-open','#btnModel'],['model-close','#modelModal [data-close]'],['think-open','#btnThink'],['think-close','#thinkModal [data-close]']]) {
     await sampleMotion(name,selector);
   }
   // Capture real intermediate frames separately from the timing run.
-  for (const [name, selector] of [['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['sidebar','#btnSidebar'],['phone','.pvdev[data-dev="mobile"]']]) {
+  for (const [name, selector] of [['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['sidebar','#btnChatSidebar'],['phone','.pvdev[data-dev="mobile"]']]) {
     const device=name==='phone';
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
     await waitFor(() => evaluate(device
@@ -224,7 +224,7 @@ try {
       fs.writeFileSync(path.join(fixture,'phone-ready.png'),Buffer.from(ready.result.data,'base64'));
     }
   }
-  await evaluate('document.querySelector("#btnSidebar").click();document.querySelector(".pvdev[data-dev=desktop]").click()');
+  await evaluate('document.querySelector("#btnChatSidebar").click();document.querySelector(".pvdev[data-dev=desktop]").click()');
   await waitFor(() => evaluate('!document.documentElement.classList.contains("layout-motion") && document.querySelector("#pvBody").classList.contains("dev-desktop")'), 'Reset layout');
   // Check both directions for all three device pairs, including the handoff frame.
   await evaluate(`window.__paneRects=()=>Object.fromEntries(['sidebar','center','chat'].map(name=>{const r=document.querySelector('#'+name).getBoundingClientRect();return [name,{x:r.x,y:r.y,width:r.width,height:r.height}]}));
@@ -351,7 +351,41 @@ try {
   assert.equal(await evaluate('document.querySelector("#thinkModal").hidden'),true);
   await evaluate('document.querySelector(".pvdev[data-dev=mobile]").click()');
   await waitFor(()=>evaluate('document.querySelector("#pvBody").classList.contains("dev-mobile")&&!document.querySelector(".device-switch-mask")'),'Reduced motion must also clean up its mask');
-  const report={fixture,previewFile:previewFile||'generated canvas',initial,final,results,chromeSamples};
+  // Resize folds must not rewrite manual preferences or recreate the preview.
+  await evaluate('document.body.classList.remove("focus-mode","sb-collapsed","preview-collapsed")');
+  const resizeLayout = async width => {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false });
+    await waitFor(() => evaluate(`innerWidth===${width} && document.body.classList.contains('preview-auto-collapsed')===${width < 1120} && document.body.classList.contains('sb-auto-collapsed')===${width < 760}`), 'Responsive folds did not settle');
+    return evaluate(`(() => { const chat=document.querySelector('#chat').getBoundingClientRect();return {sidebar:!document.querySelector('#sidebar').inert,preview:!document.querySelector('#center').inert,right:chat.right,width:chat.width,scroll:document.querySelector('#layout').scrollWidth}; })()`);
+  };
+  assert.equal((await resizeLayout(1440)).preview, true);
+  const medium = await resizeLayout(1000);
+  assert.equal(medium.preview, false); assert.equal(medium.sidebar, true);
+  const narrow = await resizeLayout(520);
+  assert.equal(narrow.preview, false); assert.equal(narrow.sidebar, false);
+  assert.ok(narrow.right <= 521 && narrow.scroll <= 520 && narrow.width >= 480, 'Narrow chat must fit without horizontal overflow');
+  await evaluate('document.querySelector("#btnChatSidebar").click()');
+  assert.equal(await evaluate('document.querySelector("#sidebar").inert'), false, 'Narrow sidebar remains reachable');
+  await evaluate('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape"}))');
+  assert.equal(await evaluate('document.querySelector("#sidebar").inert'), true);
+  const restored = await resizeLayout(1440);
+  assert.equal(restored.preview, true); assert.equal(restored.sidebar, true);
+  assert.equal((await guest()).id, initial.id, 'Responsive folding must preserve the preview instance');
+  await evaluate('document.querySelector("#btnChatSidebar").click();document.querySelector("#btnPreviewToggle").click()');
+  await waitFor(() => evaluate('document.body.classList.contains("sb-collapsed")&&document.body.classList.contains("preview-collapsed")'), 'Manual folds did not settle');
+  await resizeLayout(520);
+  const manuallyFolded = await resizeLayout(1440);
+  assert.equal(manuallyFolded.preview, false); assert.equal(manuallyFolded.sidebar, false);
+  await send('Emulation.clearDeviceMetricsOverride');
+  for (const width of [520, 900]) {
+    await evaluate(`window.resizeTo(${width}, 800)`);
+    await waitFor(() => evaluate('innerWidth < 1120 && document.body.classList.contains("preview-auto-collapsed")'), 'Native window did not shrink');
+    assert.equal(await evaluate('document.querySelector("#btnPreviewToggle").disabled'), false, 'Narrow preview control must remain clickable');
+    await evaluate('document.querySelector("#btnPreviewToggle").click()');
+    await waitFor(() => evaluate('innerWidth >= 1120 && !document.querySelector("#center").inert && !document.documentElement.classList.contains("layout-motion")'), 'Preview click must widen the native window and reveal the pane');
+    assert.equal((await guest()).id, initial.id, 'Expanding the window must preserve the preview instance');
+  }
+  const report={fixture,previewFile:previewFile||'generated canvas',initial,final,results,chromeSamples,responsive:{medium,narrow,restored,manuallyFolded,clickToExpand:true}};
   fs.writeFileSync(path.join(fixture,'motion-report.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({ok:true,fixture,results:results.map(r=>({name:r.name,motion:[...r.transitions,...r.live].map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.slideEnd-t.motionStart)})),modal:r.modals.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.finished-t.motionStart)}))}))}));
   await evaluate('setTimeout(()=>window.halo.close(),30);true');await waitFor(()=>exitCode!==undefined,'App did not close');

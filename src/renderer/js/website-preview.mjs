@@ -5,6 +5,16 @@ export function websiteURL(value) {
   } catch { return null; }
 }
 
+export function websiteAddress(value) {
+  const text = String(value || '').trim();
+  if (!text || /\s/.test(text)) return null;
+  if (/^https?:\/\//i.test(text)) return websiteURL(text);
+  // Host:port is an address, while explicit non-web schemes remain forbidden.
+  if (/^[a-z][a-z\d+.-]*:/i.test(text) && !/^[\w.-]+:\d+(?:[/?#]|$)/.test(text)) return null;
+  const local = /^(?:localhost|127(?:\.\d+){3}|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(text);
+  return websiteURL(`${local ? 'http' : 'https'}://${text}`);
+}
+
 export function renderWebsiteCards(turn, open) {
   const urls = [...(turn.__websiteURLs || [])].filter(websiteURL);
   if (!urls.length) return;
@@ -41,7 +51,7 @@ export function renderWebsiteCards(turn, open) {
 }
 
 export function mountWebsiteBrowser(body, url, onChange, createDeviceShell) {
-  body.innerHTML = '<div class="website-browser"><form class="website-toolbar"><button type="button" data-nav="reload" title="刷新" aria-label="刷新">↻</button><input aria-label="网站地址" type="url" required><button type="submit">前往</button><span class="website-zoom"><button type="button" data-zoom="out" aria-label="缩小网页" title="缩小网页">−</button><button type="button" data-zoom="reset" aria-label="恢复到 100%" title="恢复到 100%">100%</button><button type="button" data-zoom="in" aria-label="放大网页" title="放大网页">+</button></span><button type="button" data-nav="external" title="外部打开" aria-label="外部打开">↗</button></form><div class="website-load" role="status" hidden></div><webview title="网站预览" partition="website-preview"></webview></div>';
+  body.innerHTML = '<div class="website-browser"><form class="website-toolbar"><button type="button" data-nav="reload" title="刷新" aria-label="刷新">↻</button><input aria-label="网站地址" type="text" inputmode="url" required><button type="submit">前往</button><span class="website-zoom"><button type="button" data-zoom="out" aria-label="缩小网页" title="缩小网页">−</button><button type="button" data-zoom="reset" aria-label="恢复到 100%" title="恢复到 100%">100%</button><button type="button" data-zoom="in" aria-label="放大网页" title="放大网页">+</button></span><button type="button" data-nav="external" title="外部打开" aria-label="外部打开">↗</button></form><div class="website-load" role="status" hidden></div><webview title="网站预览" partition="website-preview"></webview></div>';
   const guest = body.querySelector('webview'), input = body.querySelector('input'), status = body.querySelector('.website-load');
   if (createDeviceShell) {
     const browser = body.querySelector('.website-browser');
@@ -98,9 +108,12 @@ export function mountWebsiteBrowser(body, url, onChange, createDeviceShell) {
   guest.addEventListener('did-fail-load', event => {
     if (event.isMainFrame && event.errorCode !== -3) { status.hidden = false; status.textContent = '网页暂时无法加载，请刷新重试或外部打开'; }
   });
+  input.addEventListener('input', () => input.setCustomValidity(''));
   body.querySelector('form').onsubmit = event => {
-    event.preventDefault(); const next = websiteURL(input.value);
-    if (next) { loadingButton = go; status.hidden = true; setLoading(true); guest.src = next; }
+    event.preventDefault(); const next = websiteAddress(input.value);
+    if (!next) { input.setCustomValidity('请输入有效的 HTTP 或 HTTPS 网址'); input.reportValidity(); return; }
+    input.value = next;
+    loadingButton = go; status.hidden = true; setLoading(true); guest.src = next;
   };
   reload.onclick = () => { loadingButton = reload; status.hidden = true; setLoading(true); guest.reloadIgnoringCache(); };
   body.querySelector('[data-nav=external]').onclick = () => { const target = websiteURL(input.value); if (target) void window.halo.openExternal(target); };

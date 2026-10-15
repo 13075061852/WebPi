@@ -52,6 +52,8 @@ try {
   } });
   const previewHook = await promptFor(sessionA, 'preview');
   assert.match(previewHook, /8731/);
+  assert.match(previewHook, /默认调用 `preview_control`/);
+  assert.match(previewHook, /action: "open"/);
   assert.match(previewHook, /广俊螺杆库/);
   assert.match(previewHook, /http:\/\/127\.0\.0\.1:1234\/login/);
   assert.doesNotMatch(previewHook, /token=secret|fixture:password|#private/);

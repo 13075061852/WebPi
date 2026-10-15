@@ -7,6 +7,7 @@
 ## 默认流程：本地准备与 CI 并行，再上传 GitHub
 
 1. 按最新正式 Release 确定新版本。先用 `scripts/Invoke-GitHub.ps1 -GhArguments @('api','repos/13075061852/WebPi','--jq','.full_name')` 确认 CLI、认证和仓库访问；可用 `HALO_GH_PATH` 指定 CLI。凭据只在子进程内存使用，不写日志或文件。
+   同步 `src/renderer/js/release-history-data.mjs`，覆盖全部已公开正式版本的日期和说明。`release:local` 在打包前核对快照覆盖，防止 API 限流切换备用入口后漏显示上一版本。
 2. 运行 `npm run release:preflight`，通过后提交并推送 main。预检使用隔离账户；静态语法、ESLint、跨平台夹具检查并行，功能及 GUI 回归串行。源码检查清除 `HALO_PACKAGED_EXE` 等残留控制变量，防止误测旧包。
 3. 执行 `npm run release:local`。它检查干净且已推送的 main、版本一致性、GitHub 访问，并行等待**当前完整提交 SHA 的 CI**与本地准备。相同输入且不足 24 小时的成功预检直接复用；否则重跑预检。然后本机打包（不发布）、仓库外解包校验、6 项打包版测试，全部通过才输出 `READY`。
 4. 成功构建的候选包按应用/构建输入指纹和本地文件 SHA-256 留存；CI、测试或网络失败后重跑同一入口。应用/构建输入不变且产物哈希一致时复用 EXE；测试变化会重跑验证。该入口不提交、不打标签、不上传、不正式发布。安装器界面有变更时仍须完成真实原生安装向导检查。

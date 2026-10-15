@@ -7,8 +7,12 @@ import { spawn } from "node:child_process";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {createServer} from 'node:http';
 
 const PORT = 9352;
+const website = createServer((_request,response)=>{response.setHeader('Content-Type','text/html');response.end('<title>Terminal preview test</title><h1>Preview works</h1>');});
+await new Promise(resolve=>website.listen(0,'127.0.0.1',resolve));
+const terminalURL = `http://127.0.0.1:${website.address().port}/terminal-preview/`;
 const electron = spawn(
   process.env.HALO_TEST_EXECUTABLE || (process.platform === "win32" ? "node_modules/electron/dist/electron.exe" : "node_modules/.bin/electron"),
   [...(process.env.HALO_TEST_EXECUTABLE ? [] : ["."]), `--remote-debugging-port=${PORT}`, `--user-data-dir=${mkdtempSync(path.join(tmpdir(), 'halo-render-'))}`],
@@ -84,6 +88,10 @@ await evalJS(`
 
 
 try {
+await evalJS(`window.testTerminalRefs=[];const OriginalTerminal=window.Terminal;window.Terminal=class extends OriginalTerminal{constructor(options){super(options);window.testTerminalRefs.push(this)}}`);
+// The preview now starts folded; reveal the pane before testing terminal geometry.
+await evalJS(`if(document.body.classList.contains('preview-collapsed'))document.querySelector('#btnPreviewToggle').click();`);
+await sleep(500);
 await evalJS(`window.termOutput = {}; window.halo.onPtyOut(({id,data}) => { window.termOutput[id] = (window.termOutput[id] || '') + data; }); document.querySelector('#btnTerm').click();`);
 await sleep(1600);
 await evalJS(`document.querySelector('#termAdd').click()`);
@@ -91,6 +99,22 @@ await sleep(1400);
 const ids = await evalJS(`[...document.querySelectorAll('.terminal-panel')].map(p=>p.dataset.terminalId)`);
 const pids = await evalJS(`[...document.querySelectorAll('.terminal-panel')].map(p=>Number(p.dataset.pid))`);
 if(ids.length !== 2) throw Error('Two terminals not created');
+if (!(await evalJS(`window.testTerminalRefs.every(term => term.options.windowsPty.backend === 'conpty' && term.options.windowsPty.buildNumber > 0)`))) throw Error('Windows terminal compatibility metadata missing');
+await evalJS('window.halo.ptyWrite('+JSON.stringify({id:ids[1],data:'echo HALO_RESIZE_A & echo HALO_RESIZE_B & echo HALO_RESIZE_C\r'})+')');
+await sleep(400);
+const resizeResult=await evalJS(`(async()=>{
+  const term=window.testTerminalRefs[1], host=document.querySelector('#termHost');
+  const lines=()=>Array.from({length:term.buffer.active.length},(_,i)=>term.buffer.active.getLine(i).translateToString(true));
+  const before=lines().map(line=>line.trim()).filter(line=>/^HALO_RESIZE_[ABC]$/.test(line));
+  for(const width of ['75%','90%','70%','85%','100%']){host.style.width=width;await new Promise(r=>setTimeout(r,25));}
+  await new Promise(r=>setTimeout(r,350));
+  host.style.maxHeight='300px';await new Promise(r=>setTimeout(r,350));
+  host.style.maxHeight='';await new Promise(r=>setTimeout(r,350));
+  const after=lines().map(line=>line.trim()).filter(line=>/^HALO_RESIZE_[ABC]$/.test(line));
+  return {before,after,debug:lines().filter(line=>line.includes('HALO_RESIZE'))};
+})()`);
+if(JSON.stringify(resizeResult.before)!==JSON.stringify(['HALO_RESIZE_A','HALO_RESIZE_B','HALO_RESIZE_C']) || JSON.stringify(resizeResult.after)!==JSON.stringify(resizeResult.before))throw Error('Terminal resize duplicated/lost output: '+JSON.stringify(resizeResult));
+console.log('RESIZE PASS: repeated width/height changes preserve output without duplicate lines');
 for(let i=0;i<2;i++) await evalJS('window.halo.ptyWrite('+JSON.stringify({id:ids[i],data:'set HALO_TEST_VALUE=ISOLATED_'+i+'\r'})+')');
 await sleep(500);
 await evalJS('window.termOutput = {}');
@@ -121,6 +145,34 @@ await sleep(400);
 const sizes=await evalJS(`[...document.querySelectorAll('.terminal-panel')].map(p=>({visible:!p.hidden,width:p.clientWidth,height:p.clientHeight}))`);
 if(sizes.some(s=>!s.visible || s.width < 100 || s.height < 100)) throw Error('Split layout failed');
 await screenshot('test/shot-terminals.png');
+// Startup state restoration can fold the preview after the initial toggle.
+await evalJS(`if(document.body.classList.contains('preview-collapsed'))document.querySelector('#btnPreviewToggle').click();`);
+await sleep(500);
+await evalJS(`if(!document.querySelector('#cpane-preview').classList.contains('term-open'))document.querySelector('#btnTerm').click();`);
+await sleep(250);
+await evalJS('window.halo.ptyWrite('+JSON.stringify({id:ids[1],data:`echo ${terminalURL}\r`})+')');
+await sleep(400);
+const linkPoint=await evalJS(`(async()=>{
+  const term=window.testTerminalRefs[1],buffer=term.buffer.active;
+  const {createTerminalLinkProvider}=await import('./js/terminal-links.mjs');
+  const provider=createTerminalLinkProvider(term,()=>{});
+  for(let y=buffer.viewportY+1;y<=buffer.viewportY+term.rows;y++) {
+    const links=await new Promise(resolve=>provider.provideLinks(y,resolve));
+    const link=links?.find(link=>link.text===${JSON.stringify(terminalURL)}&&link.range.start.y===y);
+    if(!link)continue;
+    const screen=document.querySelectorAll('.xterm-screen')[1].getBoundingClientRect();
+    return {x:screen.left+(link.range.start.x-.5)*screen.width/term.cols,y:screen.top+(y-buffer.viewportY-.5)*screen.height/term.rows};
+  }
+  throw Error('Terminal URL was not printed');
+})()`);
+await send('Input.dispatchMouseEvent',{type:'mouseMoved',...linkPoint});await sleep(150);
+await send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...linkPoint});
+await send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...linkPoint});
+await sleep(800);
+const linkPreview=await evalJS(`({src:document.querySelector('#pvBody webview')?.getAttribute('src'),terminal:document.querySelector('#cpane-preview').classList.contains('term-open'),count:document.querySelectorAll('.terminal-panel').length,hit:document.elementFromPoint(${linkPoint.x},${linkPoint.y})?.className})`);
+if(linkPreview.src!==terminalURL||linkPreview.terminal||linkPreview.count!==2){await screenshot('tmp/terminal-link-failed.png');throw Error('Terminal link must open in preview while retaining terminal processes: '+JSON.stringify({linkPreview,linkPoint}));}
+await evalJS(`document.querySelector('#btnTerm').click();`);
+console.log('LINK PREVIEW PASS: real URL click opens internal preview and retains terminals');
 await evalJS(`document.querySelector('#btnTerm').click(); document.querySelector('#btnTerm').click();`);
 if(await evalJS(`document.querySelectorAll('.terminal-panel').length`) !== 2) throw Error('Hide destroyed terminals');
 await evalJS(`document.querySelector('.terminal-tab button:last-child').click();`);
@@ -138,4 +190,4 @@ for (let i=0;i<60;i++) {
   await sleep(100);
 }
 console.log('TERMINALS PASS: independent shells, input/output, split, hide/reopen, close isolation');
-} finally { ws.close(); electron.kill(); }
+} finally { ws.close(); electron.kill(); website.close(); }

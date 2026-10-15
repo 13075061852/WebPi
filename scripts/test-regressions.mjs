@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tests = [
   'verify-release-workflow', 'verify-fixture-portability', 'verify-release-preflight', 'verify-release-upload', 'verify-release-inputs', 'verify-release-local',
-  'verify-workspace-import', 'verify-installer-native',
+  'verify-workspace-import', 'verify-installer-native', 'verify-window-state',
   'verify-release-history', 'verify-release-history-ui', 'verify-release-history-fetch',
   'verify-app-updates', 'verify-image-generation', 'verify-image-card-timing', 'verify-artifact-files',
   'verify-turn-cost', 'verify-subscription-usage', 'verify-quota-refresh', 'verify-quota-auth',
@@ -21,11 +21,11 @@ const tests = [
   'verify-video-history', 'verify-video-history-ui',
   'verify-digital-human', 'verify-voice-sample',
   'verify-theme-images',
-  'verify-session-integrity', 'verify-conversation-meta', 'verify-conversation-switch', 'verify-project-runs', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-server-tools', 'verify-server-delete',
-  'verify-composer-events', 'verify-queue-images', 'verify-office-protocol', 'verify-ipc-sender',
+  'verify-session-integrity', 'verify-conversation-meta', 'verify-conversation-switch', 'verify-project-runs', 'verify-startup', 'verify-startup-runtime', 'verify-project-selection', 'verify-account-integrity', 'verify-auth-device-id', 'verify-server-tools', 'verify-server-delete',
+  'verify-composer-events', 'verify-queue-images', 'verify-queue-promotion', 'verify-office-protocol', 'verify-ipc-sender',
   'verify-session-queue', 'verify-preview-races', 'verify-preview-refresh', 'verify-preview-motion',
   'verify-server-preview', 'verify-preview-cleanup', 'verify-preview-performance',
-  'verify-preview-file', 'verify-preview-inspection', 'verify-workspace-path',
+  'verify-preview-file', 'verify-preview-inspection', 'verify-workspace-path', 'verify-website-address',
   'verify-trusted-ui-url', 'verify-thinking-batch', 'verify-user-message',
   'verify-office', 'verify-office-failures', 'verify-office-efficiency',
 ].map(name => `test/${name}.mjs`);

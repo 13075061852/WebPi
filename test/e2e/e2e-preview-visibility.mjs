@@ -9,6 +9,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
+import { Document, Packer, Paragraph } from 'docx';
 
 const root = process.cwd();
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-preview-visibility-'));
@@ -20,6 +21,7 @@ fs.writeFileSync(path.join(agent, 'auth.json'), '{}');
 fs.writeFileSync(path.join(workspace, 'preview.md'), '# Preview first version');
 fs.writeFileSync(path.join(workspace, 'slow.md'), '# Stale preview must not return');
 fs.writeFileSync(path.join(workspace, 'artifact.html'), '<!doctype html><title>Artifact fixture</title><h1>Artifact fixture</h1>');
+fs.writeFileSync(path.join(workspace, 'narrow.docx'), await Packer.toBuffer(new Document({sections:[{children:[new Paragraph('Narrow window Word artifact')]}]})));
 fs.writeFileSync(path.join(otherProject, 'second.md'), '# Second project');
 const controlFile = path.join(fixture, 'control.json'), callsFile = path.join(fixture, 'calls.ndjson');
 let control = { events: [], releaseRead: false, releaseCreate: false };
@@ -185,6 +187,22 @@ try {
   assert.doesNotMatch(await evaluate('document.querySelector("#pvBody").textContent'), /Stale preview/);
   assert.equal(await evaluate('document.querySelector("#pvName").textContent'), '未选择文件');
 
+  await click('#btnPreviewToggle'); await assertVisibility(false, 'Open empty preview for browser entry');
+  await click('#btnBrowser');
+  assert.equal(await evaluate('document.activeElement.id'), 'previewAddress');
+  await evaluate(`document.querySelector('#previewAddress').value='javascript:alert(1)';document.querySelector('#previewAddressForm').requestSubmit()`);
+  assert.equal(await evaluate('document.querySelector("#previewAddress").validity.valid'), false);
+  assert.equal(await evaluate('!!document.querySelector("#pvBody webview")'), false);
+  await evaluate(`const address=document.querySelector('#previewAddress');address.value=${JSON.stringify(websiteURL.replace('http://', ''))};address.dispatchEvent(new Event('input'));document.querySelector('#previewAddressForm').requestSubmit()`);
+  await until(() => evaluate('document.querySelector("#pvBody webview")?.getTitle()==="Local website fixture"'), 'typed loopback website loaded');
+  assert.equal(await evaluate('document.querySelector("#previewAddressForm").hidden'), true);
+  await click('#btnBrowser');
+  assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), '网站地址');
+  await evaluate(`const toolbarAddress=document.querySelector('.website-toolbar input');toolbarAddress.value=${JSON.stringify(websiteURL.replace('http://', '') + 'next')};toolbarAddress.dispatchEvent(new Event('input'));document.querySelector('.website-toolbar').requestSubmit()`);
+  await until(() => evaluate(`document.querySelector('#pvBody webview')?.getURL()===${JSON.stringify(websiteURL + 'next')}`), 'browser toolbar navigates typed address');
+  const browserShot = await command('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(path.join(fixture, 'browser-entry.png'), Buffer.from(browserShot.data, 'base64'));
+
   await assistantMessage(`[Local fixture](${websiteURL})`);
   await until(() => evaluate(`[...document.querySelectorAll('.md a')].some(link=>link.href===${JSON.stringify(websiteURL)})`), 'website link');
   await evaluate(`[...document.querySelectorAll('.md a')].find(link=>link.href===${JSON.stringify(websiteURL)}).click()`);
@@ -194,11 +212,49 @@ try {
   await evaluate(`[...document.querySelectorAll('.md a')].find(link=>link.href===${JSON.stringify(websiteURL)}).click()`);
   await assertVisibility(false, 'Opening same website reopens preview');
 
+  await switchProject(workspace);
+  await assistantMessage('[Word artifact](narrow.docx)');
+  await until(() => evaluate('[...document.querySelectorAll(".artifact-card")].some(card=>card.textContent.includes("narrow.docx"))'), 'Word artifact card');
+  await command('Emulation.clearDeviceMetricsOverride');
+  for (const width of [520, 900]) {
+    await evaluate(`window.resizeTo(${width},900)`);
+    await until(() => evaluate(`innerWidth===${width} && document.body.classList.contains('preview-auto-collapsed')`), 'narrow native window');
+    await evaluate('[...document.querySelectorAll(".artifact-card")].find(card=>card.textContent.includes("narrow.docx")).click()');
+    await until(() => evaluate('innerWidth>=1120'), 'artifact click widens native window');
+    await assertVisibility(false, `Word artifact expands preview from ${width}px`);
+    await until(() => evaluate('document.querySelector("#pvBody iframe")?.contentDocument?.querySelector(".docx-wrapper article")?.textContent.includes("Narrow window Word artifact")'), 'Word artifact rendered');
+  }
+  const narrowShot = await command('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(path.join(fixture,'narrow-artifact-expanded.png'),Buffer.from(narrowShot.data,'base64'));
+
   // Reload starts a fresh renderer even if the previous preview was expanded.
   await evaluate('window.__previousPreviewDocument = true');
   await command('Page.reload');
   await until(() => evaluate('!window.__previousPreviewDocument && !!window.__haloDispatch && window.halo.startupState().then(r=>r.data.ready)'), 'reload startup');
   await assertVisibility(true, 'Reload does not restore an empty expanded preview');
+  // Persisted model errors must survive the real snapshot -> reload -> playback path.
+  const failedFile = path.join(agent,'sessions','failed-history.jsonl');
+  const savedErrors = ['403 subscription unavailable','402 credits exhausted'];
+  const failedMessages = savedErrors.flatMap((error,index)=>[
+    {role:'user',content:[{type:'text',text:`Failed request ${index}`}],timestamp:1000+index*2000},
+    {role:'assistant',content:[],provider:'fixture',model:'a',stopReason:'error',errorMessage:error,timestamp:2000+index*2000},
+  ]);
+  fs.mkdirSync(path.dirname(failedFile),{recursive:true});
+  fs.writeFileSync(failedFile,JSON.stringify({cwd:workspace,id:'failed-history',messages:failedMessages,model:{provider:'fixture',id:'a',name:'a',contextWindow:10000}}));
+  const opening=await evaluate(`window.halo.openSession(${JSON.stringify(failedFile)})`);
+  assert.equal(opening.ok,true);
+  for (let reload=0;reload<2;reload++) {
+    await evaluate('window.__errorReloadMarker=true');
+    await command('Page.reload');
+    await until(() => evaluate('!window.__errorReloadMarker && document.querySelectorAll(".error-card").length===2 && !document.querySelector("#messages").classList.contains("restoring")'), 'restore saved failures');
+    assert.deepEqual(await evaluate('[...document.querySelectorAll(".ec-raw")].map(node=>node.textContent)'),savedErrors);
+    assert.equal(await evaluate('document.querySelectorAll(".process-group>summary").length'),0,'Failed requests with no process must not gain empty disclosures');
+    assert.equal(await evaluate('[...document.querySelectorAll(".error-card")].every(card=>card.parentElement.querySelector(".process-group").compareDocumentPosition(card)&Node.DOCUMENT_POSITION_FOLLOWING)'),true,'Restored errors remain below timing/cost');
+  }
+  const savedSnapshot=await evaluate('window.halo.snapshotView().then(reply=>reply.data.messages)');
+  assert.deepEqual(savedSnapshot.filter(message=>message.role==='assistant').map(message=>message.errorMessage),savedErrors);
+  assert.ok(savedSnapshot.filter(message=>message.role==='assistant').every(message=>message.stopReason==='error'));
+  passed.push('Saved model errors survive repeated reload without duplicates or empty process controls');
   assert.deepEqual(exceptions, [], 'No renderer exceptions');
   fs.mkdirSync('test/results/preview-visibility', { recursive: true });
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });

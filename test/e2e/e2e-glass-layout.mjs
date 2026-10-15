@@ -33,7 +33,7 @@ for (const stream of [electron.stdout, electron.stderr]) stream.on('data', data 
 const pending = new Map(), exceptions = [], samples = [], continuous = [];
 const skipPixels = process.argv.includes('--skip-pixels');
 const controls = {
-  sidebar: { selector: '#btnSidebar', bodyClass: 'sb-collapsed' },
+  sidebar: { selector: '#btnChatSidebar', bodyClass: 'sb-collapsed' },
   preview: { selector: '#btnPreviewToggle', bodyClass: 'preview-collapsed' },
   focus: { selector: '#btnFocus', bodyClass: 'focus-mode' },
 };

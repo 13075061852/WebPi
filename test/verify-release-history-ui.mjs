@@ -80,21 +80,21 @@ try {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.at(-1), true, 'The explicit refresh button must bypass the cached response');
   assert.equal(nodes.get('#releaseHistoryStatus').textContent, '已同步 GitHub 正式版本');
-  const article = nodes.get('#releaseHistoryList').children[0];
-  const button = nodes.get('#releaseHistoryNav').children[0];
+  const article = nodes.get('#releaseHistoryList').children.find(item => item.dataset.version === '1.0.12');
+  const button = nodes.get('#releaseHistoryNav').children.find(item => item.dataset.version === '1.0.12');
+  assert.ok(nodes.get('#releaseHistoryNav').children.some(item => item.dataset.version === '1.0.13'), 'Missing remote versions retain their bundled public notes');
   assert.equal(article.dataset.version, '1.0.12');
   assert.equal(article.children[1].children[0].textContent, '<script>fixture</script>', 'Remote notes stay plain text');
 
   nodes.get('[data-pane="history"]').dispatch('click');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.at(-1), false, 'Opening the page may reuse the successful cache');
-  assert.equal(nodes.get('#releaseHistoryList').children[0], article, 'Unchanged records must not rebuild the visible list');
-  assert.equal(nodes.get('#releaseHistoryNav').children[0], button, 'Unchanged records must not reset the navigation selection');
+  assert.ok(nodes.get('#releaseHistoryList').children.includes(article), 'Unchanged records must not rebuild the visible list');
+  assert.ok(nodes.get('#releaseHistoryNav').children.includes(button), 'Unchanged records must not reset the navigation selection');
   response = { ok: false, error: '无法连接 GitHub' };
   await controller.refresh(true);
   assert.equal(nodes.get('#releaseHistoryStatus').textContent, '无法连接 GitHub，显示本地记录');
-  assert.equal(nodes.get('#releaseHistoryList').children[0].dataset.version, '1.0.12', 'Failed retries retain the latest successful notes');
-  assert.equal(nodes.get('#releaseHistoryList').children[0], article, 'Failed retries keep the same visible DOM');
+  assert.ok(nodes.get('#releaseHistoryList').children.includes(article), 'Failed retries retain the latest successful notes and visible DOM');
 
   // Opening during a slow first request never exposes the old bundled list.
   const slowNodes = createNodes(), slowCalls = [];
@@ -109,13 +109,13 @@ try {
   slowNodes.get('[data-pane="history"]').dispatch('click');
   assert.equal(slowController.refresh(), first, 'Repeated opens await the same in-flight preload');
   assert.deepEqual(slowCalls, [false]);
-  completeHistory({ ok: true, data: [{ version: '1.0.13', date: '2026-10-05T00:00:00Z', body: 'Latest fixture' }] });
+  completeHistory({ ok: true, data: [{ version: '9.9.9', date: '2099-01-01T00:00:00Z', body: 'Latest fixture' }] });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(slowNodes.get('#releaseHistoryList').children.length, 0, 'Late current-version metadata must not cause a second first paint');
   assert.equal(slowNodes.get('#releaseHistoryLoading').hidden, false);
-  completeVersion({ ok: true, data: { currentVersion: '1.0.13' } });
+  completeVersion({ ok: true, data: { currentVersion: '9.9.9' } });
   await first;
-  assert.equal(slowNodes.get('#releaseHistoryList').children[0].dataset.version, '1.0.13', 'The first visible version must already be the synchronized latest');
+  assert.equal(slowNodes.get('#releaseHistoryList').children[0].dataset.version, '9.9.9', 'The first visible version must already be the synchronized latest');
   assert.equal(slowNodes.get('#releaseHistoryNav').children[0].children[1].textContent, '当前版本');
   assert.equal(slowNodes.get('#releaseHistoryLoading').hidden, true);
 } finally {

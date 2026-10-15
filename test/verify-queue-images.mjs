@@ -12,11 +12,11 @@ try {
     { sessionDir:path.join(fixture.dir, 'sessions') });
   try {
     await bridge.start(project);
+    const image = { type:'image', mimeType:'image/png', data:'AAAA' };
     const events = [];
     bridge.onEvent((channel, payload) => {
       if (channel === 'pi:event' && payload.event.type === 'queue_update') events.push(payload.event);
     });
-    const image = { type:'image', mimeType:'image/png', data:'AAAA' };
     bridge.session.steer = async (text, images) => {
       assert.equal(text, '检查图片'); assert.deepEqual(images, [image]);
       bridge.session.emit({ type:'queue_update', steering:[text], followUp:[] });

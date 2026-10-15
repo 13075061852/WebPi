@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { resolvePiCli } from './pi-runtime.mjs';
 
 // Electron already contains Node. Run our bundled Pi CLI with that runtime,
@@ -13,7 +14,8 @@ export function spawnPi(args, {
   return new Promise(resolve => {
     let child;
     try {
-      child = spawn(executable, [cliPath || resolvePiCli(), ...args], {
+      const launcher = fileURLToPath(new URL('./pi-cli.cjs', import.meta.url));
+      child = spawn(executable, ['--require', launcher, cliPath || resolvePiCli(), ...args], {
         cwd,
         env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
         windowsHide: true,

@@ -6,7 +6,11 @@ window.addEventListener('message', async e => {
   const content = document.getElementById('content'), status = document.getElementById('status');
   try {
     if (ext === 'docx') {
-      await window.docx.renderAsync(bytes, content, null, { useBase64URL: true, renderAltChunks: false });
+      await window.docx.renderAsync(bytes, content, null, { useBase64URL: true, renderAltChunks: false,
+        breakPages: true, ignoreLastRenderedPageBreak: false });
+      await document.fonts.ready;
+      await Promise.all([...content.querySelectorAll('img')].map(image => image.decode().catch(() => {})));
+      paginateWord(content);
     } else if (ext === 'pptx') {
       const viewer = window.pptxPreview.init(content, { width: Math.max(320, document.documentElement.clientWidth - 32), height: Math.max(180, (document.documentElement.clientWidth - 32) * 9 / 16), mode: 'list' });
       await viewer.preview(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
@@ -65,11 +69,111 @@ window.addEventListener('message', async e => {
       for (const sheet of workbook.worksheets) { const b = document.createElement('button'); b.textContent = sheet.name; b.onclick = () => show(sheet); tabs.append(b); }
       if (workbook.worksheets[0]) show(workbook.worksheets[0]);
     }
-    if (ext !== 'xlsx') status.textContent = '只读预览 · 复杂版式可能与 Office 有差异';
+    if (ext !== 'xlsx') status.textContent = (ext === 'docx' ? `${content.querySelectorAll('.docx-wrapper > section.docx').length} 页 · ` : '') + '只读预览 · 复杂版式可能与 Office 有差异';
     parent.postMessage({ type: 'office-rendered', ext, text: content.textContent, nodes: content.childElementCount }, '*');
   } catch (error) { status.textContent = '预览失败：' + error.message; parent.postMessage({ type: 'office-rendered', error: error.message }, '*'); }
 });
 parent.postMessage({ type: 'office-ready' }, '*');
+
+// docx-preview honors stored page breaks but does not paginate overflowing text.
+// Measure at the document's fixed paper width after fonts/images have settled.
+function paginateWord(content) {
+  for (const original of [...content.querySelectorAll('.docx-wrapper > section.docx')]) {
+    const style = getComputedStyle(original);
+    const height = parseFloat(style.minHeight);
+    if (!height) continue;
+    const template = original.cloneNode(false);
+    for (const node of original.children) if (['HEADER', 'FOOTER'].includes(node.tagName)) template.append(node.cloneNode(true));
+    const articles = [...original.querySelectorAll(':scope > article')];
+    if (!articles.length) continue;
+    const blocks = articles.flatMap(article => [...article.children]);
+    // Notes belong at the end of their original section, not on every new page.
+    const notes = [...original.children].filter(node => !['HEADER', 'FOOTER', 'ARTICLE'].includes(node.tagName));
+    blocks.push(...notes);
+    const chromeHeight = [...original.querySelectorAll(':scope > header, :scope > footer')].reduce((total, node) => {
+      const css = getComputedStyle(node);
+      return total + node.getBoundingClientRect().height + (parseFloat(css.marginTop) || 0) + (parseFloat(css.marginBottom) || 0);
+    }, 0);
+    const capacity = Math.max(1, height - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - Math.max(0, chromeHeight));
+    let page = original, article;
+    const prepare = target => {
+      for (const node of [...target.children]) if (!['HEADER', 'FOOTER'].includes(node.tagName)) node.remove();
+      target.style.height = `${height}px`;
+      // A single indivisible image/row may be larger than a page; retain it.
+      target.style.overflow = 'visible';
+      const body = articles[0].cloneNode(false);
+      body.style.display = 'flow-root'; body.style.flexShrink = '0';
+      target.insertBefore(body, target.querySelector(':scope > footer'));
+      return body;
+    };
+    article = prepare(page);
+    const nextPage = () => {
+      const next = template.cloneNode(true);
+      next.removeAttribute('id');
+      page.after(next); page = next; article = prepare(page);
+    };
+    const fits = () => article.getBoundingClientRect().height <= capacity + 1;
+    for (const block of blocks) {
+      article.append(block);
+      if (fits()) continue;
+      if (article.childElementCount > 1) {
+        block.remove(); nextPage(); article.append(block);
+      }
+      if (fits()) continue;
+      if (block.tagName === 'P' && !block.querySelector('img, svg, math')) {
+        let remainder = block;
+        while (!fits()) {
+          const part = splitWordParagraph(remainder, fits);
+          if (!part) break;
+          nextPage(); article.append(part); remainder = part;
+        }
+      } else if (block.tagName === 'TABLE') {
+        let table = block;
+        while (!fits() && table.rows.length > 1) {
+          const tail = table.cloneNode(true);
+          // Do not cut a vertically merged cell across pages.
+          let count = table.rows.length;
+          while (count > 1 && !fits()) { table.rows[count - 1].remove(); count--; }
+          const safe = [...tail.rows].slice(0, count).every((row, index) => [...row.cells].every(cell => index + cell.rowSpan <= count));
+          if (!safe) { table.replaceWith(tail); break; }
+          for (let index = 0; index < count; index++) tail.rows[0].remove();
+          if (!fits()) page.style.height = `${height + article.getBoundingClientRect().height - capacity}px`;
+          nextPage(); article.append(tail); table = tail;
+        }
+      }
+      // Keep oversized indivisible content readable without covering the next page.
+      if (!fits()) page.style.height = `${height + article.getBoundingClientRect().height - capacity}px`;
+    }
+  }
+}
+
+function splitWordParagraph(paragraph, fits) {
+  const text = paragraph.textContent;
+  if (text.length < 2) return null;
+  const rangeTo = offset => {
+    const range = document.createRange(); range.selectNodeContents(paragraph);
+    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (offset <= node.length) { range.setEnd(node, offset); break; }
+      offset -= node.length;
+    }
+    return range;
+  };
+  const prefix = paragraph.cloneNode(false);
+  paragraph.replaceWith(prefix);
+  let low = 0, high = text.length - 1;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    prefix.replaceChildren(rangeTo(middle).cloneContents());
+    if (fits()) low = middle; else high = middle - 1;
+  }
+  if (low && /[\uD800-\uDBFF]/.test(text[low - 1])) low--;
+  if (!low) { prefix.replaceWith(paragraph); return null; }
+  prefix.replaceChildren(rangeTo(low).extractContents());
+  paragraph.style.textIndent = '0'; paragraph.style.marginTop = '0';
+  return paragraph;
+}
 
 // Basic OOXML fallback for decks the primary renderer cannot parse.
 async function renderSlides(bytes, host) {

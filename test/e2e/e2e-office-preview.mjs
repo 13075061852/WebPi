@@ -1,5 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { runOffice } from '../../src/main/office/tools.mjs';
+import { Document, Packer, Paragraph, TextRun, PageBreak, Table, TableRow, TableCell } from 'docx';
+import JSZip from 'jszip';
+import assert from 'node:assert/strict';
 /**
  * E2E render test: boots the real Electron app, then injects synthetic
  * pi event streams through window.__haloDispatch and captures screenshots.
@@ -96,8 +99,20 @@ try {
  const root=mkdtempSync(path.join(tmpdir(),'halo-office-preview-'));
  for(const name of ['word','excel','powerpoint','pdf'])await runOffice({action:'run',script:path.resolve('assets/office-examples/'+name+'.cjs')},root);
  const fixture=path.join(root,'output');
+ const paragraphs = Array.from({length:65},(_,index)=>new Paragraph({text:`段落${index}：`+'分页预览应保留完整正文与段落格式。'.repeat(10),spacing:{after:160}}));
+ const longText='长段落需要跨页排版且不能丢失文字。'.repeat(550);
+ const table = new Table({rows:Array.from({length:55},(_,index)=>new TableRow({children:[new TableCell({children:[new Paragraph(`表格行${index}`)]}),new TableCell({children:[new Paragraph('表格跨页内容'.repeat(12))]})]}))});
+ const paginated=new Document({sections:[{properties:{page:{size:{width:11906,height:16838},margin:{top:1134,bottom:1134,left:1134,right:1134}}},children:[...paragraphs,new Paragraph({children:[new TextRun({text:longText,bold:true})]}),table]}]});
+ const paginatedBytes=await Packer.toBuffer(paginated);
+ writeFileSync(path.join(fixture,'pagination.docx'),paginatedBytes);
+ const breaks = new Document({sections:[{children:[new Paragraph('手动分页前'),new Paragraph({children:[new PageBreak(),new TextRun('手动分页后')]}),new Paragraph('保存分页后')]}]});
+ const breakZip = await JSZip.loadAsync(await Packer.toBuffer(breaks));
+ breakZip.file('word/document.xml',(await breakZip.file('word/document.xml').async('string')).replace('<w:t xml:space="preserve">保存分页后</w:t>','<w:lastRenderedPageBreak/><w:t xml:space="preserve">保存分页后</w:t>'));
+ writeFileSync(path.join(fixture,'breaks.docx'),await breakZip.generateAsync({type:'nodebuffer'}));
  await evalJS('window.halo.projectSwitch('+JSON.stringify(fixture)+')');
- for(const [ext,name] of [['docx','report.docx'],['xlsx','budget.xlsx'],['pptx','presentation.pptx']]) {
+ await evalJS('if(document.body.classList.contains("preview-collapsed"))document.querySelector("#btnPreviewToggle").click()');
+ await sleep(400);
+ for(const [ext,name] of [['docx','report.docx'],['docx','pagination.docx'],['docx','breaks.docx'],['xlsx','budget.xlsx'],['pptx','presentation.pptx']]) {
  const result=await evalJS(`(async()=>{
  const r=await window.halo.documentPreview(${JSON.stringify(name)});
  if(!r.ok)throw Error(r.error);
@@ -108,14 +123,32 @@ try {
  setTimeout(()=>resolve({error:'timeout'}),15000);
  });})()`);
  console.log(ext,JSON.stringify(result).slice(0,500));if(result.error||!result.nodes||(ext==='pptx' && (result.nodes!==3 || !result.text.includes('项目成果汇报'))))throw Error(ext+' failed');
- await screenshot('test/shot-preview-'+ext+'.png');
+ if(name==='pagination.docx') {
+ const pagination=await evalJS(`(()=>{const doc=document.querySelector('#pvBody iframe').contentDocument;const pages=[...doc.querySelectorAll('.docx-wrapper>section.docx')];return {pages:pages.length,heights:pages.map(p=>p.getBoundingClientRect().height),overflow:pages.map(p=>p.scrollHeight-p.clientHeight),text:pages.map(p=>[...p.querySelectorAll('article p')].map(p=>p.textContent).join('')).join(''),bold:[...doc.querySelectorAll('article span')].filter(n=>getComputedStyle(n).fontWeight==='700').map(n=>n.textContent).join('')}})()`);
+ assert.ok(pagination.pages>5,'Natural overflow must create separate paper pages');
+ assert.ok(pagination.heights.every(h=>Math.abs(h-1122.53)<3),'Paper height must stay A4');
+ assert.ok(pagination.overflow.every(h=>h<=2),'Text/rows must not overflow page bounds');
+ const expected=Array.from({length:65},(_,index)=>`段落${index}：`+'分页预览应保留完整正文与段落格式。'.repeat(10)).join('')+longText+Array.from({length:55},(_,index)=>`表格行${index}`+'表格跨页内容'.repeat(12)).join('');
+ assert.equal(pagination.text,expected,'Pagination must preserve all text in order');
+ assert.equal(pagination.bold,longText,'Splitting a long paragraph must preserve its run formatting');
+ assert.deepEqual(readFileSync(path.join(fixture,name)),paginatedBytes,'Preview must not alter the DOCX');
+ console.log('PAGINATION PASS',pagination.pages,'A4 pages; complete paragraphs, long rich text and table rows');
+ await evalJS('document.querySelector("#pvBody iframe").contentDocument.querySelector("#content").scrollTop=1000');
+ }
+ if(name==='breaks.docx') {
+ const pages=await evalJS('(()=>{const doc=document.querySelector("#pvBody iframe").contentDocument;return [...doc.querySelectorAll(".docx-wrapper>section.docx")].map(page=>page.querySelector("article").textContent)})()');
+ assert.equal(pages.length,3,'Explicit and Word-saved page breaks must both remain');
+ assert.ok(pages[0].includes('手动分页前') && pages[1].includes('手动分页后') && pages[2].includes('保存分页后'));
+ console.log('PAGE BREAK PASS manual and saved Word boundaries');
+ }
+ await screenshot(path.join(isolated,'preview-'+name+'.png'));
  }
  const pdf=await evalJS("window.halo.documentPreview('report.pdf',2).then(r=>({ok:r.ok,pages:r.data?.pages,image:r.data?.image?.slice(0,22),error:r.error}))");
  console.log('PDF',pdf);if(!pdf.ok||pdf.pages!==2)throw Error('PDF failed');
  const markup=readFileSync('src/renderer/js/app.js','utf8').split('\n').find(line=>line.includes('body.innerHTML =')&&line.includes('class="document-preview"'));
  const layout=await evalJS(`(async()=>{const body=document.querySelector('#pvBody');const page=2,pages=2;${markup};const r=await window.halo.documentPreview('report.pdf',2);body.querySelector('img').src=r.data.image;const frame=body.querySelector('.document-preview'),nav=frame.querySelector('nav'),canvas=frame.querySelector('.document-canvas');return {bottom:Math.abs(nav.getBoundingClientRect().bottom-frame.getBoundingClientRect().bottom)<2,separate:canvas.getBoundingClientRect().bottom<=nav.getBoundingClientRect().top};})()`);
  if(!layout.bottom||!layout.separate)throw Error('PDF footer layout '+JSON.stringify(layout));
- await sleep(300);await screenshot('test/shot-preview-pdf.png');
+ await sleep(300);await screenshot(path.join(isolated,'preview-pdf.png'));
 } finally {ws.close();electron.kill();}
 
 

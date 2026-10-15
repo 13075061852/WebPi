@@ -262,6 +262,15 @@ if (!domCheck.turns || !domCheck.mdText.includes("项目结构") || !domCheck.ha
   process.exit(1);
 }
 console.log("DOM VERIFY OK");
+const queueConfirm = await evalJS(`(() => {
+  const button = document.querySelector('.queue-promote');
+  button.closest('details').open = true;
+  button.click();
+  const asks = button.textContent === '确认介入' && !button.parentElement.querySelector('.queue-confirm-hint').hidden && !button.disabled;
+  button.parentElement.querySelector('.queue-promote-cancel').click();
+  return asks && button.textContent === '介入当前任务' && !button.dataset.confirmed && document.querySelectorAll('.queue-chip').length === 2;
+})()`);
+if (!queueConfirm) { electron.kill(); throw new Error('Queued intervention requires a second confirmation and supports cancellation'); }
 
 // Long tool errors in a narrow chat must never overlap the live status row.
 await evalJS(`
@@ -279,6 +288,7 @@ await sleep(700);
 const errorCollapsed = await evalJS("document.querySelector('.tool.error .tool-out').hidden");
 if (!errorCollapsed) { electron.kill(); throw new Error('Failed tools should start collapsed'); }
 await evalJS("const errorTool=document.querySelector('.tool.error');const history=errorTool.closest('.tool-history');if(history)history.open=true;errorTool.querySelector('.tool-line').click()");
+await evalJS("Promise.all(document.querySelector('.tool.error .tool-details').getAnimations().map(animation => animation.finished))");
 for (const theme of ['light', 'dark']) {
   await evalJS(`document.documentElement.dataset.theme = '${theme}'`);
   const layout = await evalJS(`(() => {
@@ -315,6 +325,20 @@ await evalJS(`(async () => {
   d({ type: "agent_end", messages: [], willRetry: true });
 })()`);
 await sleep(500);
+const groupedErrors = await evalJS(`(() => {
+  const d = window.__haloDispatch;
+  const em = '429: {"code":"1113","message":"余额不足或无可用资源包,请充值。"}';
+  for (let i = 0; i < 2; i++) d({type:'message_end',message:{role:'assistant',content:[],provider:'zai-coding-cn',model:'glm-5.3-flash',stopReason:'error',errorMessage:em}});
+  const card = [...document.querySelectorAll('.error-card')].find(n => n.dataset.errorCount === '3');
+  if (!card) return false;
+  card.querySelector('.ec-details').open = true;
+  d({type:'message_end',message:{role:'assistant',content:[],provider:'zai-coding-cn',model:'glm-5.3-flash',stopReason:'error',errorMessage:em}});
+  d({type:'message_end',message:{role:'assistant',content:[],provider:'zai-coding-cn',model:'glm-5.3-flash',stopReason:'error',errorMessage:'fetch failed'}});
+  d({type:'message_end',message:{role:'assistant',content:[],provider:'zai-coding-cn',model:'different-model',stopReason:'error',errorMessage:em}});
+  d({type:'auto_retry_end',success:false,finalError:em});
+  return card.querySelector('.ec-count').textContent === '×5' && !card.querySelector('.ec-count').hidden && card.querySelector('.ec-details').open && card.parentElement.querySelectorAll(':scope > .error-card').length === 3;
+})()`);
+if (!groupedErrors) { electron.kill(); throw new Error('Repeated errors must show a count while preserving distinct errors and expanded details'); }
 await screenshot("test/shot-error.png");
 
 // ---- zoom clamp sanity（nebula.js 已于 4c0d779 移除，画布不再存在于 UI 中，跳过） ----

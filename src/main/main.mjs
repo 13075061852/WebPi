@@ -7,6 +7,7 @@ import { createReleaseHistory } from './release-history.mjs';
 import { createThemeImages } from './theme-images.mjs';
 import { createReleaseHistoryFetch } from './release-history-fetch.mjs';
 import { createStartupLifecycle } from './startup-lifecycle.mjs';
+import { restoreWindowState } from './window-state.mjs';
 import { inspectPreview } from "./preview-inspection.mjs";
 import { createPreviewControl } from './preview-control.mjs';
 import { createArtifactFileInspector } from './artifact-files.mjs';
@@ -16,7 +17,7 @@ import { previewDocument } from "./document-preview.mjs";
  * splash (launch animation) -> main window (three-panel celestial console)
  */
 
-import { app, BrowserWindow, session, ipcMain, dialog, shell, protocol, safeStorage, clipboard, nativeImage, ClipboardItem } from "electron";
+import { app, BrowserWindow, screen, session, ipcMain, dialog, shell, protocol, safeStorage, clipboard, nativeImage, ClipboardItem } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { X509Certificate } from "node:crypto";
@@ -105,6 +106,7 @@ if (testBuild && !app.commandLine.hasSwitch("user-data-dir")) {
 
 let splashWin = null;
 let mainWin = null;
+let restoreMainMaximized = false;
 let quitting = false;
 
 const gotLock = app.requestSingleInstanceLock();
@@ -245,7 +247,9 @@ function bootstrap() {
     reveal: () => {
       if (quitting || !mainWin || mainWin.isDestroyed()) return;
       clearTimeout(startupWatchdog);
+      if (restoreMainMaximized) { mainWin.maximize(); restoreMainMaximized = false; }
       mainWin.show();
+      emit('halo:winstate', { maximized: mainWin.isMaximized() });
       mainWin.webContents.setBackgroundThrottling(true);
       mainWin.focus();
       if (splashWin && !splashWin.isDestroyed()) splashWin.close();
@@ -344,11 +348,13 @@ function bootstrap() {
   /* ---------------- main window ---------------- */
 
   function createMainWindow() {
+    const windowState = restoreWindowState(store.data.windowState, screen.getAllDisplays(), screen.getPrimaryDisplay());
+    restoreMainMaximized = windowState.maximized;
+    let wasMaximized = windowState.maximized;
     mainWin = new BrowserWindow({
-      width: 1440,
-      height: 900,
-      minWidth: 1120,
-      minHeight: 720,
+      ...windowState.bounds,
+      minWidth: windowState.minWidth,
+      minHeight: windowState.minHeight,
       icon: ICON,
       frame: false,
       show: false,
@@ -418,8 +424,8 @@ function bootstrap() {
     mainWin.loadFile(path.join(DIST, "src", "renderer", "index.html")).catch(error => {
       if (!quitting) void showStartupFailure(error);
     });
-    mainWin.on("maximize", () => emit("halo:winstate", { maximized: true }));
-    mainWin.on("unmaximize", () => emit("halo:winstate", { maximized: false }));
+    mainWin.on("maximize", () => { wasMaximized = true; emit("halo:winstate", { maximized: true }); });
+    mainWin.on("unmaximize", () => { wasMaximized = false; emit("halo:winstate", { maximized: false }); });
     mainWin.on("closed", () => {
       mainWin = null;
       if (splashWin && !splashWin.isDestroyed()) splashWin.close();
@@ -427,6 +433,7 @@ function bootstrap() {
     });
     mainWin.on("close", event => {
       if (finishProjectServices(event, () => { if (mainWin && !mainWin.isDestroyed()) mainWin.close(); })) return;
+      store.set('windowState', { bounds: mainWin.getNormalBounds(), maximized: mainWin.isMinimized() ? wasMaximized : mainWin.isMaximized() });
       if (!quitting) {
         quitting = true;
         startup.dispose();
@@ -724,6 +731,7 @@ function bootstrap() {
   handle("halo:prompt", (text, opts) => bridge.prompt(text, opts));
   handle("halo:steer", (text, attachments) => bridge.steer(text, attachments));
   handle("halo:followUp", (text, attachments) => bridge.followUp(text, attachments));
+  handle("halo:queue-promote", (request) => bridge.promoteQueued(request));
   handle("halo:abort", () => bridge.abort());
   handle("halo:compact", (instructions) => bridge.compact(instructions));
   handle("halo:list-models", () => bridge.listModels());
@@ -917,9 +925,10 @@ function bootstrap() {
     return true;
   });
 
-  handle("halo:open-external", (url) => {
-    if (!/^https:\/\//.test(String(url))) throw new Error("仅允许 https 链接");
-    shell.openExternal(String(url));
+  handle("halo:open-external", async (url) => {
+    const target = new URL(String(url));
+    if (!['http:', 'https:'].includes(target.protocol)) throw new Error("仅允许 HTTP 或 HTTPS 链接");
+    await shell.openExternal(target.href);
     return true;
   });
 
@@ -1157,6 +1166,17 @@ function bootstrap() {
   handle("halo:pick-attachments", () => pickAttachments());
 
   // window controls
+  handle('win:expand-preview', () => {
+    const bounds = mainWin.getBounds();
+    if (mainWin.getContentBounds().width >= 1120) return true;
+    const area = screen.getDisplayMatching(bounds).workArea;
+    const frameWidth = bounds.width - mainWin.getContentBounds().width;
+    const width = Math.min(area.width, 1120 + frameWidth);
+    if (mainWin.isMaximized()) mainWin.unmaximize();
+    mainWin.setBounds({ ...bounds, width,
+      x: Math.max(area.x, Math.min(bounds.x, area.x + area.width - width)) });
+    return mainWin.getContentBounds().width >= 1120;
+  });
   ipcMain.on("win:minimize", (e) => { if (trustedSender(e)) mainWin?.minimize(); });
   ipcMain.on("win:maximize", (e) => { if (trustedSender(e)) { if (mainWin?.isMaximized()) mainWin.unmaximize(); else mainWin?.maximize(); } });
   ipcMain.on("win:close", (e) => { if (trustedSender(e)) mainWin?.close(); });

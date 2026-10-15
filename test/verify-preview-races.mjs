@@ -54,4 +54,27 @@ await nested;
 assert.match(body.innerHTML, /src="halo-preview:\/\/local\/C%3A\/project\/docs\/images\/figure.png"/);
 assert.match(body.innerHTML, /href="halo-preview:\/\/local\/C%3A\/project\/guide.md"/);
 assert.doesNotMatch(body.innerHTML, /__chat__/);
-console.log('PASS preview race protection and Markdown paths relative to the previewed document');
+const widening = [], errors = [];
+const wideningContext = vm.createContext({
+  previewVisibilityRequest: 0, previewProjectRevision: 0,
+  window: { halo: { expandForPreview: () => new Promise(resolve => widening.push(resolve)) } },
+  toast: message => errors.push(message),
+});
+vm.runInContext(source.slice(source.indexOf('async function ensurePreviewWidth('), source.indexOf('function setPreviewCollapsed(')), wideningContext);
+const cancelled = wideningContext.ensurePreviewWidth();
+wideningContext.previewVisibilityRequest++;
+widening.shift()({ok:true,data:true});
+assert.equal(await cancelled, false, 'A manual fold must cancel a pending widen/reveal');
+const switched = wideningContext.ensurePreviewWidth();
+wideningContext.previewProjectRevision++;
+widening.shift()({ok:true,data:true});
+assert.equal(await switched, false, 'A project switch must cancel a pending widen/reveal');
+const olderReveal = wideningContext.ensurePreviewWidth(), latestReveal = wideningContext.ensurePreviewWidth();
+widening.shift()({ok:true,data:true}); widening.shift()({ok:true,data:true});
+assert.equal(await olderReveal, false, 'Only the latest pending selection may reveal');
+assert.equal(await latestReveal, true);
+const failedReveal = wideningContext.ensurePreviewWidth();
+widening.shift()({ok:false,error:'fixture resize failure'});
+assert.equal(await failedReveal, false);
+assert.deepEqual(errors,['fixture resize failure']);
+console.log('PASS preview race protection, cancelled native widening and Markdown paths relative to the previewed document');

@@ -108,7 +108,7 @@ console.log("verify:", JSON.stringify(check));
 await screenshot("test/shot-workspace-preview.png");
 
 // screenshot the sidebar file tree (workspace tree lives in the sidebar since the UI restructure)
-await evalJS(`document.querySelector("#btnSidebar")?.click()`);
+await evalJS(`document.querySelector("#btnChatSidebar")?.click()`);
 await sleep(800);
 await screenshot("test/shot-workspace.png");
 

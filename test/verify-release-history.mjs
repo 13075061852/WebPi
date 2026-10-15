@@ -54,6 +54,12 @@ await fallback(true); assert.equal(requests.length, 5, 'Force refresh uses publi
 simulatedNow = 120001;
 await fallback(true); assert.equal(requests.filter(url => url.startsWith('https://api.github.com/')).length, 2, 'API retry respects the reset time');
 
+const currentFallback = createReleaseHistory({ fetchImpl: async url => url.startsWith('https://api.github.com/')
+  ? {ok:false,status:429} : url.endsWith('/latest')
+    ? {ok:true,json:async()=>({tag_name:'v1.0.14'})}
+    : {ok:true,text:async()=>feed([entry('1.0.14'),entry('1.0.13'),entry('1.0.12'),entry('1.0.99')])} });
+assert.deepEqual((await currentFallback()).map(item=>item.version), ['1.0.14','1.0.13','1.0.12'], 'API fallback must retain the previous public release after the latest version advances');
+
 for (const badFeed of ['<bad/>', '<!DOCTYPE feed><feed/>', 'x'.repeat(2 * 1024 * 1024 + 1), feed([entry('1.0.10')])]) {
   const invalid = createReleaseHistory({ fetchImpl: async url => url.includes('api.github.com')
     ? { ok: false, status: 403 } : url.endsWith('/latest')

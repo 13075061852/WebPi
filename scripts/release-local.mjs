@@ -11,10 +11,22 @@ import {createGitHubCli} from './github-cli.mjs';
 import {releaseRoot,releaseInputFingerprint,fileSha256,reusablePreflight} from './release-inputs.mjs';
 import {verifyReleaseArtifacts} from './verify-release-artifacts.mjs';
 import {verifyPackagedRelease} from './verify-packaged-release.mjs';
+import {bundledReleases} from '../src/renderer/js/release-history-data.mjs';
 
 const run=promisify(execFile);
 const readJson=file=>{try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch{return null;}};
 const writeJson=(file,value)=>{fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify(value,null,2)+'\n');};
+
+export function assertReleaseHistoryCoverage(releases, snapshot = bundledReleases) {
+  const known = new Map(snapshot.map(item => [item.version, item]));
+  for (const release of releases) {
+    const version = /^v?(\d+\.\d+\.\d+)$/.exec(release.tag_name || '')?.[1];
+    if (!version || release.draft || release.prerelease) continue;
+    const notes = known.get(version);
+    assert.ok(notes && Number.isFinite(Date.parse(notes.date)) && typeof notes.body === 'string' && notes.body.trim(),
+      `Published release ${version} is missing from the bundled history; sync its public notes before packaging`);
+  }
+}
 
 export async function waitForExactCI({query,sha,wait=ms=>new Promise(r=>setTimeout(r,ms)),signal,timeout=20*60*1000,onState=()=>{}}){
   const started=Date.now();let last='';
@@ -85,6 +97,7 @@ export async function prepareLocalRelease({root=releaseRoot}={}){
     assert.equal(remote.sha,sha,'Push the release commit to main before starting preparation');
     const pages=JSON.parse(await gh.call(['api','--paginate','--slurp',`repos/${repository}/releases?per_page=100`]));
     assert.ok(!pages.flat().some(item=>item.tag_name==='v'+pkg.version && !item.draft),'This version is already public; use a new version for changed inputs');
+    await stage('release-history', async () => assertReleaseHistoryCoverage(pages.flat()));
     const inputFingerprint=await releaseInputFingerprint({root});
     const shippedFingerprint=await releaseInputFingerprint({root,kind:'shipped'});
     Object.assign(report,{commit:sha,version:pkg.version,inputFingerprint,shippedFingerprint});

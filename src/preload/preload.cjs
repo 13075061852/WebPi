@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld("halo", {
   prompt: (text, opts) => ipcRenderer.invoke("halo:prompt", text, opts),
   steer: (text, attachments) => ipcRenderer.invoke("halo:steer", text, attachments),
   followUp: (text, attachments) => ipcRenderer.invoke("halo:followUp", text, attachments),
+  promoteQueued: (request) => ipcRenderer.invoke("halo:queue-promote", request),
   abort: () => ipcRenderer.invoke("halo:abort"),
   compact: (instructions) => ipcRenderer.invoke("halo:compact", instructions),
   listModels: () => ipcRenderer.invoke("halo:list-models"),
@@ -155,6 +156,7 @@ contextBridge.exposeInMainWorld("halo", {
   onPtyExit: listen("halo:pty-exit"),
 
   // window
+  expandForPreview: () => ipcRenderer.invoke('win:expand-preview'),
   minimize: () => ipcRenderer.send("win:minimize"),
   maximize: () => ipcRenderer.send("win:maximize"),
   close: () => ipcRenderer.send("win:close"),

@@ -12,6 +12,22 @@ app.whenReady().then(async()=>{
  win=new BrowserWindow({show:true,width:650,height:550,webPreferences:{webviewTag:true,contextIsolation:true,nodeIntegration:false}});
  const guests=new Set();win.webContents.on('did-attach-webview',(_e,g)=>guests.add(g));
  let session='one';const run=createPreviewControl({getWindow:()=>win,getGuests:()=>guests,getSessionId:()=>session});
+ await win.loadURL('data:text/html,'+encodeURIComponent('<div id="pvBody"></div>'));
+ await win.webContents.executeJavaScript(`window.__haloOpenWebsite=async(id,url)=>{
+   const body=document.querySelector('#pvBody');const guest=document.createElement('webview');
+   guest.style.cssText='width:300px;height:240px';body.replaceChildren(guest);
+   const ready=new Promise(resolve=>guest.addEventListener('dom-ready',resolve,{once:true}));guest.src=url;await ready;
+   return {opened:id==='one'};
+ };void 0`);
+ const openedURL='http://127.0.0.1:'+server.address().port+'/opened-by-tool';
+ const opened=await run('one',{action:'open',url:openedURL});
+ assert.equal(JSON.parse(opened.content[0].text).target,'internal-preview');
+ assert.equal(await win.webContents.executeJavaScript("document.querySelector('webview').getURL()"),openedURL);
+ await assert.rejects(run('other',{action:'open',url:openedURL}),/会话/);
+ await assert.rejects(run('one',{action:'open',url:'file:///C:/secret'}),/HTTP/);
+ await assert.rejects(run('one',{action:'open',url:'https://user:password@example.com'}),/登录凭据/);
+ assert.equal(await win.webContents.executeJavaScript("document.querySelector('webview').getURL()"),openedURL,'Rejected opens do not change the page');
+ console.log('PASS preview open action loads the internal webview without a previous snapshot, rejects invalid schemes, credentials and stale sessions');
  const source=fs.readFileSync('src/renderer/js/app.js','utf8');const renderer=source.slice(source.indexOf('window.__haloPreviewTarget ='),source.indexOf('// Run once after the retry loop'));
  for(const kind of ['iframe','webview','iframe-zoom']){
   const tag=kind.startsWith('iframe')?'iframe':'webview';

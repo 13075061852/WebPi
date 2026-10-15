@@ -1,5 +1,6 @@
 import pty from "node-pty";
 import crypto from "node:crypto";
+import os from 'node:os';
 
 export class TerminalPool {
   constructor(send) { this.send = send; this.sessions = new Map(); }
@@ -9,7 +10,7 @@ export class TerminalPool {
     const child = pty.spawn(process.env.ComSpec || "cmd.exe", ["/Q", "/D"], {
       name: "xterm-256color", cols, rows, cwd, env: { ...process.env }, useConpty: true,
     });
-    const rec = { id, cwd, child, queue: "", pending: 0, timer: null };
+    const rec = { id, cwd, child, cols, rows, queue: "", pending: 0, timer: null };
     this.sessions.set(id, rec);
     const flush = () => {
       clearTimeout(rec.timer); rec.timer = null;
@@ -28,12 +29,14 @@ export class TerminalPool {
       if (this.sessions.get(id) === rec) this.sessions.delete(id);
       this.send("halo:pty-exit", { id, exitCode });
     });
-    return { id, cwd, pid: child.pid };
+    return { id, cwd, pid: child.pid, ...(process.platform === 'win32' ? { windowsPty: { backend: 'conpty', buildNumber: Number(os.release().split('.')[2]) } } : {}) };
   }
   write({ id, data }) { this.sessions.get(id)?.child.write(String(data)); }
   resize({ id, cols, rows }) {
-    if (Number.isInteger(cols) && Number.isInteger(rows) && cols >= 2 && rows >= 1 && cols <= 1000 && rows <= 1000)
-      this.sessions.get(id)?.child.resize(cols, rows);
+    const rec = this.sessions.get(id);
+    if (rec && Number.isInteger(cols) && Number.isInteger(rows) && cols >= 2 && rows >= 1 && cols <= 1000 && rows <= 1000 && (rec.cols !== cols || rec.rows !== rows)) {
+      rec.child.resize(cols, rows); rec.cols = cols; rec.rows = rows;
+    }
   }
   ack({ id, size }) {
     const rec = this.sessions.get(id);

@@ -8,7 +8,7 @@ import { initReleaseHistory } from './release-history.mjs';
 import { initStartupProgress } from './startup.mjs';
 import { createLayoutMotion } from './layout-motion.mjs';
 import { createModalMotion } from './modal-motion.mjs';
-import { websiteURL, renderWebsiteCards, mountWebsiteBrowser } from './website-preview.mjs';
+import { websiteURL, websiteAddress, renderWebsiteCards, mountWebsiteBrowser } from './website-preview.mjs';
 import { userMessageText, userMessageParts } from "./user-message.mjs";
 import { initEnvironmentSettings } from "./environment-settings.mjs";
 import { initVideoSettings } from "./video-settings.mjs";
@@ -18,12 +18,14 @@ import { initVideoHistory } from './video-history.mjs';
 import { initDigitalHuman } from './digital-human.mjs';
 import { initProjectRuns } from './project-runs.mjs';
 import { initSidebarHeight } from './sidebar-height.mjs';
+import { initResponsiveLayout } from './responsive-layout.mjs';
 import { initGitRepositories } from './git-repositories.mjs';
 import { OutputRate } from './output-rate.mjs';
 import { createQuotaRefreshQueue } from './quota-refresh.mjs';
 import { toolIcon, thinkingIcon } from './tool-icons.mjs';
 import { wireToolDetails, setToolDetailsOpen } from './tool-details.mjs';
 import { TurnCost } from './turn-cost.mjs';
+import { starterPrompts } from './starter-prompts.mjs';
 /* ============================================================
    Pi Halo — app orchestration (v2, hardened)
    Maps pi SDK session events onto the celestial UI.
@@ -64,7 +66,6 @@ const S = {
   files: [],                  // local file attachments [{name, path, size}]
   images: [],                 // pending attachments [{name, mediaType, data}]
   composerRevision: 0,        // protects a newer text/attachment draft from delayed send failures
-  lastUserPrompt: null,       // for retry button
   models: [],
   resources: { skills: [], prompts: [], extensions: [] },
   assistant: null,            // current per-message body inside the turn container
@@ -109,6 +110,7 @@ document.addEventListener("DOMContentLoaded", () => {
   try {
   document.body.classList.add("enter");
   wireUI();
+  initResponsiveLayout({ onToggleSidebar: toggleSidebar, onChange: () => { void syncPreviewMotion(); } });
   initSidebarHeight();
   initAppUpdates();
   proxySettings = initProxySettings();
@@ -224,8 +226,12 @@ const projectRunnerUI = initProjectRuns({api:window.halo, context:()=>S.state, s
     $('#projectRunLogBody').textContent=log;
     openModal('projectRunLogModal');
   }});
-function openWebsite(value, projectRun = null) {
+async function openWebsite(value, projectRun = null) {
   const url = websiteURL(value); if (!url) return;
+  if (window.innerWidth < 1120 && !await ensurePreviewWidth()) return;
+  document.querySelector('.term-open')?.classList.remove('term-open');
+  $('#btnTerm').classList.remove('active');
+  closePreviewAddress();
   setPreviewCollapsed(false);
   const request = ++portPreviewRequest;
   S.previewFile = null; selectedPortKey = null; updatePortSelection();
@@ -239,6 +245,11 @@ function openWebsite(value, projectRun = null) {
     $('#pvName').textContent = state.title || new URL(state.url).hostname;
   }, mediaPreviewShell);
 }
+window.__haloOpenWebsite = async (sessionId, value) => {
+  if (S.state?.sessionId !== sessionId) throw new Error('会话已切换');
+  await openWebsite(value);
+  return { opened: S.state?.sessionId === sessionId && previewService?.kind === 'website' && previewService.url === websiteURL(value) };
+};
 document.addEventListener('click', event => {
   const link = event.target.closest('.md a[href]');
   if (!link || !websiteURL(link.href)) return;
@@ -338,6 +349,8 @@ async function loadServerPorts(force = false) {
     const row = document.createElement("div"); row.className = "port-row"; row.dataset.portKey = portKey(id, item);
     row.tabIndex = 0; row.setAttribute("role", "button"); row.title = "点击预览端口 " + item.port;
     const open = async () => {
+      if (window.innerWidth < 1120 && !await ensurePreviewWidth()) return;
+      if (id !== portServerId) return;
       setPreviewCollapsed(false);
       const key = portKey(id, item), body = $("#pvBody");
       const sameService = selectedPortKey === key && previewService?.kind === "service" && previewService.serverId === id;
@@ -583,7 +596,7 @@ function applyState(st) {
   $("#btnSend").classList.toggle("dim", !ready);
 
   // 焦点会话是唯一真源。不能与旧的本地 streaming 状态取 OR，否则从运行中的
-  // 会话切到空闲会话后仍会把“发送”误判成 steer，导致第二个会话无法启动。
+  // 会话切到空闲会话后仍会把“发送”误判成排队，导致第二个会话无法启动。
   setStreamingUI(!!st.isStreaming);
 
   if (st.ready && S.pendingRestore) {
@@ -1232,15 +1245,17 @@ function finalizeTurn() {
     const durationLabel = elapsed == null ? '执行过程' : (turn.__estimated ? '约用时 ' : '用时 ') +
       formatDuration(elapsed);
     const errors = $$(".tool.error", turn).length;
-    const group = document.createElement("details");
+    const hasProcess = processNodes.length > 0;
+    const group = document.createElement(hasProcess ? 'details' : 'div');
     group.className = "process-group";
+    const head = hasProcess ? 'summary' : 'div';
     group.innerHTML = `
-      <summary title="展开执行过程 · ${processNodes.length} 个步骤${errors ? ` · ${errors} 个失败` : ""}">
+      <${head} ${hasProcess ? `title="展开执行过程 · ${processNodes.length} 个步骤${errors ? ` · ${errors} 个失败` : ''}"` : 'class="process-static"'}>
         <span class="process-label">${durationLabel}${turn.__outputRate?.average() ? ` · ${turn.__outputRate.average()}` : ''}</span>
         ${turn.__turnCost ? `<span class="turn-cost" title="${esc(turn.__turnCost.format(S.state?.billingFx, S.models).title)}">${esc(turn.__turnCost.format(S.state?.billingFx, S.models).text)}</span>` : ''}
-        <svg class="process-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>
-      </summary>
-      <div class="process-body"></div>`;
+        ${hasProcess ? '<svg class="process-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>' : ''}
+      </${head}>
+      ${hasProcess ? '<div class="process-body"></div>' : ''}`;
     const anchor = processNodes[0] || finalAnswer;
     if (anchor) anchor.parentNode.insertBefore(group, anchor);
     else turn.appendChild(group);
@@ -1250,6 +1265,8 @@ function finalizeTurn() {
   // 最终答案保持展开，点击用时可查看完整执行过程。
   turn.classList.add("complete");
   showTurnArtifacts(turn);
+  // Errors belong below the completed turn's timing, answer and delivered files.
+  for (const error of $$(':scope > .error-card', turn)) turn.appendChild(error);
   if (!$(".md, .think, .tool, .error-card, .stall-hint", turn)) turn.remove();
 }
 
@@ -1350,7 +1367,6 @@ function onMessageStart(msg) {
     finalizeMessage();
     finalizeTurn();
     renderUserMsg(text, images);
-    S.lastUserPrompt = { text: userMessageText(text), images };
     if (S.streaming) ensureTurn();
     return;
   }
@@ -1456,41 +1472,49 @@ function classifyError(msg = "") {
 }
 
 function renderModelError(raw, meta = {}) {
+  const parent = S.turn || $("#messages");
+  const identity = [String(raw).trim().replace(/\s+/g, ' '), meta.provider || '', meta.model || ''];
+  const key = JSON.stringify(identity);
+  const existing = $$(':scope > .error-card', parent).find(card => {
+    const saved = JSON.parse(card.dataset.errorKey || '[]');
+    return saved[0] === identity[0] && saved.slice(1).every((value, index) => !value || !identity[index + 1] || value === identity[index + 1]);
+  });
+  if (existing) {
+    const saved = JSON.parse(existing.dataset.errorKey);
+    saved[1] ||= identity[1]; saved[2] ||= identity[2];
+    existing.dataset.errorKey = JSON.stringify(saved);
+    $(".ec-meta", existing).textContent = saved[1] + (saved[2] ? ' · ' + saved[2] : '');
+    const count = Number(existing.dataset.errorCount) + 1;
+    existing.dataset.errorCount = String(count);
+    const badge = $(".ec-count", existing);
+    badge.hidden = false;
+    badge.textContent = `×${count}`;
+    badge.title = `同一错误出现 ${count} 次`;
+    scrollDown();
+    return;
+  }
   const cls = classifyError(raw);
   const n = document.createElement("div");
   n.className = "error-card";
+  n.dataset.errorKey = key;
+  n.dataset.errorCount = '1';
   n.innerHTML = `
     <div class="ec-head"><span class="ec-dot"></span><b>请求失败</b>
-      <span class="ec-meta">${esc(meta.provider || "")}${meta.model ? " · " + esc(meta.model) : ""}</span></div>
-    <div class="ec-hint">${esc(cls.hint || "")}</div>
-    <div class="ec-raw">${esc(trunc(String(raw), 300))}</div>
-    <div class="ec-actions">
-      <button class="ec-retry">↻ 重试</button>
-      ${cls.kind === "quota" ? `<button class="ec-model">切换模型</button>` : ""}
-    </div>`;
-  $(".ec-retry", n).addEventListener("click", () => {
-    n.remove();
-    retryLast();
-  });
+      <span class="ec-count" hidden></span>
+      ${cls.hint ? `<span class="ec-hint">${esc(cls.hint)}</span>` : ''}
+      ${cls.kind === "quota" ? `<div class="ec-actions"><button class="ec-model">切换模型</button></div>` : ""}
+      </div>
+    <details class="ec-details"><summary>错误详情<span class="ec-meta">${esc(meta.provider || "")}${meta.model ? " · " + esc(meta.model) : ""}</span></summary>
+      <div class="ec-raw">${esc(String(raw))}</div>
+    </details>`;
   const mb = $(".ec-model", n);
   if (mb) mb.addEventListener("click", () => openModal("modelModal"));
-  (S.turn || $("#messages")).appendChild(n);
+  parent.appendChild(n);
   scrollDown();
 }
 
 function renderFatalError(raw) {
   renderModelError(raw, {});
-}
-
-async function retryLast() {
-  if (S.switchingSession) return toast("正在切换会话，请稍候再发送", "");
-  if (!S.lastUserPrompt) return toast("没有可重试的消息", "err");
-  if (S.streaming) return toast("任务进行中", "err");
-  const { text, images } = S.lastUserPrompt;
-  try {
-    const result = await window.halo.prompt(text, { preview: currentPreviewContext(), ...(images.length ? { images: images.map(toPiImage) } : {}) });
-    if (result?.ok === false) throw new Error(result.error || "指令执行失败");
-  } catch (e) { toast(`发送失败：${e?.message || e}`, "err"); }
 }
 
 /* ---- tool timeline ---- */
@@ -1647,7 +1671,7 @@ function renderQueue() {
   const row = $("#queueRow");
   const items = [
     ...S.queued.steering.map((t, index) => ({ t, k: "引导", names: S.queued.steeringAttachments?.[index] || [] })),
-    ...S.queued.followUp.map((t, index) => ({ t, k: "追加", names: S.queued.followUpAttachments?.[index] || [] })),
+    ...S.queued.followUp.map((t, index) => ({ t, k: "追加", index, names: S.queued.followUpAttachments?.[index] || [] })),
   ];
   row.hidden = items.length === 0;
   row.setAttribute("aria-label", `等待消息，共 ${items.length} 条`);
@@ -1659,8 +1683,21 @@ function renderQueue() {
         <small>${i.names.length ? `图片 ${i.names.length} 张 · ` : ""}${i.k === "引导" ? "调整方向" : "等待执行"}</small>
         <svg class="queue-expand" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>
       </summary>
-      <div class="queue-detail">${esc(i.t)}${i.names.length ? `${i.t ? "\n" : ""}${esc(i.names.map((name) => `图片：${name}`).join("\n"))}` : ""}</div>
+      <div class="queue-detail">${esc(i.t)}${i.names.length ? `${i.t ? "\n" : ""}${esc(i.names.map((name) => `图片：${name}`).join("\n"))}` : ""}${i.k === '追加' ? `<div class="queue-actions"><button class="queue-promote" data-index="${i.index}">介入当前任务</button><button class="queue-promote-cancel" hidden>取消</button><span class="queue-confirm-hint" hidden>这会调整当前任务的执行方向</span></div>` : ''}</div>
     </details>`).join("");
+  const sessionId = S.state?.sessionId, queue = [...S.queued.followUp];
+  for (const button of $$('.queue-promote', row)) button.addEventListener('click', async () => {
+    const hint = button.parentElement.querySelector('.queue-confirm-hint');
+    const cancel = button.parentElement.querySelector('.queue-promote-cancel');
+    if (!button.dataset.confirmed) {
+      button.dataset.confirmed = 'true'; button.textContent = '确认介入'; hint.hidden = false; cancel.hidden = false;
+      cancel.onclick = () => { delete button.dataset.confirmed; button.textContent = '介入当前任务'; hint.hidden = true; cancel.hidden = true; };
+      return;
+    }
+    button.disabled = true;
+    try { await window.halo.promoteQueued({ sessionId, index: Number(button.dataset.index), queue }); }
+    catch (error) { toast(error.message || '无法移动队列消息', 'err'); button.disabled = false; }
+  });
 }
 
 /* ============================================================
@@ -1799,7 +1836,7 @@ async function compactConversation(instructions) {
     }
   }
 }
-async function send(queueMode = "steer") {
+async function send() {
   const input = $("#input");
   const text = input.value.trim();
   if (!text && S.images.length === 0 && S.files.length === 0) return;
@@ -1841,7 +1878,7 @@ async function send(queueMode = "steer") {
 
   try {
     const result = queued
-      ? await window.halo[queueMode === "followUp" ? "followUp" : "steer"](messageText,
+      ? await window.halo.followUp(messageText,
         sentImages.length ? { images: sentImages.map(toPiImage), names: sentImages.map((image) => image.name) } : undefined)
       : await window.halo.prompt(messageText, { preview: currentPreviewContext(), ...(sentImages.length ? { images: sentImages.map(toPiImage) } : {}) });
     if (result?.ok === false) throw new Error(result.error || "指令执行失败");
@@ -1911,7 +1948,6 @@ async function restoreHistory(viewOverride) {
       const { text, images } = userMessageParts(m);
       if (text.trim() || images.length) {
         finalizeTurn(); renderUserMsg(text, images);
-        S.lastUserPrompt = { text: userMessageText(text), images };
         savedTiming = view.turnTimings?.[String(m.timestamp)] || null;
         turnStart = savedTiming?.start || timestamp;
       }
@@ -1983,6 +2019,9 @@ async function restoreHistory(viewOverride) {
         turn.__texts.push(c.text);
         if (m.__partial) { S.assistant = md; S.assistantText = c.text; }
       }
+    }
+    if (!m.__partial && m.stopReason === 'error' && m.errorMessage) {
+      renderModelError(m.errorMessage, { provider: m.provider, model: m.model });
     }
   };
   await new Promise((resolve) => {
@@ -2218,7 +2257,6 @@ function clearChat() {
   S.thinking = null;
   S.streamingTool = null;
   S.retrying = null;
-  S.lastUserPrompt = null;
   S.activity = [];
   S.queued = { steering: [], followUp: [], steeringAttachments: [], followUpAttachments: [] };
   renderQueue();
@@ -2345,6 +2383,14 @@ async function openFileExternally(file) {
 }
 
 function wireUI() {
+  const starterIcons = [...document.querySelectorAll('[data-starter-id] .starter-icon')].map(icon => icon.innerHTML);
+  $('.welcome-prompts').innerHTML = starterPrompts.map((entry,index) => `<div class="starter-entry">
+    <button type="button" data-starter="${esc(entry.prompt)}"><span class="starter-icon" aria-hidden="true">${starterIcons[index]}</span><span><strong>${esc(entry.title)}</strong><small>${esc(entry.subtitle)}</small></span><span class="starter-arrow" aria-hidden="true">↗</span></button>
+    <a class="starter-source" href="${esc(entry.sourceURL)}" title="${esc(entry.evidence)}" aria-label="查看${esc(entry.title)}的来源和验证范围">来源</a>
+  </div>`).join('');
+  document.querySelectorAll('.starter-source').forEach(link => link.addEventListener('click', event => {
+    event.preventDefault(); void window.halo.openExternal(link.href);
+  }));
   document.querySelectorAll('[data-starter]').forEach(button => {
     button.addEventListener('click', () => {
       const input = $("#input");
@@ -2397,10 +2443,6 @@ function wireUI() {
 
   // 侧栏展开/收起（彻底收起；状态记忆）
   try { if (localStorage.getItem("halo.sbCollapsed") === "1") document.body.classList.add("sb-collapsed"); } catch {}
-  $("#btnSidebar").addEventListener("click", () => applyPreviewLayout(() => {
-    const collapsed = document.body.classList.toggle("sb-collapsed");
-    try { localStorage.setItem("halo.sbCollapsed", collapsed ? "1" : "0"); } catch {}
-  }, { maskPreview: true }));
   $$("#settingsModal .set-nav").forEach((b) => b.addEventListener("click", () => {
     if (b.dataset.pane !== 'digital-human') digitalHuman?.closeProfile();
     document.querySelectorAll("#settingsModal .set-nav").forEach((x) => x.classList.toggle("active", x === b));
@@ -2466,13 +2508,24 @@ function wireUI() {
   $("#projAdd").addEventListener("click", pickProject);
 
   // chat header
-  $("#btnPreviewToggle").addEventListener("click", () => setPreviewCollapsed(!previewPaneCollapsed));
+  let expandingPreviewWindow = false;
+  $("#btnPreviewToggle").addEventListener("click", async () => {
+    if (expandingPreviewWindow) return;
+    if (matchMedia('(max-width: 1119px)').matches) {
+      expandingPreviewWindow = true;
+      try {
+        if (!await ensurePreviewWidth()) return;
+        setPreviewCollapsed(false);
+      } catch (error) { toast(error.message, 'err'); }
+      finally { expandingPreviewWindow = false; }
+    } else setPreviewCollapsed(!previewPaneCollapsed);
+  });
   $("#btnFocus").addEventListener("click", () => applyPreviewLayout(() => {
     const on = document.body.classList.toggle("focus-mode");
     $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
   }));
 
-  window.initTerminals(() => S.state?.cwd || "", toast);
+  window.initTerminals(() => S.state?.cwd || "", toast, openWebsite);
 
   // composer
   const input = $("#input");
@@ -2482,7 +2535,7 @@ function wireUI() {
       e.preventDefault();
       if (e.altKey) {
         const t = input.value.trim();
-        if (t && S.streaming) send("followUp");
+        if (t && S.streaming) send();
       } else {
         send();
       }
@@ -2499,7 +2552,7 @@ function wireUI() {
     if (context !== mentionContext) { mentionContext = context; closeMentions(); }
   });
   $("#btnSend").addEventListener("click", () => {
-    // streaming + text -> steer; streaming + empty -> abort
+    // streaming + text -> follow-up queue; streaming + empty -> abort
     if (S.streaming) {
       const t = input.value.trim();
       if (t || S.images.length || S.files.length) send();
@@ -2669,7 +2722,35 @@ function wireUI() {
 /* ============================================================
    center: preview（唯一面板，文件列表已移至侧栏底部）
    ============================================================ */
+function closePreviewAddress() {
+  $('#previewAddressForm').hidden = true;
+  $('#btnBrowser').setAttribute('aria-expanded', 'false');
+  $('#previewAddress').setCustomValidity('');
+}
 function wireCenter() {
+  const addressForm = $('#previewAddressForm'), address = $('#previewAddress');
+  const closeAddress = closePreviewAddress;
+  $('#btnBrowser').addEventListener('click', () => {
+    document.querySelector('.term-open')?.classList.remove('term-open');
+    $('#btnTerm').classList.remove('active');
+    const existingAddress = $('#pvBody .website-toolbar input');
+    if (existingAddress) { closeAddress(); existingAddress.focus(); existingAddress.select(); return; }
+    if (!addressForm.hidden) { closeAddress(); return; }
+    addressForm.hidden = false;
+    $('#btnBrowser').setAttribute('aria-expanded', 'true');
+    address.focus(); address.select();
+  });
+  $('#previewAddressClose').addEventListener('click', () => { closeAddress(); $('#btnBrowser').focus(); });
+  address.addEventListener('input', () => address.setCustomValidity(''));
+  address.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { closeAddress(); $('#btnBrowser').focus(); }
+  });
+  addressForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const url = websiteAddress(address.value);
+    if (!url) { address.setCustomValidity('请输入有效的 HTTP 或 HTTPS 网址'); address.reportValidity(); return; }
+    closeAddress(); openWebsite(url);
+  });
   $("#treeRefresh").addEventListener("click", () => loadTree(true));
   $("#btnNewFile").addEventListener("click", () => startCreate("file"));
   $("#btnNewDir").addEventListener("click", () => startCreate("dir"));
@@ -2701,10 +2782,17 @@ function wireCenter() {
   }));
 }
 
+function toggleSidebar() {
+  applyPreviewLayout(() => {
+    const collapsed = document.body.classList.toggle('sb-collapsed');
+    try { localStorage.setItem('halo.sbCollapsed', collapsed ? '1' : '0'); } catch {}
+  }, { maskPreview: true });
+}
+
 let layoutMotionPaused = false;
 function syncPreviewMotion(settle = false) {
   const paused = layoutMotionPaused || !!$('.modal:not([hidden]), .image-viewer[open]') ||
-    document.body.classList.contains('preview-collapsed') || document.body.classList.contains('focus-mode');
+    document.body.classList.contains('preview-collapsed') || document.body.classList.contains('preview-auto-collapsed') || document.body.classList.contains('focus-mode');
   return window.halo.previewMotion?.(paused, settle).catch(() => {});
 }
 const applyPreviewLayout = createLayoutMotion({ setPaused: paused => { layoutMotionPaused = paused; return syncPreviewMotion(paused); } });
@@ -2713,6 +2801,20 @@ let previewPaneCollapsed = document.body.classList.contains('preview-collapsed')
 let previewVisibilityRequest = 0;
 let previewProjectRevision = 0;
 const previewWorkspaceKey = state => `${state?.serverId || ''}|${normPath(state?.cwd)}`;
+async function ensurePreviewWidth() {
+  const request = ++previewVisibilityRequest;
+  const project = previewProjectRevision;
+  try {
+    const reply = await window.halo.expandForPreview();
+    // A project switch, another selection or a manual fold cancels the reveal.
+    if (request !== previewVisibilityRequest || project !== previewProjectRevision) return false;
+    if (!reply?.ok || !reply.data) {
+      toast(reply?.error || '当前屏幕可用宽度不足以展开预览区', 'err');
+      return false;
+    }
+    return true;
+  } catch (error) { toast(error.message, 'err'); return false; }
+}
 function setPreviewCollapsed(collapsed) {
   previewPaneCollapsed = collapsed;
   const request = ++previewVisibilityRequest;
@@ -2741,6 +2843,8 @@ function setPreviewCollapsed(collapsed) {
   }
 }
 function resetPreview() {
+  closePreviewAddress();
+  $('#previewAddress').value = '';
   previewProjectRevision++;
   portPreviewRequest++;
   previewService = null; selectedPortKey = null; updatePortSelection();
@@ -2991,6 +3095,7 @@ function mediaPreviewShell(media) {
 async function setPreview(p, force, { reveal = true } = {}) {
   p = resolvePreviewPath(p, S.state?.cwd);
   if (!p) return;
+  if (reveal && window.innerWidth < 1120 && !await ensurePreviewWidth()) return;
   if (reveal) setPreviewCollapsed(false);
   if (!force && S.previewFile === p) return;
   const request = ++portPreviewRequest;

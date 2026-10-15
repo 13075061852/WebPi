@@ -40,7 +40,6 @@ function harness() {
     ['async function send(', '\nfunction renderUserMsg('],
     ['function addFileAttachment(', '\nfunction addImageFile('],
     ['function onMessageStart(', '\nfunction onMessageUpdate('],
-    ['async function retryLast()', '\n/* ---- tool timeline'],
     ['function renderAttachments()', '\n/* ---- project'],
     ['function autoGrow()', '\nfunction scrollDown('],
     ['let pendingSessionEvents =', '\nasync function refreshState()'],
@@ -59,7 +58,7 @@ const image = { name: 'A.png', mediaType: 'image/png', data: 'AAAA' };
   assert.equal(h.S.files.length, 1);
   h.S.streaming = true;
   const pending = h.context.send();
-  assert.equal(h.calls[0].method, 'steer');
+  assert.equal(h.calls[0].method, 'followUp');
   assert.equal(h.calls[0].args[0], '@"C:/work/report.pdf"');
   h.calls[0].resolve({ ok:true }); await pending;
 }
@@ -104,7 +103,7 @@ for (const scenario of ['untouched', 'new-text', 'new-image', 'edited-then-clear
     h.S.streaming = method !== 'prompt'; h.draft('same text');
     const pending = h.context.send(method);
     const call = h.calls.at(-1);
-    assert.equal(call.method, method); assert.equal(h.input.value, '');
+    assert.equal(call.method, method === 'prompt' ? 'prompt' : 'followUp'); assert.equal(h.input.value, '');
     const before = h.rows.length;
     h.context.handlePiEvent({ type: 'message_start', message: { role: 'user', content: 'same text' } }, 'A', before + 1);
     call.resolve({ ok: true }); await pending;
@@ -119,7 +118,7 @@ for (const scenario of ['untouched', 'new-text', 'new-image', 'edited-then-clear
   h.draft('image draft', [image]);
   const queuedImage = h.context.send();
   assert.equal(h.calls.length, 5, 'queued image must reach the IPC bridge');
-  assert.equal(h.calls.at(-1).method, 'steer');
+  assert.equal(h.calls.at(-1).method, 'followUp');
   assert.equal(h.calls.at(-1).args[1].images[0].mimeType, 'image/png');
   assert.equal(h.calls.at(-1).args[1].names[0], 'A.png');
   h.calls.at(-1).resolve({ ok: true }); await queuedImage;
@@ -148,12 +147,6 @@ for (const scenario of ['untouched', 'new-text', 'new-image', 'edited-then-clear
   assert.equal(h.rows.length, 2, 'identical later user event still renders');
   h.context.handlePiEvent({ type: 'message_start', message }, 'B', 12);
   assert.equal(h.rows.length, 2, 'background session must not render');
-  h.S.streaming = false;
-  const retry = h.context.retryLast();
-  assert.equal(h.rows.length, 2, 'retry also waits for accepted user event');
-  assert.equal(h.calls[0].args[0], '/skill:halo-imagegen 生图');
-  h.calls[0].resolve({ ok: false, error: 'retry failed' }); await retry;
-  assert.ok(h.notices.some(text => text.includes('retry failed')));
 }
 
 // Choosing/adding a project protects the transition before the first IPC result.
@@ -161,8 +154,6 @@ for (const scenario of ['untouched', 'new-text', 'new-image', 'edited-then-clear
   const h = harness(); h.draft('must stay here');
   const pending = h.context.switchProjectViaAdd('C:/other');
   assert.equal(h.S.switchingSession, true);
-  h.S.lastUserPrompt = { text: 'previous prompt', images: [] };
-  await h.context.retryLast();
   await h.context.send();
   assert.equal(h.calls.length, 1); assert.equal(h.input.value, 'must stay here');
   h.calls[0].resolve({ ok: false, error: 'missing directory' }); await pending;
@@ -213,7 +204,7 @@ for (const scenario of ['focused', 'preview', 'background', 'failure']) {
   assert.equal(calls.includes('error'), scenario === 'failure');
   assert.equal(context.browsingServerId, scenario === 'failure' ? 'deleted' : null);
 }
-console.log('PASS composer rollback isolation, accepted/queued user events, skill/image restore, retry and project/removal transition guards');
+console.log('PASS composer rollback isolation, accepted/queued user events, skill/image restore and project/removal transition guards');
 
 // File-only and mixed attachments must survive normal/queued sends and rejection.
 for (const method of ['prompt', 'steer', 'followUp']) {
@@ -222,7 +213,7 @@ for (const method of ['prompt', 'steer', 'followUp']) {
   h.S.streaming = method !== 'prompt';
   h.draft('', [], [file]);
   const pending = h.context.send(method);
-  assert.equal(h.calls[0].method, method);
+  assert.equal(h.calls[0].method, method === 'prompt' ? 'prompt' : 'followUp');
   assert.equal(h.calls[0].args[0], '@"C:/documents/报告.pdf"');
   assert.equal(h.S.files.length, 0);
   h.calls[0].resolve({ ok: false, error: 'offline' }); await pending;

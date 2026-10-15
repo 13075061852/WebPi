@@ -12,6 +12,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { serverTools } from './server-tools.mjs';
 import { ProjectRuns } from './project-runs.mjs';
+import { promoteQueuedMessage } from './queue-promotion.mjs';
 import { refreshBillingFx } from './billing-fx.mjs';
 import { estimateSubscriptionCost, isSubscriptionProvider } from '../shared/subscription-cost.mjs';
 import { presentConversations, renameConversation } from './conversation-meta.mjs';
@@ -105,11 +106,22 @@ export class HaloStore {
       const tmp = `${this.file}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
       fs.renameSync(tmp, this.file);
-    } catch {}
+      return true;
+    } catch { return false; }
   }
   set(k, v) {
     this.data[k] = v;
     this.save();
+  }
+  getDeviceId() {
+    const previous = this.data.deviceId;
+    if (typeof previous === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(previous)) return previous;
+    this.data.deviceId = crypto.randomUUID();
+    if (!this.save()) {
+      this.data.deviceId = previous;
+      throw new Error('无法保存登录设备标识，请检查应用配置目录是否可写');
+    }
+    return this.data.deviceId;
   }
 }
 
@@ -706,6 +718,7 @@ async _doStart() {
     };
     ctx.unsubscribe = this.#bindCtx(ctx);
     const session = runtime.session;
+    session.agent.followUpMode = 'one-at-a-time';
     const runner = session.extensionRunner;
     if (runner) {
       const notify = (message, level = "info") => this.emit("pi:event", {
@@ -1095,7 +1108,7 @@ async _doStart() {
       },
     };
     try {
-      const cred = await mr.login(providerId, type, interaction);
+      const cred = await mr.login(providerId, type, interaction, { getDeviceId: () => this.store.getDeviceId() });
       // 多账户：登录成功后自动把本次身份存入保管库（同账户自动去重、只刷新令牌）
       try {
         const stored = this.#piCredential(providerId) || cred;
@@ -1336,7 +1349,7 @@ async _doStart() {
         } catch { /* Invalid preview metadata is not an instruction. */ }
       }
       this.previewContexts.set(ctx.runtime.session.sessionId, context);
-      await ctx.runtime.session.prompt(text, promptOptions);
+      await ctx.runtime.session.prompt(text, { ...promptOptions, streamingBehavior: 'followUp' });
       return this.publicState();
     } finally {
       ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
@@ -1370,6 +1383,7 @@ async _doStart() {
   async followUp(text, attachments) {
     const ctx = this.#focusedCtx();
     if (!ctx) return this.publicState();
+    ctx.runtime.session.agent.followUpMode = 'one-at-a-time';
     ctx.busy = (ctx.busy || 0) + 1;
     const images = Array.isArray(attachments?.images) ? attachments.images : [];
     const names = Array.isArray(attachments?.names) ? attachments.names.map((name) => String(name).slice(0, 120)) : [];
@@ -1389,6 +1403,18 @@ async _doStart() {
     } finally {
       ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
     }
+  }
+
+  async promoteQueued({ sessionId, index, queue }) {
+    const ctx = this.#focusedCtx();
+    if (!ctx || ctx.runtime.session.sessionId !== sessionId) throw new Error('会话已切换，请重新确认');
+    const names = ctx.queueAttachments || { steering: [], followUp: [] };
+    const previous = { steering: names.steering.map(items => [...items]), followUp: names.followUp.map(items => [...items]) };
+    await promoteQueuedMessage(ctx.runtime.session, index, queue, (kind, oldIndex) => {
+      const bucket = (ctx.queueAttachments ||= { steering: [], followUp: [] })[kind];
+      bucket.push(oldIndex === -1 ? previous.followUp[index] || [] : previous[kind][oldIndex] || []);
+    });
+    return this.publicState();
   }
 
   async abort() {
@@ -2050,6 +2076,8 @@ async _doStart() {
       usage: m.usage || null,
       provider: m.provider || null,
       model: m.model || null,
+      stopReason: m.stopReason || null,
+      errorMessage: m.errorMessage || null,
     }));
   }
 

@@ -24,7 +24,6 @@ body { display: grid; place-items: center; font-family: "Segoe UI", "Microsoft Y
   max-width: 100vw; max-height: 100vh; overflow: hidden;
   border: 1px solid var(--line); border-radius: 22px;
   background: var(--surface); color: var(--ink);
-  box-shadow: 0 12px 36px #00000018;
   animation: arrive 240ms ease-out both;
 }
 .identity {

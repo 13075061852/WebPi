@@ -2,10 +2,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {waitForExactCI,reusableCandidate,prepareConcurrently} from '../scripts/release-local.mjs';
+import {waitForExactCI,reusableCandidate,prepareConcurrently,assertReleaseHistoryCoverage} from '../scripts/release-local.mjs';
 import {fileSha256} from '../scripts/release-inputs.mjs';
 
 const sha='a'.repeat(40),other='b'.repeat(40);
+const historyNotes = {version:'1.0.13',date:'2026-10-08T06:03:54Z',body:'Published notes'};
+assertReleaseHistoryCoverage([{tag_name:'v1.0.13'}, {tag_name:'v1.0.15',draft:true}, {tag_name:'v1.0.99',prerelease:true}], [historyNotes]);
+assert.throws(() => assertReleaseHistoryCoverage([{tag_name:'v1.0.13'}], []), /1.0.13.*missing/);
+assert.throws(() => assertReleaseHistoryCoverage([{tag_name:'v1.0.13'}], [{...historyNotes,body:''}]), /missing/);
+assert.throws(() => assertReleaseHistoryCoverage([{tag_name:'v1.0.13'}], [{...historyNotes,date:'bad'}]), /missing/);
 const success={headSha:sha,databaseId:12,status:'completed',conclusion:'success',url:'https://example.invalid/ci'};
 let queries=0,waits=0;
 const found=await waitForExactCI({sha,query:async()=>++queries===1?[{...success,headSha:other}]:[success],wait:async()=>{waits++;}});

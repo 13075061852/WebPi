@@ -2,7 +2,32 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { spawnPi } from '../src/main/pi-command.mjs';
+
+// Exercise the injected Windows behavior on every host, without opening a console.
+const launcher = fs.readFileSync('src/main/pi-cli.cjs', 'utf8');
+for (const platform of ['win32', 'linux']) {
+  const calls = [];
+  const original = (...args) => { calls.push(args); return 'child'; };
+  const childProcess = { spawn: original, spawnSync: original };
+  let synced = false;
+  vm.runInNewContext(launcher, { process: { platform }, require: name => name === 'node:child_process' ? childProcess : { syncBuiltinESMExports: () => { synced = true; } } });
+  for (const name of ['spawn', 'spawnSync']) {
+    const options = { cwd: 'C:/fixture', stdio: 'pipe', windowsHide: false };
+    assert.equal(childProcess[name]('npm.cmd', ['install', 'literal & text'], options), 'child');
+    assert.equal(calls.at(-1)[2].windowsHide, platform === 'win32');
+    assert.equal(calls.at(-1)[2].cwd, options.cwd);
+    assert.equal(calls.at(-1)[2].stdio, options.stdio);
+    assert.deepEqual(calls.at(-1)[1], ['install', 'literal & text']);
+    assert.equal(options.windowsHide, false, 'Caller options are not mutated');
+    if (platform === 'win32') {
+      childProcess[name]('git.exe', { stdio: 'pipe' });
+      assert.equal(calls.at(-1)[2].windowsHide, true);
+    }
+  }
+  assert.equal(synced, platform === 'win32');
+}
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-pi-command-'));
 try {

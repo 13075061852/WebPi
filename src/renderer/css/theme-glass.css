@@ -140,7 +140,7 @@
 }
 :root[data-surface="glass"] #stage {
   background: var(--glass-background); --ink: #242424; --muted: #484848;
-  border-color: #ffffff55; box-shadow: 0 12px 36px #00000020;
+  border-color: #ffffff55;
 }
 @supports not (backdrop-filter: blur(1px)) {
   :root[data-surface="glass"] :is(.glass-surface, .input-shell, .modal-panel, .settings-panel) { background: #e8e8e8 !important; }

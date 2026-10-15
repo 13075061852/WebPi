@@ -7,8 +7,9 @@ const inputProperties = {
   duration:{type:'number',description:'按住/拖动/等待毫秒，0–2000'},deltaY:{type:'number',description:'滚轮距离，正数向下，最多 1000'},
 };
 export function previewControlTool(run) {
-  return {name:'preview_control',label:'操作实时预览',description:'操作用户可见的中间预览。先 observe 获取截图和 snapshot。优先 batch 一次连续执行 1–20 个已确定动作（总计划时长最多 10 秒），仅结尾截图；需要中途判断时结束本批次再观察。screenshot=false 可不截图，返回续接 snapshot，仅适合无需新视觉判断的已知操作。不接受脚本。停止按钮中断整批。',parameters:{type:'object',properties:{
-    ...inputProperties, action:{type:'string',enum:['observe','batch',...inputProperties.action.enum]},
+  return {name:'preview_control',label:'操作实时预览',description:'用户要求打开网站或跳转网址时，默认用 open 和 url 在应用内预览打开，不启动外部浏览器。open 不需要 snapshot。操作页面前先 observe 获取截图和 snapshot。优先 batch 一次连续执行 1–20 个已确定动作（总计划时长最多 10 秒），仅结尾截图；需要中途判断时结束本批次再观察。screenshot=false 可不截图，返回续接 snapshot。不接受脚本。停止按钮中断整批。',parameters:{type:'object',properties:{
+    ...inputProperties, action:{type:'string',enum:['open','observe','batch',...inputProperties.action.enum]},
+    url:{type:'string',description:'open 时必填，完整 HTTP 或 HTTPS 网站地址'},
     snapshot:{type:'string'}, screenshot:{type:'boolean',description:'默认 true；false 仅返回操作进度和续接凭据，observe 始终截图'},
     steps:{type:'array',minItems:1,maxItems:20,items:{type:'object',properties:inputProperties,required:['action']}},
   },required:['action']},execute:(_id,args,signal)=>run(args,signal)};
@@ -51,6 +52,18 @@ export function createPreviewControl({getWindow,getGuests,getSessionId}) {
     const guard=async()=>{const now=await resolve();if(now.identity!==target.identity)throw Error('预览位置或页面已改变，请重新观察');};
     const pause=async ms=>{for(let left=ms;left>0;left-=50){await delay(Math.min(50,left));await guard();}};
     try {
+      if (args.action === 'open') {
+        checkAbort();
+        const url = new URL(String(args.url || ''));
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw Error('仅支持不含登录凭据的 HTTP 或 HTTPS 网址');
+        win = getWindow();
+        if (!win || win.isDestroyed() || getSessionId() !== sessionId) throw Error('会话已切换，无法打开预览');
+        const opened = await win.webContents.executeJavaScript(`window.__haloOpenWebsite?.(${JSON.stringify(sessionId)},${JSON.stringify(url.href)})`);
+        checkAbort();
+        if (!opened?.opened || getSessionId() !== sessionId) throw Error('内部预览未打开，请确认窗口和会话状态');
+        last = null;
+        return {content:[{type:'text',text:JSON.stringify({url:url.href,opened:true,target:'internal-preview',note:'已在应用内预览打开。页面可能仍在加载，后续操作前先 observe 获取截图。'})}],details:{action:'open',url:url.href,opened:true}};
+      }
       if(!['observe','batch','click','drag','key','scroll','wait'].includes(args.action))throw Error('未知预览操作');
       target=await resolve();
       if(args.action!=='observe'&&(!last||args.snapshot!==last.id||last.identity!==target.identity||last.sessionId!==sessionId))throw Error('请先 observe 获取当前截图，使用返回的 snapshot');
