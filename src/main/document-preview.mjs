@@ -13,9 +13,9 @@ async function renderDocument(file, page = 1) {
   }
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'halo-doc-preview-'));
   try {
-    const result = await runOffice({ action: 'render_pdf', file, outputDir: dir, maxPages: 1, startPage: Math.max(1, Math.floor(Number(page) || 1)) }, path.dirname(file));
+    const result = await runOffice({ action: 'render_pdf', file, outputDir: dir, maxPages: 1, startPage: Math.max(1, Math.floor(Number(page) || 1)), includeTextLayer: true }, path.dirname(file));
     if (!result.images[0]) throw Error('页码超出范围');
-    return { ext, pages: result.pages, image: 'data:image/png;base64,' + (await fs.readFile(result.images[0])).toString('base64') };
+    return { ext, pages: result.pages, textLayer: result.textLayers[0], image: 'data:image/png;base64,' + (await fs.readFile(result.images[0])).toString('base64') };
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 }
 
@@ -30,7 +30,7 @@ export async function previewDocument(file,page=1) {
   const task=renderDocument(file,page).then(value=>{
     // Only cache rendered PDF pages, never keep Office workbooks resident.
     if(value.image) {
-      const size=value.image.length*2;
+      const size=(value.image.length+JSON.stringify(value.textLayer).length)*2;
       if(size<=24*1024*1024) {
         if(previewCache.has(key)) {cacheBytes-=previewCache.get(key).size;previewCache.delete(key);}
         while(previewCache.size && cacheBytes+size>24*1024*1024) {const first=previewCache.keys().next().value;cacheBytes-=previewCache.get(first).size;previewCache.delete(first);}

@@ -1,4 +1,5 @@
 import { resolvePreviewPath } from './preview-path.mjs';
+import { mountPDFPreview } from './pdf-preview.mjs';
 import { previewEmpty, initPreviewClock } from './preview-empty.mjs';
 import { artifactPath, replyArtifacts, decorateArtifactCard, filterArtifactPlayback } from "./artifacts.mjs";
 import { initAppUpdates } from './app-updates.mjs';
@@ -3143,20 +3144,15 @@ async function setPreview(p, force, { reveal = true } = {}) {
   }
   if (["pdf", "docx", "xlsx", "pptx", "doc", "xls", "ppt"].includes(ext)) {
     body.innerHTML = '<div class="fv-note">正在加载文档…</div>';
-    let page = 1, pages = 1;
     const load = async () => {
-      const r = await window.halo.documentPreview(p, page);
+      const r = await window.halo.documentPreview(p);
       if (request !== portPreviewRequest) return;
       if (!r?.ok) { body.innerHTML = '<div class="fv-note">' + esc(r?.error || '预览失败') + '</div>'; return; }
       if (ext === 'pdf') {
-        pages = r.data.pages;
-        body.innerHTML = '<div class="document-preview"><div class="document-canvas"><img alt="PDF 页面" /></div><nav aria-label="文档翻页"><span class="document-kind">PDF</span><div class="document-pages"><button id="docPrev" title="上一页" aria-label="上一页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button><span>' + page + ' / ' + pages + '</span><button id="docNext" title="下一页" aria-label="下一页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button></div><span class="document-fit">适合宽度</span></nav></div>';
+        body.innerHTML = '<div class="document-preview"><div class="document-canvas" aria-label="PDF 连续阅读"></div></div>';
         const documentView = body.querySelector('.document-preview');
         body.replaceChildren(documentPreviewShell(documentView));
-        body.querySelector('img').src = r.data.image;
-        body.querySelector('#docPrev').disabled = page <= 1;
-        body.querySelector('#docNext').disabled = page >= pages;
-        for (const [id, delta] of [['docPrev', -1], ['docNext', 1]]) body.querySelector('#' + id).onclick = () => { page += delta; body.querySelectorAll('button').forEach(b => b.disabled = true); load(); };
+        mountPDFPreview(body.querySelector('.document-canvas'), r.data, page => window.halo.documentPreview(p, page));
       } else {
         const frame = document.createElement('iframe');
         frame.className = 'office-frame'; frame.sandbox = 'allow-scripts allow-same-origin';

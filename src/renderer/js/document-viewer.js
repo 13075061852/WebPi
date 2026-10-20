@@ -1,9 +1,11 @@
 /* Isolated, read-only Office renderer: no preload, network, forms or navigation. */
 window.addEventListener('click', e => { if (e.target.closest('a')) e.preventDefault(); });
+let stopWordFit = () => {};
 window.addEventListener('message', async e => {
   if (e.source !== parent || e.data?.type !== 'office-document') return;
   const { ext, bytes } = e.data;
   const content = document.getElementById('content'), status = document.getElementById('status');
+  stopWordFit();
   try {
     if (ext === 'docx') {
       await window.docx.renderAsync(bytes, content, null, { useBase64URL: true, renderAltChunks: false,
@@ -11,6 +13,7 @@ window.addEventListener('message', async e => {
       await document.fonts.ready;
       await Promise.all([...content.querySelectorAll('img')].map(image => image.decode().catch(() => {})));
       paginateWord(content);
+      stopWordFit = fitWordToWidth(content);
     } else if (ext === 'pptx') {
       const viewer = window.pptxPreview.init(content, { width: Math.max(320, document.documentElement.clientWidth - 32), height: Math.max(180, (document.documentElement.clientWidth - 32) * 9 / 16), mode: 'list' });
       await viewer.preview(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
@@ -74,6 +77,38 @@ window.addEventListener('message', async e => {
   } catch (error) { status.textContent = '预览失败：' + error.message; parent.postMessage({ type: 'office-rendered', error: error.message }, '*'); }
 });
 parent.postMessage({ type: 'office-ready' }, '*');
+
+// Paginate at the original paper size, then scale the whole document. Changing
+// page widths would reflow paragraphs/tables and invalidate the page boundaries.
+function fitWordToWidth(content) {
+  const wrapper = content.querySelector('.docx-wrapper');
+  const pages = [...content.querySelectorAll('.docx-wrapper > section.docx')];
+  if (!wrapper || !pages.length) return () => {};
+  const paperWidth = Math.max(...pages.map(page => page.offsetWidth));
+  const fit = () => {
+    const style = getComputedStyle(content);
+    const available = content.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    if (available > 0 && paperWidth > 0) wrapper.style.zoom = Math.min(1, available / paperWidth);
+  };
+  fit();
+  const observer = new ResizeObserver(fit);
+  observer.observe(content);
+  // Chromium can route a wheel into a zoomed Word page without scrolling its
+  // unzoomed overflow host. Apply the delta to that host once, in CSS pixels.
+  const wheel = event => {
+    if (event.ctrlKey || event.defaultPrevented) return;
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? content.clientHeight : 1;
+    let dx = event.deltaX * unit, dy = event.deltaY * unit;
+    if (event.shiftKey && !dx) { dx = dy; dy = 0; }
+    const top = Math.max(0, Math.min(content.scrollHeight - content.clientHeight, content.scrollTop + dy));
+    const left = Math.max(0, Math.min(content.scrollWidth - content.clientWidth, content.scrollLeft + dx));
+    if (top === content.scrollTop && left === content.scrollLeft) return;
+    event.preventDefault();
+    content.scrollTo({ top, left, behavior: 'instant' });
+  };
+  content.addEventListener('wheel', wheel, { passive: false });
+  return () => { observer.disconnect(); content.removeEventListener('wheel', wheel); };
+}
 
 // docx-preview honors stored page breaks but does not paginate overflowing text.
 // Measure at the document's fixed paper width after fonts/images have settled.
@@ -255,4 +290,4 @@ function syncViewerTheme() {
 syncViewerTheme();
 const themeObserver = new MutationObserver(syncViewerTheme);
 themeObserver.observe(parent.document.documentElement, { attributes: true, attributeFilter: ['data-theme','data-wallpaper','style'] });
-window.addEventListener('pagehide', () => themeObserver.disconnect(), { once: true });
+window.addEventListener('pagehide', () => { themeObserver.disconnect(); stopWordFit(); }, { once: true });

@@ -10,7 +10,8 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import PDFDocument from 'pdfkit';
-import { Document, Packer, Paragraph } from 'docx';
+import { PDFDocument as PDFEditor, degrees } from 'pdf-lib';
+import { Document, Packer, Paragraph, PageBreak, TextRun } from 'docx';
 
 const root = process.cwd();
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-preview-normal-'));
@@ -19,7 +20,7 @@ for (const dir of [profile, agent, workspace]) fs.mkdirSync(dir);
 fs.writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({ cwd: workspace, projects: [{ cwd: workspace }], splashed: true }));
 fs.writeFileSync(path.join(agent, 'auth.json'), '{}');
 const gitConfig = path.join(fixture, 'empty-gitconfig'); fs.writeFileSync(gitConfig, '');
-const guestSnapshot = `({id:window.fixtureId,draft:document.querySelector('#draft')?.value,touch:!!window.__haloTouchOn,touchStyle:!!document.getElementById('__halo-touch'),homeStyle:!!document.getElementById('__halo-home'),scrollbar:getComputedStyle(document.documentElement).scrollbarWidth,cursor:getComputedStyle(document.body).cursor,pointerTypes:window.pointerTypes})`;
+const guestSnapshot = `({id:window.fixtureId,scrollY:window.scrollY,draft:document.querySelector('#draft')?.value,touch:!!window.__haloTouchOn,touchStyle:!!document.getElementById('__halo-touch'),homeStyle:!!document.getElementById('__halo-home'),scrollbar:getComputedStyle(document.documentElement).scrollbarWidth,cursor:getComputedStyle(document.body).cursor,pointerTypes:window.pointerTypes})`;
 const html = `<!doctype html><meta charset="utf-8"><title>Normal preview fixture</title>
 <style>html{overflow-y:scroll}body{margin:0;padding:24px;background:#eef4ff;font:16px sans-serif;min-height:2400px}input{width:180px}h1{font-size:24px}button{display:block;margin-top:20px;width:160px;height:44px}</style>
 <h1>Normal preview fixture</h1><input id="draft" value="original"><button id="mouse">Mouse target</button>
@@ -28,10 +29,23 @@ addEventListener('message',event=>{if(event.data?.type!=='normal-fixture-probe')
 fs.writeFileSync(path.join(workspace, 'artifact.html'), html);
 fs.writeFileSync(path.join(workspace, 'second.html'), html);
 const pdf = new PDFDocument();
+const chineseFont = 'C:/Windows/Fonts/simhei.ttf';
+if (fs.existsSync(chineseFont)) pdf.font(chineseFont);
 const pdfOutput = fs.createWriteStream(path.join(workspace, 'report.pdf')); pdf.pipe(pdfOutput);
-pdf.text('Device preview page one'); pdf.addPage().text('Device preview page two'); pdf.end();
+// Dark paper/white text catches opaque selection colors that hide the raster.
+pdf.rect(0,0,pdf.page.width,pdf.page.height).fill('#1c2946').fillColor('white');
+pdf.text('Device preview page one');
+if (fs.existsSync(chineseFont)) pdf.text('中文文字复制测试');
+pdf.addPage().fillColor('black').text('Device preview page two'); pdf.end();
 await once(pdfOutput, 'finish');
-fs.writeFileSync(path.join(workspace, 'report.docx'), await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('Document shell fixture')] }] })));
+const rotatedPDF = await PDFEditor.load(fs.readFileSync(path.join(workspace, 'report.pdf')));
+rotatedPDF.getPage(1).setRotation(degrees(90));
+fs.writeFileSync(path.join(workspace, 'report.pdf'), await rotatedPDF.save());
+const longPDF=new PDFDocument(),longOutput=fs.createWriteStream(path.join(workspace,'continuous.pdf'));
+longPDF.pipe(longOutput);
+for(let index=1;index<=20;index++){if(index>1)longPDF.addPage();longPDF.text(`Continuous page ${index}`);}
+longPDF.end();await once(longOutput,'finish');
+fs.writeFileSync(path.join(workspace, 'report.docx'), await Packer.toBuffer(new Document({ sections: [{children:Array.from({length:5},(_,index)=>new Paragraph({children:[...(index?[new PageBreak()]:[]),new TextRun('Document shell fixture')]}))}] })));
 fs.writeFileSync(path.join(workspace, 'image.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240"><rect width="320" height="240" fill="#608dd9"/><circle cx="160" cy="120" r="60" fill="#d5e9ff"/></svg>');
 const bootstrap = path.join(fixture, 'bootstrap.cjs');
 fs.writeFileSync(bootstrap, `
@@ -85,6 +99,8 @@ async function evaluate(expression, contextId) {
 const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
 const pass = label => { passed.push(label); console.log('PASS', label); };
 async function rotation(kind) {
+  await mode('tablet');
+  await guestWheel(kind);
   await mode('mobile');
   const initial = await guestState(kind);
   for (const width of [1600, 1120]) {
@@ -96,6 +112,7 @@ async function rotation(kind) {
     const geometry = await evaluate(`(()=>{const b=document.querySelector('#pvBody'),s=b.querySelector('.dev-shell').getBoundingClientRect(),g=b.querySelector('${kind}').getBoundingClientRect();return {landscape:b.classList.contains('dev-landscape'),width:g.width,height:g.height,shellWidth:s.width,shellHeight:s.height,pressed:document.querySelector('.pvdev[data-dev="mobile"]').getAttribute('aria-pressed')}})()`);
     assert.equal(geometry.landscape, true); assert.equal(geometry.pressed, 'true');
     assert.ok(geometry.width > geometry.height * 1.8, JSON.stringify(geometry));
+    await guestWheel(kind);
     const current = await guestState(kind);
     assert.equal(current.id, initial.id); assert.equal(current.draft, initial.draft);
     await assertTouch(kind, true); await assertFooter();
@@ -119,6 +136,13 @@ async function rotation(kind) {
   assert.equal((await guestState(kind)).id, initial.id);
   await mode('normal');
   pass(`${kind} rotates landscape/portrait at wide and narrow sizes, keeps input and page, preserves orientation across modes`);
+}
+async function guestWheel(kind) {
+  const before=(await guestState(kind)).scrollY;
+  const point=await evaluate(`(()=>{const r=document.querySelector('#pvBody ${kind}').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+90}})()`);
+  await command('Input.dispatchMouseEvent',{type:'mouseMoved',...point});
+  await command('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY:200});
+  await until(async()=> (await guestState(kind)).scrollY>before+20,`${kind} wheel in tablet/phone`);
 }
 const settled = () => until(() => evaluate('!document.documentElement.classList.contains("layout-motion") && !document.querySelector(".device-switch-mask,.device-morph-overlay,.device-morph-hidden")'), 'layout settled');
 async function mode(device) {
@@ -160,6 +184,26 @@ async function assertFooter() {
 }
 async function screenshot(name) {
   const shot = await command('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(resultDir, `${name}.png`), Buffer.from(shot.data, 'base64'));
+}
+async function copyPDFText(expected) {
+  await until(()=>evaluate(`Array.from(document.querySelectorAll('.pdf-text-layer span')).some(n=>n.textContent===${JSON.stringify(expected)})`),'PDF selectable text');
+  const target = await evaluate(`(()=>{const n=Array.from(document.querySelectorAll('.pdf-text-layer span')).find(n=>n.textContent===${JSON.stringify(expected)});n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,rotation:n.closest('.pdf-text-layer').dataset.mainRotation}})()`);
+  const vertical=target.rotation==='90';
+  const start=vertical?{x:target.x+target.width/2,y:target.y+2}:{x:target.x+2,y:target.y+target.height/2};
+  const end=vertical?{x:start.x,y:target.y+target.height-0.1}:{x:target.x+target.width-0.1,y:start.y};
+  await command('Emulation.setFocusEmulationEnabled',{enabled:true});
+  await command('Input.dispatchMouseEvent',{type:'mouseMoved',...start});
+  await command('Input.dispatchMouseEvent',{type:'mousePressed',...start,button:'left',buttons:1,clickCount:1});
+  for(let step=1;step<=8;step++) {await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:start.x+(end.x-start.x)*step/8,y:start.y+(end.y-start.y)*step/8,button:'left',buttons:1});await sleep(20);}
+  await command('Input.dispatchMouseEvent',{type:'mouseReleased',...end,button:'left',clickCount:1});
+  const selection=await evaluate('getSelection().toString().trim()');
+  if(selection!==expected) await screenshot('pdf-selection-failure');
+  assert.equal(selection,expected,`Mouse selection: ${JSON.stringify(target)}`);
+  // Capture the native copy event without modifying the user's system clipboard.
+  await evaluate(`window.__pdfCopy=null;document.addEventListener('copy',e=>{window.__pdfCopy={text:getSelection().toString().trim(),trusted:e.isTrusted};e.preventDefault()},{once:true})`);
+  await command('Input.dispatchKeyEvent',{type:'keyDown',key:'c',code:'KeyC',windowsVirtualKeyCode:67,modifiers:2});
+  await command('Input.dispatchKeyEvent',{type:'keyUp',key:'c',code:'KeyC',windowsVirtualKeyCode:67,modifiers:2});
+  assert.deepEqual(await evaluate('window.__pdfCopy'),{text:expected,trusted:true});
 }
 
 try {
@@ -290,21 +334,76 @@ try {
   for (const name of ['report.pdf','report.docx']) {
     await treeFile(name);
     const isPDF=name.endsWith('.pdf');
-    await until(()=>evaluate(isPDF ? 'document.querySelector(".document-canvas img")?.naturalWidth>0' : 'document.querySelector(".office-frame")?.contentDocument?.body.textContent.includes("Document shell fixture")'),'document rendered');
+    await until(()=>evaluate(isPDF ? 'document.querySelector(".document-canvas img")?.naturalWidth>0' : 'document.querySelector(".office-frame")?.contentDocument?.body?.textContent.includes("Document shell fixture")'),'document rendered');
     if(!isPDF) await evaluate('window.__documentFrame=document.querySelector(".office-frame")');
-    for(const device of ['desktop','tablet','mobile','normal']) {
-      await mode(device);
-      const geometry=await evaluate(`(()=>{const shell=document.querySelector('.dev-document-shell'),screen=shell.querySelector('.dev-screen').getBoundingClientRect(),content=shell.querySelector('${isPDF?'.document-preview':'.office-frame'}').getBoundingClientRect(),nav=shell.querySelector('nav')?.getBoundingClientRect();return {shell:!!shell,width:screen.width,height:screen.height,inside:Math.abs(content.left-screen.left)<1&&Math.abs(content.top-screen.top)<1&&Math.abs(content.right-screen.right)<1&&Math.abs(content.bottom-screen.bottom)<1,nav:!nav||nav.bottom<=screen.bottom+1,same:${isPDF?'true':'window.__documentFrame===document.querySelector(".office-frame")'}}})()`);
-      assert.ok(geometry.shell&&geometry.inside&&geometry.nav&&geometry.same&&geometry.width>50&&geometry.height>50,JSON.stringify({name,device,geometry}));
-      await screenshot(`document-${name}-${device}`);
+    await evaluate(`(()=>{
+      window.__documentSnapshots=0;window.__documentFrames=[];
+      for(const host of [document,document.querySelector('#layout')])if(host.startViewTransition){const native=host.startViewTransition.bind(host);host.startViewTransition=(...args)=>{window.__documentSnapshots++;return native(...args)}}
+      window.__sampleDocuments=true;
+      const sample=()=>{if(!window.__sampleDocuments)return;if(document.documentElement.classList.contains('layout-motion'))window.__documentFrames.push({live:document.documentElement.classList.contains('layout-motion-live'),morph:!!document.querySelector('.device-morph-overlay,.device-switch-mask'),content:!!document.querySelector('.document-canvas img')?.naturalWidth||!!document.querySelector('.office-frame')?.contentDocument?.body?.textContent.includes('Document shell fixture'),panes:[...document.querySelectorAll('#sidebar,#center,#chat')].every(n=>new DOMMatrix(getComputedStyle(n).transform).isIdentity)});requestAnimationFrame(sample)};requestAnimationFrame(sample);
+    })()`);
+    for(const width of [1600,1120]) {
+      await command('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      await settled();
+      for(const device of ['desktop','tablet','mobile','mobile','normal']) {
+        if(device==='tablet') {
+          await click('.pvdev[data-dev="tablet"]');
+          await until(()=>evaluate('document.documentElement.classList.contains("layout-motion-live")'),'live document transition');
+          await screenshot(`document-${name}-${width}-switching`);
+          await settled();
+        } else await mode(device);
+        const geometry=await evaluate(`(()=>{const shell=document.querySelector('.dev-document-shell'),screen=shell.querySelector('.dev-screen').getBoundingClientRect(),content=shell.querySelector('${isPDF?'.document-preview':'.office-frame'}').getBoundingClientRect(),nav=shell.querySelector('nav')?.getBoundingClientRect();return {shell:!!shell,width:screen.width,height:screen.height,inside:Math.abs(content.left-screen.left)<1&&Math.abs(content.top-screen.top)<1&&Math.abs(content.right-screen.right)<1&&Math.abs(content.bottom-screen.bottom)<1,nav:!nav||nav.bottom<=screen.bottom+1,same:${isPDF?'true':'window.__documentFrame===document.querySelector(".office-frame")'}}})()`);
+        assert.ok(geometry.shell&&geometry.inside&&geometry.nav&&geometry.same&&geometry.width>50&&geometry.height>50,JSON.stringify({name,device,geometry}));
+        if(isPDF) {
+          const area=await evaluate(`(()=>{const c=document.querySelector('.document-canvas'),r=c.getBoundingClientRect();c.scrollTop=0;return {x:r.x+r.width/2,y:r.y+50,scrollable:c.scrollHeight>c.clientHeight+20}})()`);
+          if(area.scrollable) {
+            await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:area.x,y:area.y});
+            await command('Input.dispatchMouseEvent',{type:'mouseWheel',x:area.x,y:area.y,deltaX:0,deltaY:150});
+            await until(()=>evaluate(`document.querySelector('.document-canvas').scrollTop>5`),`PDF wheel: ${device}/${width}`,3000);
+          }
+          await copyPDFText('Device preview page one');
+        }
+        else {
+          await until(()=>evaluate(`(()=>{const doc=document.querySelector('.office-frame').contentDocument,content=doc.querySelector('#content'),page=doc.querySelector('section.docx');if(!page)return false;const c=content.getBoundingClientRect(),p=page.getBoundingClientRect();return content.scrollWidth<=content.clientWidth+1&&p.left>=c.left&&p.right<=c.right&&p.width>30})()`),'Word fits width after device/viewport change');
+          const point=await evaluate(`(()=>{const f=document.querySelector('.office-frame'),r=f.getBoundingClientRect();f.contentDocument.querySelector('#content').scrollTop=0;return {x:r.x+r.width/2,y:r.y+90}})()`);
+          await command('Input.dispatchMouseEvent',{type:'mouseMoved',...point});
+          await command('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY:350});
+          await until(()=>evaluate(`document.querySelector('.office-frame').contentDocument.querySelector('#content').scrollTop>5`),`Word wheel down: ${device}/${width}`,3000);
+          const scrolled=await evaluate(`document.querySelector('.office-frame').contentDocument.querySelector('#content').scrollTop`);
+          assert.ok(scrolled>=349&&scrolled<=351,'Wheel delta must be applied once');
+          await command('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY:-200});
+          await until(()=>evaluate(`document.querySelector('.office-frame').contentDocument.querySelector('#content').scrollTop<${scrolled-100}`),`Word wheel up: ${device}/${width}`,3000);
+        }
+        await screenshot(`document-${name}-${device}-${width}`);
+      }
     }
+    const motion=await evaluate('window.__sampleDocuments=false;({snapshots:window.__documentSnapshots,frames:window.__documentFrames})');
+    assert.equal(motion.snapshots,0,`${name}: document switching must not capture/scale workspace textures`);
+    assert.ok(motion.frames.filter(f=>f.live).length>=8&&motion.frames.every(f=>!f.morph&&f.panes&&f.content),`${name}: live untransformed, nonblank frames: ${JSON.stringify(motion)}`);
     if(isPDF) {
-      const first=await evaluate('document.querySelector(".document-canvas img").src');
-      await click('#docNext');
-      await until(()=>evaluate(`document.querySelector('.document-pages span')?.textContent==='2 / 2'&&document.querySelector('.document-canvas img')?.src!==${JSON.stringify(first)}&&document.querySelector('.document-canvas img')?.naturalWidth>0`),'PDF second page');
+      assert.equal(await evaluate('document.querySelectorAll(".pdf-page").length'),2,'Every PDF page has a place in the continuous scroll');
+      assert.equal(await evaluate('!!document.querySelector("#docNext,#docPrev,.document-pages,.document-preview nav")'),false,'No pagination controls');
+      const firstImage=await evaluate('document.querySelector(".pdf-page img").src');
+      await evaluate(`document.querySelector('.pdf-page[data-page="2"]').scrollIntoView({block:'start'})`);
+      await until(()=>evaluate(`document.querySelector('.pdf-page[data-page="2"] img')?.naturalWidth>0`),'PDF second page loads by scrolling');
+      await copyPDFText('Device preview page two');
+      assert.equal(await evaluate('document.querySelector(".pdf-page img").src'),firstImage,'Scrolling to another page preserves earlier content');
+      assert.equal(await evaluate(`(()=>{const pages=[...document.querySelectorAll('.pdf-page')];return pages[1].getBoundingClientRect().top>pages[0].getBoundingClientRect().bottom})()`),true,'Pages stack vertically');
+      assert.equal(await evaluate('document.querySelector(".pdf-page[data-page=\\"2\\"] .pdf-text-layer").dataset.mainRotation'),'90');
+      if(fs.existsSync(chineseFont)) await copyPDFText('中文文字复制测试');
+      await screenshot('pdf-text-selection');
     }
   }
-  pass('Real PDF and DOCX retain device shells, unclipped content/footer, PDF pagination and the same Word iframe across modes');
+  await treeFile('continuous.pdf');
+  await until(()=>evaluate('document.querySelector(".pdf-page img")?.naturalWidth>0'),'long PDF first page');
+  assert.equal(await evaluate('document.querySelectorAll(".pdf-page").length'),20);
+  assert.ok(await evaluate('document.querySelectorAll(".pdf-page img").length<20'),'Long PDF starts without rendering every page');
+  await evaluate(`document.querySelector('.pdf-page[data-page="20"]').scrollIntoView({block:'start'})`);
+  await until(()=>evaluate(`document.querySelector('.pdf-page[data-page="20"] img')?.naturalWidth>0`),'last PDF page loads by scrolling');
+  await copyPDFText('Continuous page 20');
+  assert.ok(await evaluate('document.querySelectorAll(".pdf-page img").length<20'),'Jumping to the end does not render every intermediate page');
+  await screenshot('pdf-continuous-last-page');
+  pass('PDF continuous scrolling without pagination controls, retained pages, wheel and copy across devices/rotated text; Word fit and wheel scrolling');
   assert.deepEqual(exceptions, [], 'No renderer exceptions');
   fs.writeFileSync(path.join(resultDir, 'report.json'), JSON.stringify({ fixture, passed, websiteLoads, measurements }, null, 2));
   console.log(`PASS ordinary preview: ${passed.length} checks; ${resultDir}`);

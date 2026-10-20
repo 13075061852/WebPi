@@ -42,6 +42,9 @@ export function createLayoutMotion({ setPaused }) {
     const screens = [...document.querySelectorAll('#pvBody .dev-screen')];
     if (!screens.length) screens.push(document.querySelector('#pvBody'));
     for (const screen of screens) {
+      // Documents render in the live layout; covering them would introduce an
+      // unnecessary blank screen on every device change.
+      if (screen?.closest('.dev-document-shell')) continue;
       if (!screen || [...masks].some(mask => mask.parentElement === screen)) continue;
       const mask = document.createElement('div');
       mask.className = 'device-switch-mask';
@@ -124,10 +127,11 @@ export function createLayoutMotion({ setPaused }) {
           if (!pending.length) await revealPreview();
           continue;
         }
-        // Empty lock screens have no guest chrome to morph. Capturing the whole
-        // workspace here scales its text textures while the pane widths change.
-        // Keep these panes live just like sidebar/preview folding instead.
-        if (livePanes || !document.querySelector('#pvBody .dev-shell')) {
+        // Only embedded websites use the captured guest/chrome handoff. Local
+        // documents and lock screens must keep the workspace live: capturing
+        // these surfaces can stretch text layers and flash an empty shell.
+        const embeddedPage = document.querySelector('#pvBody .dev-shell:not(.dev-document-shell) :is(iframe, webview)');
+        if (livePanes || !embeddedPage) {
           await slideLivePanes(changes);
           if (!pending.length) await revealPreview();
           continue;

@@ -49,7 +49,7 @@ async function inspect(file) {
   }
   return report;
 }
-async function renderPDF(file, outputDir, maxPages = 12, startPage = 1) {
+async function renderPDF(file, outputDir, maxPages = 12, startPage = 1, includeTextLayer = false) {
   if(fs.statSync(file).size>LIMIT)throw Error("PDF 超过 64 MB 上限");
   const canvasLib = require('@napi-rs/canvas');
   for (const key of ['DOMMatrix','ImageData','Path2D']) globalThis[key] ??= canvasLib[key];
@@ -57,7 +57,7 @@ async function renderPDF(file, outputDir, maxPages = 12, startPage = 1) {
   const task = pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(file)), useSystemFonts:true });
   const pdf = await task.promise;
   fs.mkdirSync(outputDir,{recursive:true});
-  const images=[], texts=[];
+  const images=[], texts=[], textLayers=[];
   try {
     for(let i=startPage;i<=Math.min(pdf.numPages,startPage+maxPages-1);i++) {
       const page=await pdf.getPage(i), viewport=page.getViewport({scale:1.3});
@@ -66,14 +66,15 @@ async function renderPDF(file, outputDir, maxPages = 12, startPage = 1) {
       await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
       const image=path.join(outputDir,'page-'+i+'.png');fs.writeFileSync(image,canvas.toBuffer('image/png'));images.push(image);
       const text=await page.getTextContent();texts.push(text.items.map(i=>i.str).join(' ').slice(0,12000));
+      if(includeTextLayer)textLayers.push({textContent:text,viewport:{scale:viewport.scale,rotation:viewport.rotation,width:viewport.width,height:viewport.height,rawDims:viewport.rawDims}});
       page.cleanup();
     }
-    return {pages:pdf.numPages,rendered:images.length,images,texts,visualChecked:false};
+    return {pages:pdf.numPages,rendered:images.length,images,texts,...(includeTextLayer?{textLayers}:{}),visualChecked:false};
   } finally {await task.destroy();}
 }
 async function main(args) {
   if(args.action==='inspect')return inspect(path.resolve(args.file));
-  if(args.action==='render_pdf')return renderPDF(path.resolve(args.file),path.resolve(args.outputDir||'output/pdf-preview'),Math.max(1,Math.min(50,args.maxPages||12)),Math.max(1,args.startPage||1));
+  if(args.action==='render_pdf')return renderPDF(path.resolve(args.file),path.resolve(args.outputDir||'output/pdf-preview'),Math.max(1,Math.min(50,args.maxPages||12)),Math.max(1,args.startPage||1),args.includeTextLayer===true);
   if(args.action==='status')return {formats:['pdf','docx','xlsx','pptx'],font,officeRequired:false,convertPDF:{action:'convert_pdf',formats:['docx','xlsx','pptx'],engine:'Microsoft Office on Windows',timeoutSeconds:60,overwrite:false},renderPDF:true,imageDecoders:'PNG/JPEG/GIF/SVG/WebP/BMP only; ICNS/JXL/HEIF disabled',officeVisualEngine:'External LibreOffice or Microsoft Office required for faithful Office pagination',libraries:['docx','exceljs','pptxgenjs','pdfkit','pdf-lib','jszip','fast-xml-parser','pdfjs-dist']};
   if(args.action!=='run')throw Error('未知操作');
   const api={fs,path,JSZip,font,inspect,renderPDF};

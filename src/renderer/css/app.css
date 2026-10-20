@@ -3065,22 +3065,21 @@ body:not(.focus-mode):not(.preview-collapsed):not(.preview-auto-collapsed) #layo
 .pv-body.dev-normal .dev-document-shell .dev-screen { border-radius: 0; clip-path: none; }
 .document-preview{position:absolute;inset:0;display:flex;flex-direction:column;background:#e9ecf0;color:#465466}
 .document-canvas{flex:1;min-height:0;overflow:auto;padding:28px;box-sizing:border-box;text-align:center}
-.document-canvas img{display:block;width:100%;max-width:1100px;height:auto;margin:0 auto;box-shadow:0 3px 16px #1c2c4020;background:white}
-.document-preview nav{flex:none;height:32px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;padding:0 12px;background:#fafbfd;border-top:1px solid #dce2e9;font-size:12px}
-.document-pages{display:flex;align-items:center;gap:10px;font-variant-numeric:tabular-nums}
-.document-pages>span{min-width:60px;text-align:center}
-.document-preview button{display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:5px;background:transparent;color:#526177;font-size:20px;cursor:pointer}
-.document-preview button:hover:enabled{background:#e8edf3;color:#182c47}
-.document-preview button:disabled{opacity:.3;cursor:default}
-.document-preview button:focus-visible{outline:2px solid #708bae;outline-offset:2px}
-.document-kind{font-size:10px;font-weight:600;letter-spacing:.08em;color:#8995a4}
-.document-fit{text-align:right;color:#8995a4;font-size:11px}
+.document-canvas img{display:block;width:100%;max-width:1100px;height:auto;margin:0 auto;background:white}
+.pdf-page{position:relative;width:100%;max-width:1100px;margin:0 auto 16px;background:white;box-shadow:0 3px 16px #1c2c4020}
+.pdf-page:last-child{margin-bottom:0}
+.pdf-page[data-loading]::after{content:'正在加载…';position:absolute;inset:0;display:grid;place-items:center;color:#7b8796;font-size:12px;pointer-events:none}
+/* Text layout variables follow the installed PDF.js TextLayer implementation. */
+.pdf-text-layer{position:absolute;inset:0;overflow:clip;text-align:initial;line-height:1;letter-spacing:normal;word-spacing:normal;text-size-adjust:none;forced-color-adjust:none;transform-origin:0 0;user-select:text;--min-font-size:1;--text-scale-factor:calc(var(--total-scale-factor) * var(--min-font-size));--min-font-size-inv:calc(1 / var(--min-font-size))}
+.pdf-text-layer :is(span,br){position:absolute;color:transparent;white-space:pre;cursor:text;transform-origin:0 0;user-select:text}
+.pdf-text-layer > :not(.markedContent),.pdf-text-layer .markedContent span:not(.markedContent){z-index:1;--font-height:0;font-size:calc(var(--text-scale-factor) * var(--font-height));--scale-x:1;--rotate:0deg;transform:rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv))}
+.pdf-text-layer .markedContent{display:contents}
+.pdf-text-layer ::selection{color:transparent;background:rgba(72,139,235,.24)}
+.pdf-text-layer br::selection{background:transparent}
+.pdf-text-layer[data-main-rotation="90"]{transform:rotate(90deg) translateY(-100%)}
+.pdf-text-layer[data-main-rotation="180"]{transform:rotate(180deg) translate(-100%,-100%)}
+.pdf-text-layer[data-main-rotation="270"]{transform:rotate(270deg) translateX(-100%)}
 .document-preview{background:transparent;color:var(--txt)}
-.document-preview nav{background:var(--bg1);border-color:var(--hair);color:var(--txt-dim)}
-.document-preview button{color:var(--txt-dim)}
-.document-preview button:hover:enabled{background:var(--panel-2);color:var(--txt)}
-.document-preview button:focus-visible{outline-color:var(--txt-dim)}
-.document-kind,.document-fit{color:var(--txt-dim)}
 .pv-body .office-frame{background:transparent}
 .conversation-fold{display:grid;place-items:center;flex:none;width:18px;height:26px;padding:0;color:var(--txt-dim);border:0;background:transparent;border-radius:4px;cursor:pointer}
 .conversation-fold svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round;transition:transform .16s ease}
@@ -3251,13 +3250,6 @@ body.sb-drawer-open #chat { grid-column: 3; }
 .ws-tree .trow.file-drop-target { background: rgba(var(--ink-rgb), .1); outline: 1px solid var(--hair-2); border-radius: 6px; }
 .ws-tree[aria-busy="true"] { cursor: progress; }
 
-.document-preview nav { line-height: 1; }
-.document-preview nav > .document-kind, .document-preview nav > .document-fit,
-.document-pages > span { display: flex; align-items: center; height: 24px; line-height: 16px; }
-.document-pages > span { justify-content: center; }
-.document-preview nav > .document-fit { justify-content: flex-end; }
-.document-preview button { line-height: 1; }
-.document-preview button svg { display: block; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 
 .digital-human-reading > small { font-size: 10px; color: var(--txt-faint); line-height: 1.6; }
 

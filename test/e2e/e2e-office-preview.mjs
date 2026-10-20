@@ -124,9 +124,10 @@ try {
  });})()`);
  console.log(ext,JSON.stringify(result).slice(0,500));if(result.error||!result.nodes||(ext==='pptx' && (result.nodes!==3 || !result.text.includes('项目成果汇报'))))throw Error(ext+' failed');
  if(name==='pagination.docx') {
- const pagination=await evalJS(`(()=>{const doc=document.querySelector('#pvBody iframe').contentDocument;const pages=[...doc.querySelectorAll('.docx-wrapper>section.docx')];return {pages:pages.length,heights:pages.map(p=>p.getBoundingClientRect().height),overflow:pages.map(p=>p.scrollHeight-p.clientHeight),text:pages.map(p=>[...p.querySelectorAll('article p')].map(p=>p.textContent).join('')).join(''),bold:[...doc.querySelectorAll('article span')].filter(n=>getComputedStyle(n).fontWeight==='700').map(n=>n.textContent).join('')}})()`);
+ const pagination=await evalJS(`(()=>{const doc=document.querySelector('#pvBody iframe').contentDocument;const pages=[...doc.querySelectorAll('.docx-wrapper>section.docx')],content=doc.querySelector('#content');return {pages:pages.length,heights:pages.map(p=>p.offsetHeight),fits:content.scrollWidth<=content.clientWidth+1,overflow:pages.map(p=>p.scrollHeight-p.clientHeight),text:pages.map(p=>[...p.querySelectorAll('article p')].map(p=>p.textContent).join('')).join(''),bold:[...doc.querySelectorAll('article span')].filter(n=>getComputedStyle(n).fontWeight==='700').map(n=>n.textContent).join('')}})()`);
  assert.ok(pagination.pages>5,'Natural overflow must create separate paper pages');
  assert.ok(pagination.heights.every(h=>Math.abs(h-1122.53)<3),'Paper height must stay A4');
+ assert.ok(pagination.fits,'Paginated Word pages must fit the preview width without horizontal scrolling');
  assert.ok(pagination.overflow.every(h=>h<=2),'Text/rows must not overflow page bounds');
  const expected=Array.from({length:65},(_,index)=>`段落${index}：`+'分页预览应保留完整正文与段落格式。'.repeat(10)).join('')+longText+Array.from({length:55},(_,index)=>`表格行${index}`+'表格跨页内容'.repeat(12)).join('');
  assert.equal(pagination.text,expected,'Pagination must preserve all text in order');
@@ -146,8 +147,8 @@ try {
  const pdf=await evalJS("window.halo.documentPreview('report.pdf',2).then(r=>({ok:r.ok,pages:r.data?.pages,image:r.data?.image?.slice(0,22),error:r.error}))");
  console.log('PDF',pdf);if(!pdf.ok||pdf.pages!==2)throw Error('PDF failed');
  const markup=readFileSync('src/renderer/js/app.js','utf8').split('\n').find(line=>line.includes('body.innerHTML =')&&line.includes('class="document-preview"'));
- const layout=await evalJS(`(async()=>{const body=document.querySelector('#pvBody');const page=2,pages=2;${markup};const r=await window.halo.documentPreview('report.pdf',2);body.querySelector('img').src=r.data.image;const frame=body.querySelector('.document-preview'),nav=frame.querySelector('nav'),canvas=frame.querySelector('.document-canvas');return {bottom:Math.abs(nav.getBoundingClientRect().bottom-frame.getBoundingClientRect().bottom)<2,separate:canvas.getBoundingClientRect().bottom<=nav.getBoundingClientRect().top};})()`);
- if(!layout.bottom||!layout.separate)throw Error('PDF footer layout '+JSON.stringify(layout));
+ const layout=await evalJS(`(async()=>{const body=document.querySelector('#pvBody');${markup};const r=await window.halo.documentPreview('report.pdf');const {mountPDFPreview}=await import('./js/pdf-preview.mjs');mountPDFPreview(body.querySelector('.document-canvas'),r.data,page=>window.halo.documentPreview('report.pdf',page));return {pages:body.querySelectorAll('.pdf-page').length,controls:!!body.querySelector('nav,button')};})()`);
+ assert.deepEqual(layout,{pages:2,controls:false},'PDF uses continuous scrolling without pagination controls');
  await sleep(300);await screenshot(path.join(isolated,'preview-pdf.png'));
 } finally {ws.close();electron.kill();}
 
