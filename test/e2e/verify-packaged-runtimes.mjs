@@ -113,13 +113,18 @@ globalThis.fetch = async () => { throw Error('Runtime smoke must stay offline');
   const result = await cloudflare.runWrangler(['--version'], { cwd: process.cwd(), timeout: 15000 });
   assert.equal(result.ok, true, result.errors || result.output);
   assert.match(result.output, /4\.131\.2/);
-  for (const owner of [cloudflare.wranglerPath(), physical(packageRequire.resolve('@earendil-works/chord/package.json'))]) {
+  for (const owner of [cloudflare.wranglerPath(), physical(packageRequire.resolve('esbuild/package.json'))]) {
     const esbuild = createRequire(owner)('esbuild');
     const compiled = await esbuild.transform('const count: number = 2; console.log(count + 3)', { loader: 'ts' });
     assert.ok(compiled.code.includes('count + 3'));
     esbuild.stop();
   }
-  console.log('PASS packaged Wrangler CLI and both esbuild runtime owners without global Node');
+  // Pi 1.3 loads TypeScript extensions with jiti; chord is no longer installed.
+  const extension = path.join(process.cwd(), 'runtime-extension.ts');
+  fs.writeFileSync(extension, 'const value: number = 5; export default value;');
+  const jiti = packageRequire('jiti').createJiti(__filename, { moduleCache: false, fsCache: false });
+  assert.equal(await jiti.import(extension, { default: true }), 5);
+  console.log('PASS packaged Wrangler CLI, root/Wrangler esbuild and Pi jiti TypeScript loader without global Node');
 })().then(() => {
   // The terminal command has exited normally and every runtime assertion is
   // complete. End the isolated probe explicitly: node-pty retains its native
