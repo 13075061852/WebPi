@@ -149,17 +149,7 @@
           <button id="previewAddressClose" type="button" class="mini-icon" aria-label="关闭网址输入" title="关闭"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
         </form>
         <div class="pv-body dev-desktop" id="pvBody">
-          <div class="pv-empty">
-            <div class="pv-ghost">
-              <div class="pv-gscreen">
-                <div class="pv-empty-ico">◇</div>
-                <p>实时预览</p>
-                <p class="dim">点击文件查看</p>
-              </div>
-              <div class="pv-gneck"></div>
-              <div class="pv-gbase"></div>
-            </div>
-          </div>
+          <!-- Device lock screen is mounted by preview-empty.mjs. -->
         </div>
         <div id="termView">
           <div class="term-toolbar"><div id="termTabs" role="tablist" aria-label="项目终端"></div><div class="term-actions">
@@ -181,7 +171,7 @@
             <span>平板</span>
           </button>
           <button class="pvdev" data-dev="mobile" title="手机视图 · 390px" aria-pressed="false">
-            <svg viewBox="0 0 24 24" class="ic"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.8 18h2.4"/></svg>
+            <svg viewBox="0 0 24 24" class="ic pv-phone-icon" aria-hidden="true"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18h3"/></svg>
             <span>手机</span>
           </button>
           <span class="pv-devsize" id="pvDevSize">100%</span>
@@ -354,9 +344,10 @@
       <div id="setPane-pkgs" class="set-pane active"><div class="settings-title"><h3>插件技能</h3></div>
         <div class="set-head">
           <div class="set-search" id="pkgSearch">
-            <input id="pkgSearchInput" type="text" placeholder="按扩展名称搜索…" />
+            <input id="pkgSearchInput" type="text" placeholder="搜索名称或用途…" aria-label="搜索插件技能" />
           </div>
           <div class="set-tabs" id="pkgTabs">
+            <button class="ptab" data-t="builtin">内置</button>
             <button class="ptab" data-t="installed">已安装</button>
             <button class="ptab active" data-t="all">全部</button>
             <button class="ptab" data-t="extension">扩展</button>
@@ -366,14 +357,14 @@
           </div>
         </div>
         <div class="set-body">
+          <div class="set-sec" id="pkgBuiltinSec" hidden>
+            <div id="pkgBuiltin" class="pkg-list"></div>
+          </div>
           <div class="set-sec" id="pkgInstalledSec" hidden>
-            <h4>已安装 <span id="pkgInstalledCount" class="set-count"></span>
-              <button id="pkgUpdateAll" class="mini-btn accent" hidden>一键更新</button>
-            </h4>
+            <button id="pkgUpdateAll" class="mini-btn accent" hidden>一键更新</button>
             <div id="pkgInstalled" class="pkg-list"></div>
           </div>
           <div class="set-sec" id="pkgMarketSec">
-            <h4>浏览市场</h4>
             <div id="pkgMarket" class="pkg-list"></div>
           </div>
         </div>

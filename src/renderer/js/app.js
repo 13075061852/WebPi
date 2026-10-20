@@ -1,4 +1,5 @@
 import { resolvePreviewPath } from './preview-path.mjs';
+import { previewEmpty, initPreviewClock } from './preview-empty.mjs';
 import { artifactPath, replyArtifacts, decorateArtifactCard, filterArtifactPlayback } from "./artifacts.mjs";
 import { initAppUpdates } from './app-updates.mjs';
 import { initProxySettings } from './proxy-settings.mjs';
@@ -107,12 +108,14 @@ function applyTheme(t, { persist = true } = {}) {
    boot
    ============================================================ */
 document.addEventListener("DOMContentLoaded", () => {
+  $('#pvBody').innerHTML = previewEmpty();
+  initPreviewClock($('#pvBody'));
   try {
   document.body.classList.add("enter");
   wireUI();
   initResponsiveLayout({ onToggleSidebar: toggleSidebar, onChange: () => { void syncPreviewMotion(); } });
   initSidebarHeight();
-  initAppUpdates();
+  initAppUpdates({notify:toast});
   proxySettings = initProxySettings();
   initReleaseHistory();
   wirePi();
@@ -857,7 +860,7 @@ function handlePiEvent(event, sessionId, seq) {
       }
       case "message_start": onMessageStart(event.message); break;
       case "message_update": onMessageUpdate(event.assistantMessageEvent); break;
-      case "message_end": onMessageEnd(event.message); break;
+      case "message_end": onMessageEnd(event.message, event.outputRate); break;
 
       case "tool_execution_start": onToolStart(event); break;
       case "tool_execution_update": onToolUpdate(event); break;
@@ -1404,10 +1407,11 @@ function onMessageUpdate(ev) {
   }
 }
 
-function onMessageEnd(msg) {
+function onMessageEnd(msg, outputRate) {
   if (!msg || msg.role !== "assistant") return;
   (ensureTurn().__turnCost ||= new TurnCost()).add(msg);
   S.turn?.__outputRate?.end(msg.usage);
+  if (outputRate && S.turn) S.turn.__outputRate = new OutputRate(outputRate);
 
   // A1: surface model errors that pi reports on the message itself
   if (msg.stopReason === "error" && msg.errorMessage) {
@@ -1975,6 +1979,8 @@ async function restoreHistory(viewOverride) {
     if (m.role !== "assistant") return;
     const turn = ensureTurn();
     turn.__history = true;
+    turn.__outputRate ||= new OutputRate(savedTiming?.outputRate);
+    if (!savedTiming?.outputRate && !m.__partial) turn.__outputRate.addHistorical(m);
     if (!m.__partial) (turn.__turnCost ||= new TurnCost()).add(m);
     turn.__startedAt = turnStart;
     turn.__endedAt = savedTiming?.end || timestamp;
@@ -2452,7 +2458,7 @@ function wireUI() {
     if (b.dataset.pane === "proxy") void proxySettings?.refresh();
     if (b.dataset.pane === "video") void videoSettings?.refresh();
     if (b.dataset.pane === 'digital-human') void getDigitalHuman().openProfile();
-    if (b.dataset.pane === 'pkgs') { S.pkgLoaded = true; loadInstalled(); syncPkgTab(); }
+    if (b.dataset.pane === 'pkgs') { S.pkgLoaded = true; if (S.pkgType !== 'builtin') loadInstalled(); syncPkgTab(); }
     if (b.dataset.pane === "login") void loadDefaultModels();
   }));
   $("#usageRange").addEventListener("click", (e) => {
@@ -2464,7 +2470,8 @@ function wireUI() {
   });
   $("#pkgSearchInput").addEventListener("input", debounce(() => {
     S.pkgQuery = $("#pkgSearchInput").value.trim();
-    if (S.pkgType === "installed") renderInstalled(); // 已安装列表本地过滤
+    if (S.pkgType === 'builtin') renderBuiltin();
+    else if (S.pkgType === "installed") renderInstalled(); // 已安装列表本地过滤
     else loadMarket(1); // 搜索重回第一页
   }, 350));
   $("#pkgTabs").addEventListener("click", (e) => {
@@ -2480,6 +2487,7 @@ function wireUI() {
   $("#pkgApply").addEventListener("click", applyPkgChanges);
   $("#pkgInstalled").addEventListener("click", onInstalledClick);
   $("#pkgMarket").addEventListener("click", onMarketClick);
+  $('#pkgBuiltin').addEventListener('click', onBuiltinClick);
   $("#authSearch").addEventListener("input", () => renderAuthRows());
   $("#authFilters").addEventListener("click", (e) => {
     const b = e.target.closest("[data-af]");
@@ -2764,9 +2772,24 @@ function wireCenter() {
   // 预览模式：普通无外壳 / 电脑 / 平板 / 手机
   const devSize = { normal: "100%", desktop: "100%", tablet: "768px", mobile: "390px" };
   let requestedDevice = currentPreviewDevice();
+  let landscape = false;
+  const syncOrientation = () => {
+    const mobile = currentPreviewDevice() === 'mobile';
+    const button = $('.pvdev[data-dev="mobile"]');
+    button.dataset.orientation = landscape ? 'landscape' : 'portrait';
+    button.title = button.ariaLabel = mobile ? (landscape ? '手机横屏 · 点击切换竖屏' : '手机竖屏 · 点击切换横屏') : '手机视图';
+    $('#pvBody').classList.toggle('dev-landscape', landscape);
+    $('#pvDevSize').textContent = mobile && landscape ? '横屏' : devSize[currentPreviewDevice()];
+  };
   $$(".pvdev").forEach((b) => b.addEventListener("click", () => {
     const body = $("#pvBody");
-    if (requestedDevice === b.dataset.dev && body.classList.contains('dev-' + b.dataset.dev)) return;
+    if (requestedDevice === b.dataset.dev && body.classList.contains('dev-' + b.dataset.dev)) {
+      if (b.dataset.dev === 'mobile') {
+        landscape = !landscape;
+        applyPreviewLayout(syncOrientation, { maskPreview: true, device: true });
+      }
+      return;
+    }
     requestedDevice = b.dataset.dev;
     applyPreviewLayout(() => {
       $$(".pvdev").forEach((x) => {
@@ -2776,8 +2799,7 @@ function wireCenter() {
       body.classList.remove("dev-normal", "dev-desktop", "dev-tablet", "dev-mobile");
       body.classList.add("dev-" + b.dataset.dev);
       window.halo.previewTouch?.(previewUsesTouch(b.dataset.dev)); // 与最终模式同步，避免排队切换时保留旧触摸状态
-      const size = $("#pvDevSize");
-      if (size) size.textContent = devSize[b.dataset.dev] || "100%";
+      syncOrientation();
     }, { maskPreview: true, device: true });
   }));
 }
@@ -2850,7 +2872,7 @@ function resetPreview() {
   previewService = null; selectedPortKey = null; updatePortSelection();
   S.previewFile = null;
   $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
-  $('#pvBody').innerHTML = PV_EMPTY;
+  $('#pvBody').innerHTML = previewEmpty();
   $('#pvName').textContent = '未选择文件';
   setPreviewCollapsed(true);
 }
@@ -2907,7 +2929,6 @@ function findParentDirPath(nodes, target, parent = null) {
   return undefined;
 }
 const normSlashes = (p) => String(p || "").replace(/\\/g, "/");
-const PV_EMPTY = `<div class="pv-empty"><div class="pv-ghost"><div class="pv-gscreen"><div class="pv-empty-ico">◇</div><p>实时预览</p><p class="dim">点击文件查看</p></div><div class="pv-gneck"></div><div class="pv-gbase"></div></div></div>`;
 
 function renderTree() {
   const el = $("#wsTree");
@@ -3019,7 +3040,7 @@ function renderTree() {
         if (r?.error) { del.disabled = false; toast(r.error, "err"); return; }
         toast("已删除 ✓", "ok");
         const d = normSlashes(n.path);
-        if (S.previewFile && normSlashes(S.previewFile).startsWith(d)) { S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true; $("#pvName").textContent = "未选择文件"; $("#pvBody").innerHTML = PV_EMPTY; }
+        if (S.previewFile && normSlashes(S.previewFile).startsWith(d)) { S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true; $("#pvName").textContent = "未选择文件"; $("#pvBody").innerHTML = previewEmpty(); }
         if (S.selectedFile && normSlashes(S.selectedFile).startsWith(d)) S.selectedFile = null;
         if (S.creating?.parent && normSlashes(S.creating.parent).startsWith(d)) S.creating = null;
         await loadTree(true);
@@ -3092,6 +3113,14 @@ function mediaPreviewShell(media) {
   return shell;
 }
 
+function documentPreviewShell(content) {
+  const shell = document.createElement('div');
+  shell.className = 'dev-shell dev-document-shell';
+  shell.innerHTML = `${previewDeviceStatusbar()}<div class="dev-screen"></div>`;
+  shell.querySelector('.dev-screen').appendChild(content);
+  return shell;
+}
+
 async function setPreview(p, force, { reveal = true } = {}) {
   p = resolvePreviewPath(p, S.state?.cwd);
   if (!p) return;
@@ -3122,6 +3151,8 @@ async function setPreview(p, force, { reveal = true } = {}) {
       if (ext === 'pdf') {
         pages = r.data.pages;
         body.innerHTML = '<div class="document-preview"><div class="document-canvas"><img alt="PDF 页面" /></div><nav aria-label="文档翻页"><span class="document-kind">PDF</span><div class="document-pages"><button id="docPrev" title="上一页" aria-label="上一页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button><span>' + page + ' / ' + pages + '</span><button id="docNext" title="下一页" aria-label="下一页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button></div><span class="document-fit">适合宽度</span></nav></div>';
+        const documentView = body.querySelector('.document-preview');
+        body.replaceChildren(documentPreviewShell(documentView));
         body.querySelector('img').src = r.data.image;
         body.querySelector('#docPrev').disabled = page <= 1;
         body.querySelector('#docNext').disabled = page >= pages;
@@ -3137,7 +3168,7 @@ async function setPreview(p, force, { reveal = true } = {}) {
         };
         window.addEventListener('message', ready);
         frame.addEventListener('load', () => setTimeout(() => window.removeEventListener('message', ready), 10000), { once: true });
-        body.replaceChildren(frame);
+        body.replaceChildren(documentPreviewShell(frame));
       }
     };
     await load();
@@ -4087,21 +4118,76 @@ function openSettings(pane) {
   if ($("#setPane-login").classList.contains("active")) void loadDefaultModels();
   if ($('#setPane-pkgs').classList.contains('active')) {
     S.pkgLoaded = true;
-    loadInstalled(); // 已安装数据每次打开都刷新
+    if (S.pkgType !== 'builtin') loadInstalled(); // 内置列表不访问市场
     syncPkgTab();    // 市场数据按需加载
   }
 }
-/** 已安装 / 市场 两个分区的显隐切换（搜索框两边共用，分别过滤各自列表） */
+/** 内置 / 已安装 / 市场分区共用搜索框。 */
 function syncPkgTab() {
   const inst = S.pkgType === "installed";
+  const builtin = S.pkgType === 'builtin';
   const mSec = $("#pkgMarketSec"), iSec = $("#pkgInstalledSec");
   if (!mSec || !iSec) return;
-  mSec.hidden = inst;
+  $('#pkgBuiltinSec').hidden = !builtin;
+  mSec.hidden = inst || builtin;
   iSec.hidden = !inst;
   const pager = $("#pkgPager");
-  if (pager) pager.hidden = inst; // 翻页器只在市场 tab 显示
-  if (!inst) loadMarket(1);
+  if (pager) pager.hidden = inst || builtin; // 翻页器只在市场 tab 显示
+  if (builtin) void loadBuiltin();
+  else if (!inst) loadMarket(1);
   else renderInstalled(); // 用当前搜索词过滤已装列表
+}
+let builtinItems = null;
+let builtinRequest = 0;
+let builtinSaving = false;
+function renderBuiltin() {
+  const box = $('#pkgBuiltin');
+  if (!builtinItems) return;
+  const query = (S.pkgQuery || '').toLocaleLowerCase();
+  const items = builtinItems.filter(item => `${item.name} ${item.title} ${item.description}`.toLocaleLowerCase().includes(query));
+  box.innerHTML = items.length ? items.map(item => `<div class="pkg-row${item.enabled ? '' : ' off'}">
+    <div class="pkg-main"><span class="pkg-name">${esc(item.title)}</span><span class="pkg-type t-skill">内置技能</span>
+    <div class="pkg-installed-desc">${esc(item.description)}</div><span class="pkg-kind">${esc(item.name)}</span></div>
+    <div class="pkg-ops"><button type="button" class="ext-switch${item.enabled ? ' on' : ''}" role="switch" aria-checked="${!!item.enabled}" aria-label="${esc(item.title)}" title="${item.enabled ? '关闭' : '开启'} ${esc(item.title)}" data-builtin-name="${esc(item.name)}" ${builtinSaving ? 'disabled' : ''}></button></div>
+    </div>`).join('') : '<div class="pkg-empty">没有匹配的内置技能</div>';
+}
+async function onBuiltinClick(event) {
+  const button = event.target.closest('[data-builtin-name]');
+  if (!button || builtinSaving) return;
+  const item = builtinItems?.find(row => row.name === button.dataset.builtinName);
+  if (!item) return;
+  builtinSaving = true;
+  ++builtinRequest; // Older catalog reads must not overwrite a saved switch.
+  renderBuiltin();
+  try {
+    const result = await window.halo.pkgBuiltinToggle(item.name, !item.enabled);
+    if (!result?.ok || !Array.isArray(result.data)) throw Error(result?.error || '保存失败');
+    builtinItems = result.data;
+    showPending();
+  } catch (error) {
+    toast(`内置技能设置失败：${error?.message || '保存失败'}`, 'err');
+  } finally {
+    builtinSaving = false;
+    renderBuiltin();
+  }
+}
+async function loadBuiltin() {
+  if (builtinSaving) return;
+  const request = ++builtinRequest;
+  if (builtinItems) renderBuiltin();
+  else $('#pkgBuiltin').innerHTML = '<div class="pkg-loading" role="status">读取内置技能…</div>';
+  try {
+    const result = await window.halo.pkgBuiltin();
+    if (request !== builtinRequest) return;
+    if (!result?.ok || !Array.isArray(result.data)) throw Error(result?.error || '读取失败');
+    builtinItems = result.data;
+    renderBuiltin();
+  } catch {
+    if (request !== builtinRequest) return;
+    if (!builtinItems) {
+      $('#pkgBuiltin').innerHTML = '<div class="pkg-empty" role="status">无法读取内置技能，请重新打开此列表</div>';
+    }
+  }
 }
 let selectedModelProvider = "";
 async function loadDefaultModels() {
@@ -4298,7 +4384,6 @@ async function loadInstalled() {
   const r = await window.halo.pkgInstalled();
   const list = r?.data || [];
   S.pkgInstalledList = list;
-  $("#pkgInstalledCount").textContent = list.length ? list.length + " 个" : "";
   const upd = list.filter((p) => p.update).length;
   const updBtn = $("#pkgUpdateAll");
   updBtn.hidden = !upd;
@@ -4422,6 +4507,7 @@ async function preloadMarketPages(query, type, page, total, request) {
   }
 }
 async function loadMarket(page) {
+  if (['builtin', 'installed'].includes(S.pkgType)) return;
   if (S.pkgType === "installed") return; // 已安装 tab 不需要市场数据（切回时 syncPkgTab 会重新加载）
   if (page) S.pkgPage = page;
   S.pkgPage = S.pkgPage || 1;
@@ -4542,7 +4628,6 @@ async function onInstalledClick(e) {
       row.remove();
       [...$("#pkgInstalled").querySelectorAll(".pkg-row")].forEach((el, i) => { el.dataset.i = i; });
       const list = S.pkgInstalledList;
-      $("#pkgInstalledCount").textContent = list.length ? list.length + " 个" : "";
       if (!list.length) $("#pkgInstalled").innerHTML = `<div class="pkg-empty">尚未安装任何包</div>`;
       if (S.pkgLoaded) loadMarket(1);
     } else {

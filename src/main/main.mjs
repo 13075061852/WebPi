@@ -1,8 +1,10 @@
 import { importWorkspaceFiles } from "./workspace-import.mjs";
 import { searchPackageNames } from './package-name-search.mjs';
+import { listBuiltinSkills, setBuiltinSkillEnabled } from './builtin-skills.mjs';
 import { isTrustedUIURL } from "./trusted-ui-url.mjs";
 import electronUpdater from 'electron-updater';
 import { createAppUpdates } from './app-updates.mjs';
+import { terminalUpdateTasks } from './update-terminal-tasks.mjs';
 import { createReleaseHistory } from './release-history.mjs';
 import { createThemeImages } from './theme-images.mjs';
 import { createReleaseHistoryFetch } from './release-history-fetch.mjs';
@@ -108,6 +110,7 @@ let splashWin = null;
 let mainWin = null;
 let restoreMainMaximized = false;
 let quitting = false;
+let updateClosing = false;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -488,6 +491,7 @@ function bootstrap() {
           ? trustedSender(e) || trustedSender(e, true)
           : trustedSender(e, channel === 'halo:splash-done');
         if (!trusted) throw Error('不可信的界面请求');
+        if (updateClosing) throw Error('正在关闭应用并准备更新');
         return { ok: true, data: await fn(...args) };
       } catch (err) {
         return { ok: false, error: String(err?.message || err) };
@@ -534,12 +538,53 @@ function bootstrap() {
     return { items: parseListeningPorts(result.output), updated: Date.now() };
   });
   const updates = createAppUpdates({updater:electronUpdater.autoUpdater, app, getWindow:() => mainWin,
+    getTasks: async () => {
+      const terminalTasks = await terminalUpdateTasks(terminals.sessions);
+      return [
+      ...bridge.updateTasks(),
+      ...[...bridge.projectRuns.runs.values()].filter(run => !['error','stopped'].includes(run.status))
+        .map(run => ({kind:'service',name:`项目服务 · ${run.cwd}`})),
+      ...terminalTasks,
+      ...(environmentRepairBusy ? [{kind:'environment',name:'AI 环境修复'}] : []),
+      ...(environment.job ? [{kind:'environment',name:'环境安装（需完成当前安装步骤）'}] : []),
+      ];
+    },
+    confirmInstall: async tasks => {
+      const options = {type:'question',title:'更新前仍有任务运行',message:'选择何时安装更新',
+        detail:tasks.map(task => task.name).join('\n') + '\n\n等待期间可继续使用。常驻服务或终端命令需结束后才会更新；环境安装会先完成当前配置。',
+        buttons:['立即中断并更新','任务完成后更新','取消'],defaultId:1,cancelId:2,noLink:true};
+      const win = mainWin;
+      const result = win && !win.isDestroyed() ? await dialog.showMessageBox(win,options) : await dialog.showMessageBox(options);
+      return ['now','wait','cancel'][result.response] || 'cancel';
+    },
+    beforeInstall: async () => {
+      updateClosing = true; quitting = true;
+      const win = mainWin;
+      if (win && !win.isDestroyed()) {
+        store.set('windowState',{bounds:win.getNormalBounds(),maximized:win.isMaximized()});
+        win.hide();
+      }
+      startup.dispose(); clearTimeout(startupWatchdog); disarmTreeWatcher();
+      if (win && !win.isDestroyed()) win.destroy();
+      if (splashWin && !splashWin.isDestroyed()) splashWin.destroy();
+      const terminalCleanup = terminals.dispose(); environmentRepairCancelled = true;
+      await Promise.all([terminalCleanup, bridge.stopForUpdate(), environmentRepairBridge?.stopForUpdate()]);
+      await Promise.all([bridge.dispose(), environmentRepairBridge?.dispose(), environment.job]);
+      projectShutdownDone = true;
+    },
+    onInstallError: error => {
+      dialog.showErrorBox('更新未能开始', String(error?.message || error) + '\n将重新打开应用，下载的安装包会保留。');
+      app.relaunch(); app.quit();
+    },
     emit:state => emit('halo:app-update', state)});
   handle('halo:check-app-update', () => updates.check(true));
   handle('halo:app-update-state', () => updates.getState());
   const releaseHistory = createReleaseHistory({ fetchImpl:historyRequests.fetch, offline: process.env.PI_OFFLINE === '1' });
   handle('halo:release-history', force => releaseHistory(force === true));
   handle('halo:download-app-update', () => updates.download());
+  handle('halo:install-app-update', () => updates.install());
+  handle('halo:cancel-app-update-install', () => updates.cancelInstall());
+  app.once('before-quit', () => updates.dispose());
   if (app.isPackaged && process.env.PI_OFFLINE !== '1') {
     const firstCheck = setTimeout(() => void updates.check(), 3000);
     const nextChecks = setInterval(() => void updates.check(), 6 * 60 * 60 * 1000);
@@ -991,6 +1036,8 @@ function bootstrap() {
     if (!types.length) types.push(kws.length ? "extension" : "package");
     return types;
   };
+  handle("halo:pkg-builtin", () => listBuiltinSkills(store.data));
+  handle("halo:pkg-builtin-toggle", ({ name, enabled }) => setBuiltinSkillEnabled(store, name, enabled));
   handle("halo:pkg-search", async ({ query = "", from = 0, size = 20, type = "" } = {}) => {
     // Use the official catalog's search and category filters, then match names locally.
     const t = ["extension", "skill", "theme", "prompt"].includes(String(type)) ? String(type) : "";
@@ -1244,6 +1291,6 @@ function bootstrap() {
   });
 
   app.on("window-all-closed", () => {
-    app.quit();
+    if (!updateClosing) app.quit();
   });
 }

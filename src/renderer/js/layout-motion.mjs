@@ -124,7 +124,10 @@ export function createLayoutMotion({ setPaused }) {
           if (!pending.length) await revealPreview();
           continue;
         }
-        if (livePanes) {
+        // Empty lock screens have no guest chrome to morph. Capturing the whole
+        // workspace here scales its text textures while the pane widths change.
+        // Keep these panes live just like sidebar/preview folding instead.
+        if (livePanes || !document.querySelector('#pvBody .dev-shell')) {
           await slideLivePanes(changes);
           if (!pending.length) await revealPreview();
           continue;

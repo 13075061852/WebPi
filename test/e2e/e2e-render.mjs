@@ -572,6 +572,35 @@ if(loadingGeometry.dx>1 || loadingGeometry.dy>1 || loadingGeometry.height<200 ||
 }
 await screenshot('test/shot-market-loading.png');
 console.log('PASS marketplace loading centered with active spinner',loadingGeometry);
+await evalJS(`document.querySelector('#settingsModal').hidden=true;document.querySelector('#settingsModal').style.display='none';document.querySelector('#settingsModal').classList.remove('show')`);
+const rateHistory = await evalJS(`(async () => {
+  const start = 1700000000000;
+  const messages = [
+    {role:'user',timestamp:start,content:[{type:'text',text:'速率历史恢复'}]},
+    {role:'assistant',timestamp:start+1000,durationMs:4000,usage:{output:100},content:[{type:'text',text:'第一段说明'}]},
+    {role:'assistant',timestamp:start+5000,durationMs:1000,usage:{output:20},content:[{type:'text',text:'最终回复'}]},
+  ];
+  const view = {state:{isStreaming:false},messages,turnTimings:{[start]:{start,end:start+11000,outputRate:{tokens:120,ms:2000,estimated:false}}}};
+  await window.__haloRestoreView(view);
+  const exact = document.querySelector('.process-label').textContent;
+  await window.__haloRestoreView(JSON.parse(JSON.stringify(view)));
+  const reopened = document.querySelector('.process-label').textContent;
+  delete view.turnTimings[start];
+  await window.__haloRestoreView(view);
+  const legacy = document.querySelector('.process-label').textContent;
+  messages.forEach(message => delete message.durationMs);
+  await window.__haloRestoreView(view);
+  const unknown = document.querySelector('.process-label').textContent;
+  view.turnTimings[start] = {start,end:start+11000,outputRate:{tokens:120,ms:2000,estimated:false}};
+  await window.__haloRestoreView(view);
+  return {exact,reopened,legacy,unknown};
+})()`);
+if (!rateHistory.exact.includes('60.0 token/s') || rateHistory.exact !== rateHistory.reopened || !rateHistory.legacy.includes('约 24.0 token/s') || rateHistory.unknown.includes('token/s')) {
+  electron.kill(); throw Error('Historical token rate recovery: '+JSON.stringify(rateHistory));
+}
+console.log('PASS saved generation rate after reopening, legacy duration estimate and unknown timing', rateHistory);
+await sleep(250);
+await screenshot('test/shot-history-rate.png');
 ws.close();
 electron.kill();
 process.exit(0);

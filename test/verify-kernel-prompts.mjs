@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isolatePi } from './helpers/isolated-real-pi.mjs';
+import { listBuiltinSkills, setBuiltinSkillEnabled, filterBuiltinSkills } from '../src/main/builtin-skills.mjs';
 
 const isolated = isolatePi('kernel-prompts');
 const { fixture, agentDir, project } = isolated;
@@ -68,12 +69,19 @@ try {
   assert.equal((await bridge.start(project)).ready, true);
   const loader = bridge.services.resourceLoader;
   assert.ok(loader instanceof sdk.DefaultResourceLoader, 'Exercise the real production resource loader');
-  const skillNames = ['halo-word', 'halo-excel', 'halo-powerpoint', 'halo-pdf', 'halo-imagegen', 'halo-video-prompt'];
+  const skillNames = ['halo-word', 'halo-excel', 'halo-powerpoint', 'halo-pdf', 'halo-imagegen', 'halo-video-prompt', 'halo-ui-design'];
   for (const name of skillNames) {
     const skill = loader.getSkills().skills.find(item => item.name === name);
     assert.ok(skill, `Bundled ${name} must be discoverable`);
     assert.equal(path.resolve(skill.filePath), path.join(root, 'assets', 'skills', name, 'SKILL.md'));
     assert.ok(bridge.session.systemPrompt.includes(name), `Agent base prompt must expose ${name}`);
+  }
+  const bundled = listBuiltinSkills();
+  assert.deepEqual(bundled.map(item => item.name).sort(), [...skillNames].sort(), 'Built-in settings list must match shipped skills');
+  for (const item of bundled) {
+    assert.equal(item.description, loader.getSkills().skills.find(skill => skill.name === item.name).description);
+    assert.ok(item.title && item.type === 'skill');
+    assert.equal('filePath' in item, false, 'Catalog must not expose installation paths');
   }
   const contexts = loader.getAgentsFiles().agentsFiles;
   assert.ok(contexts.some(item => path.resolve(item.path) === path.join(agentDir, 'AGENTS.md') && item.content === userContext));
@@ -94,13 +102,41 @@ try {
   assert.equal(agents.find(item => item.name === 'inspector').prompt, role);
 
   const base = bridge.session.systemPrompt;
-  const hook = async () => buildSystemPrompt((await bridge.session.extensionRunner.emitBeforeAgentStart('检查提示词', undefined, {
+  const hook = async () => buildSystemPrompt((await bridge.session.extensionRunner.emitBeforeAgentStart({ messageType: 'user', prompt: '检查提示词' }, {
     cwd: project,
     forceSystemPrompt: base,
   })).systemPromptOptions);
   const injected = await hook();
   assert.ok(injected.startsWith(`${base}\n\n${policy}`), 'Delivery policy must be appended verbatim to the actual SDK base prompt');
   assert.equal(injected.split(policy).length - 1, 1, 'One turn must include exactly one delivery policy');
+  const customRun = buildSystemPrompt((await bridge.session.extensionRunner.emitBeforeAgentStart({
+    messageType: 'custom',
+    message: { role: 'custom', customType: 'fixture', content: '扩展触发任务', display: false, timestamp: Date.now() },
+  }, { cwd: project, forceSystemPrompt: base })).systemPromptOptions);
+  assert.ok(customRun.startsWith(`${base}\n\n${policy}`), 'Pi 1.3 custom-message runs must receive the shared policy too');
+  assert.equal(customRun.split(policy).length - 1, 1);
+  assert.ok(customRun.includes(role), 'Custom-message runs must keep the selected agent');
+  setBuiltinSkillEnabled(store, 'halo-ui-design', false);
+  setBuiltinSkillEnabled(store, 'halo-word', false);
+  assert.deepEqual(new HaloStore(path.join(fixture, 'halo.json')).data.disabledBuiltinSkills, ['halo-ui-design', 'halo-word'], 'Switches must survive a fresh settings read');
+  assert.throws(() => setBuiltinSkillEnabled(store, '../not-a-skill', false));
+  assert.throws(() => setBuiltinSkillEnabled(store, 'halo-word', 'false'));
+  // A user/project skill with the same name is not a bundled skill.
+  const externalSkill = { name: 'halo-word', filePath: path.join(project, '.pi', 'skills', 'halo-word', 'SKILL.md') };
+  assert.deepEqual(filterBuiltinSkills({ skills: [externalSkill] }, store.data).skills, [externalSkill]);
+  await bridge.session.reload();
+  assert.ok(!loader.getSkills().skills.some(skill => ['halo-ui-design', 'halo-word'].includes(skill.name)));
+  assert.ok(!bridge.session.systemPrompt.includes('<name>halo-ui-design</name>'));
+  const disabledPrompt = buildSystemPrompt((await bridge.session.extensionRunner.emitBeforeAgentStart({ messageType: 'user', prompt: '检查关闭技能' }, {
+    cwd: project, forceSystemPrompt: bridge.session.systemPrompt,
+  })).systemPromptOptions);
+  assert.ok(!disabledPrompt.includes('先读取内置 `halo-ui-design`'), 'Disabled skills must not be forced by shared policy');
+  assert.ok(loader.getSkills().skills.some(skill => skill.name === 'halo-excel'));
+  setBuiltinSkillEnabled(store, 'halo-ui-design', true);
+  setBuiltinSkillEnabled(store, 'halo-word', true);
+  await bridge.session.reload();
+  assert.ok(loader.getSkills().skills.some(skill => skill.name === 'halo-ui-design'));
+  assert.ok(loader.getSkills().skills.some(skill => skill.name === 'halo-word'));
   assert.ok(injected.endsWith(`# 当前智能体设定：inspector\n\n${role}`));
   assert.ok(!injected.includes('USER_ROLE_SENTINEL'), 'Project agent must override the same user agent');
   assert.match(injected, /# 多服务器协作/);
@@ -128,7 +164,7 @@ try {
   assert.deepEqual(loader.getAppendSystemPrompt(), [projectAppend]);
   assert.ok(bridge.session.systemPrompt.startsWith(projectSystem.trim()));
   assert.ok(bridge.session.systemPrompt.includes(projectAppend.trim()));
-  const customInjected = buildSystemPrompt((await bridge.session.extensionRunner.emitBeforeAgentStart('检查自定义系统提示', undefined, {
+  const customInjected = buildSystemPrompt((await bridge.session.extensionRunner.emitBeforeAgentStart({ messageType: 'user', prompt: '检查自定义系统提示' }, {
     cwd: project,
     forceSystemPrompt: bridge.session.systemPrompt,
   })).systemPromptOptions);

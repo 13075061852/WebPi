@@ -35,7 +35,7 @@ try {
     assert.deepEqual(events.at(-1).steeringAttachments, []);
     assert.deepEqual(events.at(-1).followUpAttachments, [['报告.png']]);
 
-    // SDK 1.0.2 input handlers can consume input without emitting queue_update.
+    // SDK input handlers can consume input without emitting queue_update.
     // Exercise both queues while preserving an earlier item and concurrent calls.
     for (const [method, kind, attachmentKey] of [
       ['steer', 'steering', 'steeringAttachments'],

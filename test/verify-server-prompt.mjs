@@ -19,7 +19,7 @@ try {
   ] };
   await bridge.start(project);
   const promptFor = async (session, prompt = '检查范围', base = 'base') => buildSystemPrompt(
-    (await session.extensionRunner.emitBeforeAgentStart(prompt, undefined, {
+    (await session.extensionRunner.emitBeforeAgentStart({ messageType: 'user', prompt }, {
       cwd: session.sessionManager.getCwd(),
       forceSystemPrompt: base,
     })).systemPromptOptions,

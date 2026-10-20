@@ -47,7 +47,7 @@ window.initTerminals = (getCwd, toast, openPreview) => {
       const close = document.createElement("button"); close.textContent = "×";
       close.title = "关闭 " + r.name + " 并结束进程"; close.setAttribute("aria-label", close.title);
       close.onclick = () => {
-        send("ptyKill", r.id); r.term.dispose(); r.panel.remove(); records.delete(r.id); render();
+        send("ptyKill", r.id); r.history.dispose(); r.term.dispose(); r.panel.remove(); records.delete(r.id); render();
       };
       wrap.append(tab, close); $("termTabs").append(wrap);
     }
@@ -64,6 +64,7 @@ window.initTerminals = (getCwd, toast, openPreview) => {
     if (current().length >= 8) return toast("每个项目最多开启 8 个终端", "err");
     const { createTerminalLinkProvider } = await import('./terminal-links.mjs');
     const { createTerminalKeyHandler } = await import('./terminal-keys.mjs');
+    const { preserveTerminalHistory } = await import('./terminal-history.mjs');
     const openLink = (event, url) => {
       event.preventDefault();
       void Promise.resolve().then(() => openPreview(url)).catch(() => toast("无法打开预览", "err"));
@@ -78,12 +79,13 @@ window.initTerminals = (getCwd, toast, openPreview) => {
     const term = new window.Terminal({
       fontFamily: 'Cascadia Mono, Consolas, "Microsoft YaHei", monospace',
       fontSize: 13, lineHeight: 1.3, cursorStyle: "bar", cursorBlink: true,
-      scrollback: 5000, theme: theme(), allowTransparency: true, allowProposedApi: false,
+      scrollback: 50000, theme: theme(), allowTransparency: true, allowProposedApi: false,
       linkHandler: { activate: openLink },
     });
+    const history = preserveTerminalHistory(term);
     term.registerLinkProvider(createTerminalLinkProvider(term, openLink));
     const fitAddon = new window.FitAddon.FitAddon(); term.loadAddon(fitAddon);
-    const r = { id, project, cwd, name, term, panel, fit: fitAddon, exited: false };
+    const r = { id, project, cwd, name, term, history, panel, fit: fitAddon, exited: false };
     records.set(id, r); activeByProject.set(project, id);
     term.open(mount);
     panel.addEventListener("mousedown", () => {
@@ -101,7 +103,7 @@ window.initTerminals = (getCwd, toast, openPreview) => {
     r.cols = term.cols; r.rows = term.rows;
     const result = await window.halo.ptyStart({ id, cols: r.cols, rows: r.rows });
     if (!result?.ok) {
-      r.exited = true; term.write("\r\n启动失败：" + (result?.error || "未知错误")); render();
+      r.exited = true; history.write("\r\n启动失败：" + (result?.error || "未知错误")); render();
     } else {
       if (result.data.windowsPty) term.options.windowsPty = result.data.windowsPty;
       r.started = true;
@@ -113,12 +115,12 @@ window.initTerminals = (getCwd, toast, openPreview) => {
   }
   window.halo.onPtyOut(({ id, data }) => {
     const r = records.get(id);
-    if (r) r.term.write(data, () => send("ptyAck", { id, size: data.length }));
+    if (r) r.history.write(data, () => send("ptyAck", { id, size: data.length }));
     else send("ptyAck", { id, size: data.length });
   });
   window.halo.onPtyExit(({ id, exitCode }) => {
     const r = records.get(id); if (!r) return;
-    r.exited = true; r.term.write("\r\n\x1b[90m进程已退出 · " + exitCode + "\x1b[0m\r\n"); render();
+    r.exited = true; r.history.write("\r\n\x1b[90m进程已退出 · " + exitCode + "\x1b[0m\r\n"); render();
   });
   $("termAdd").onclick = () => create().catch(e => toast(e.message, "err"));
   $("termSplit").onclick = () => { tiled = !tiled; render(); };

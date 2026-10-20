@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isolatePi } from './helpers/isolated-pi.mjs';
+import { OutputRate } from '../src/shared/output-rate.mjs';
 
 const fixture = isolatePi('halo-session-integrity-');
 const { PiBridge, HaloStore } = await import('../src/main/pi-bridge.mjs');
@@ -22,6 +23,35 @@ try {
   await bridge.start(a);
   assert.equal(bridge.publicState().serverId, null, 'Local workspace is distinguishable from server workspaces');
   const fileA = record('A');
+  const originalNow = Date.now;
+  const user = bridge.session.messages.at(-1);
+  try {
+    let now = originalNow();
+    Date.now = () => now;
+    const emit = event => bridge.session.emit(event);
+    emit({ type: 'agent_start' });
+    emit({ type: 'message_start', message: user });
+    emit({ type: 'message_start', message: { role: 'assistant' } });
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: '分析' } });
+    now += 1000;
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '结论' } });
+    emit({ type: 'message_end', message: { role: 'assistant', usage: { output: 100 } } });
+    now += 9000; // Tool execution is excluded from generation rate.
+    emit({ type: 'message_start', message: { role: 'assistant' } });
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '最终' } });
+    now += 1000;
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', delta: '{}' } });
+    emit({ type: 'message_end', message: { role: 'assistant', usage: { output: 20 } } });
+    emit({ type: 'agent_settled' });
+    const saved = bridge.snapshotView().turnTimings[String(user.timestamp)];
+    assert.equal(new OutputRate(saved.outputRate).average(), '60.0 token/s');
+    assert.equal(saved.end - saved.start, 11000);
+    const restarted = new HaloStore(store.file);
+    assert.deepEqual(restarted.data.turnTimings[bridge.session.sessionId][String(user.timestamp)], saved);
+    emit({ type: 'message_start', message: { role: 'user', timestamp: user.timestamp + 1 } });
+    assert.deepEqual(bridge.snapshotView().turnTimings[String(user.timestamp)], saved, 'Next turn cannot overwrite the earlier rate');
+  } finally { Date.now = originalNow; }
+  bridge._recomputeUsageFromSession(); // Synthetic rate events above are not persisted model messages.
   const message = { role: 'assistant', content: [{ type: 'text', text: 'done' }],
     usage: { input: 100, output: 20, cacheRead: 10, cacheWrite: 5, cost: { total: 0.1 } } };
   bridge.session.sessionManager.appendMessage(message);

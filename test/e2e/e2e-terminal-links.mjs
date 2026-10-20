@@ -19,9 +19,9 @@ app.whenReady().then(async () => {
       const {createTerminalLinkProvider}=await import(${JSON.stringify(uri('src/renderer/js/terminal-links.mjs'))});
       const term=new Terminal({cols:70,rows:10});term.open(document.querySelector('#terminal'));
       const {createTerminalKeyHandler}=await import(${JSON.stringify(uri('src/renderer/js/terminal-keys.mjs'))});
-      window.testTerminal=term;window.copied=[];window.terminalInput=[];
+      window.testTerminal=term;window.copied=[];window.terminalInput=[];window.pasteText='';window.pasteReads=0;
       term.onData(data=>window.terminalInput.push(data));
-      term.attachCustomKeyEventHandler(createTerminalKeyHandler(term,()=>{}, {writeText:async text=>window.copied.push(text),readText:async()=>''}));
+      term.attachCustomKeyEventHandler(createTerminalKeyHandler(term,()=>{}, {writeText:async text=>window.copied.push(text),readText:async()=>{window.pasteReads++;return window.pasteText}}));
       window.opened=[];
       const provider=createTerminalLinkProvider(term,(event,url)=>{event.preventDefault();window.opened.push(url)});
       term.registerLinkProvider(provider);
@@ -52,6 +52,20 @@ app.whenReady().then(async () => {
     await new Promise(resolve=>setTimeout(resolve,100));
     assert.deepEqual(await win.webContents.executeJavaScript('window.terminalInput'),['\x03'],'Ctrl+C without selection still interrupts');
     console.log('PASS selected Ctrl+C copies without interrupt; unselected Ctrl+C preserves interrupt');
+    const paste = async (modifiers, text, expected) => {
+      await win.webContents.executeJavaScript(`window.terminalInput=[];window.pasteReads=0;window.pasteText=${JSON.stringify(text)};window.testTerminal.focus()`);
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'V',modifiers});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'V',modifiers});
+      await new Promise(resolve=>setTimeout(resolve,100));
+      assert.deepEqual(await win.webContents.executeJavaScript('window.terminalInput'),expected,'Paste inserts clipboard text once without sending Ctrl+V (0x16)');
+      assert.equal(await win.webContents.executeJavaScript('window.pasteReads'),1);
+    };
+    await paste(['control'],'echo 中文粘贴',['echo 中文粘贴']);
+    await paste(['control','shift'],'one\ntwo',['one\rtwo']);
+    await win.webContents.executeJavaScript("new Promise(resolve=>window.testTerminal.write('\\x1b[?2004h',resolve))");
+    await paste(['control'],'first\nsecond',['\x1b[200~first\rsecond\x1b[201~']);
+    await paste(['control'],'',[]);
+    console.log('PASS real Ctrl+V / Ctrl+Shift+V: Chinese, multiline, bracketed paste and empty clipboard; no literal ^V or duplicate input');
     console.log('PASS actual terminal URL click, Chinese cell offsets, query strings, trailing punctuation and wrapped URLs');
   } finally { win.destroy(); app.quit(); }
 }).catch(error=>{console.error(error);app.exit(1);});

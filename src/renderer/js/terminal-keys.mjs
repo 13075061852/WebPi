@@ -6,9 +6,9 @@ export function createTerminalKeyHandler(term, toast, clipboard = navigator.clip
       clipboard.writeText(term.getSelection()).catch(() => toast('复制失败', 'err'));
       return false;
     }
-    if (event.ctrlKey && event.shiftKey && event.code === 'KeyV') {
+    if (event.ctrlKey && !event.altKey && !event.metaKey && event.code === 'KeyV') {
       event.preventDefault();
-      clipboard.readText().then(text => term.paste(text)).catch(() => toast('粘贴失败', 'err'));
+      clipboard.readText().then(text => { if (text) term.paste(text); }).catch(() => toast('粘贴失败', 'err'));
       return false;
     }
     return true;

@@ -9,6 +9,8 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
+import PDFDocument from 'pdfkit';
+import { Document, Packer, Paragraph } from 'docx';
 
 const root = process.cwd();
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-preview-normal-'));
@@ -25,6 +27,11 @@ const html = `<!doctype html><meta charset="utf-8"><title>Normal preview fixture
 addEventListener('message',event=>{if(event.data?.type!=='normal-fixture-probe')return;if(typeof event.data.draft==='string')document.querySelector('#draft').value=event.data.draft;parent.postMessage({type:'normal-fixture-state',state:${guestSnapshot}},'*')});</script>`;
 fs.writeFileSync(path.join(workspace, 'artifact.html'), html);
 fs.writeFileSync(path.join(workspace, 'second.html'), html);
+const pdf = new PDFDocument();
+const pdfOutput = fs.createWriteStream(path.join(workspace, 'report.pdf')); pdf.pipe(pdfOutput);
+pdf.text('Device preview page one'); pdf.addPage().text('Device preview page two'); pdf.end();
+await once(pdfOutput, 'finish');
+fs.writeFileSync(path.join(workspace, 'report.docx'), await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('Document shell fixture')] }] })));
 fs.writeFileSync(path.join(workspace, 'image.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240"><rect width="320" height="240" fill="#608dd9"/><circle cx="160" cy="120" r="60" fill="#d5e9ff"/></svg>');
 const bootstrap = path.join(fixture, 'bootstrap.cjs');
 fs.writeFileSync(bootstrap, `
@@ -53,7 +60,7 @@ for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { o
 child.on('exit', code => { exitCode = code; });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const pending = new Map(), exceptions = [], passed = [], measurements = [];
-const resultDir = path.join(root, 'test/results/preview-normal'); fs.mkdirSync(resultDir, { recursive: true });
+const resultDir = process.env.HALO_PREVIEW_RESULTS || path.join(root, 'test/results/preview-normal'); fs.mkdirSync(resultDir, { recursive: true });
 async function until(check, label, timeout = 18000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
@@ -77,6 +84,42 @@ async function evaluate(expression, contextId) {
 }
 const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
 const pass = label => { passed.push(label); console.log('PASS', label); };
+async function rotation(kind) {
+  await mode('mobile');
+  const initial = await guestState(kind);
+  for (const width of [1600, 1120]) {
+    await command('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    await until(() => evaluate(`window.innerWidth === ${width}`), 'resized viewport');
+    await sleep(100);
+    await settled();
+    await click('.pvdev[data-dev="mobile"]'); await settled();
+    const geometry = await evaluate(`(()=>{const b=document.querySelector('#pvBody'),s=b.querySelector('.dev-shell').getBoundingClientRect(),g=b.querySelector('${kind}').getBoundingClientRect();return {landscape:b.classList.contains('dev-landscape'),width:g.width,height:g.height,shellWidth:s.width,shellHeight:s.height,pressed:document.querySelector('.pvdev[data-dev="mobile"]').getAttribute('aria-pressed')}})()`);
+    assert.equal(geometry.landscape, true); assert.equal(geometry.pressed, 'true');
+    assert.ok(geometry.width > geometry.height * 1.8, JSON.stringify(geometry));
+    const current = await guestState(kind);
+    assert.equal(current.id, initial.id); assert.equal(current.draft, initial.draft);
+    await assertTouch(kind, true); await assertFooter();
+    const alignment = await evaluate(`(()=>{const f=document.querySelector('.pv-devices').getBoundingClientRect(),buttons=[...document.querySelectorAll('.pvdev')].map(n=>n.getBoundingClientRect());return {group:(Math.min(...buttons.map(r=>r.left))+Math.max(...buttons.map(r=>r.right)))/2,footer:(f.left+f.right)/2,count:document.querySelectorAll('.pv-devices button').length,icons:document.querySelectorAll('.pvdev[data-dev="mobile"] svg').length}})()`);
+    assert.ok(Math.abs(alignment.group - alignment.footer) < 1, JSON.stringify(alignment));
+    assert.equal(alignment.count, 4); assert.equal(alignment.icons, 1);
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".pv-phone-icon")).transform'), 'matrix(0, -1, 1, 0, 0, 0)');
+    await screenshot(`landscape-${kind}-${width}`);
+    await mode('desktop');
+    assert.equal(await evaluate('document.querySelector(".pvdev[data-dev=mobile]").dataset.orientation'), 'landscape');
+    await mode('mobile');
+    assert.equal(await evaluate('document.querySelector("#pvBody").classList.contains("dev-landscape")'), true);
+    await click('.pvdev[data-dev="mobile"]'); await settled();
+    assert.equal(await evaluate('document.querySelector("#pvBody").classList.contains("dev-landscape")'), false);
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".pv-phone-icon")).transform'), 'none');
+    if (width === 1120) await screenshot(`portrait-${kind}-${width}`);
+  }
+  // Rapid toggles must settle on the last request without reloading the guest.
+  await evaluate(`document.querySelector('.pvdev[data-dev="mobile"]').click();document.querySelector('.pvdev[data-dev="mobile"]').click()`); await settled();
+  assert.equal(await evaluate('document.querySelector("#pvBody").classList.contains("dev-landscape")'), false);
+  assert.equal((await guestState(kind)).id, initial.id);
+  await mode('normal');
+  pass(`${kind} rotates landscape/portrait at wide and narrow sizes, keeps input and page, preserves orientation across modes`);
+}
 const settled = () => until(() => evaluate('!document.documentElement.classList.contains("layout-motion") && !document.querySelector(".device-switch-mask,.device-morph-overlay,.device-morph-hidden")'), 'layout settled');
 async function mode(device) {
   await click(`.pvdev[data-dev="${device}"]`); await settled();
@@ -111,7 +154,7 @@ async function assertFooter() {
   for (const item of footer.items) { assert.ok(item.width > 0 && item.height > 0); assert.ok(item.left >= footer.footer.left && item.right <= footer.footer.right + 1, `${item.name} fits footer`); }
   for (let i = 0; i < footer.items.length; i++) for (let j = i + 1; j < footer.items.length; j++) {
     const a = footer.items[i], b = footer.items[j];
-    assert.ok(a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1, `${a.name} overlaps ${b.name}`);
+    assert.ok(a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1, `${a.name} overlaps ${b.name}: ${JSON.stringify(footer)}`);
   }
   measurements.push({ footer }); return footer.center;
 }
@@ -134,18 +177,68 @@ try {
   await until(() => evaluate('!!window.__haloDispatch && window.halo.startupState().then(r=>r.data.ready)'), 'startup');
   assert.deepEqual((await evaluate('window.halo.githubStatus()'))?.data?.accounts, [], 'No personal accounts');
   assert.equal(await evaluate('document.querySelector(".pvdev.active").dataset.dev'), 'desktop');
+  if (!process.argv.includes('--documents-only')) {
   await click('#btnPreviewToggle'); await settled(); await mode('normal');
   const empty = await evaluate(`(()=>{const s=getComputedStyle(document.querySelector('.pv-gscreen'));return {border:parseFloat(s.borderTopWidth),radius:parseFloat(s.borderRadius),shadow:s.boxShadow,stands:[...document.querySelectorAll('.pv-gneck,.pv-gbase')].map(n=>getComputedStyle(n).display)}})()`);
   assert.equal(empty.border, 0); assert.equal(empty.radius, 0); assert.equal(empty.shadow, 'none'); assert.ok(empty.stands.every(display => display === 'none'));
+  const assertEmptyFills = async () => {
+    const size = await evaluate(`(()=>{const rect=n=>{const r=n.getBoundingClientRect();return [r.x,r.y,r.width,r.height]};return {body:rect(document.querySelector('#pvBody')),screen:rect(document.querySelector('.pv-gscreen'))}})()`);
+    size.body.forEach((value,i)=>assert.ok(Math.abs(value-size.screen[i])<1,JSON.stringify(size)));
+  };
+  await assertEmptyFills();
   await assertFooter();
-  await command('Emulation.setDeviceMetricsOverride', { width: 1042, height: 900, deviceScaleFactor: 1, mobile: false });
+  // Keep the supported window width: below 1120px the app intentionally folds
+  // preview. A wider sidebar gives the same 314px preview without that race.
+  await evaluate(`document.querySelector('#layout').style.setProperty('--sidebar-size','326px')`);
+  await sleep(120); await settled();
   const centerWidth = await assertFooter(); assert.ok(centerWidth <= 320 && centerWidth >= 300, `Narrow preview fixture expected around 314px, got ${centerWidth}`);
+  await assertEmptyFills();
   await screenshot('normal-empty'); pass('Desktop remains default; normal empty state and 314px footer have no device outline or overlap');
+  await evaluate(`document.querySelector('#layout').style.removeProperty('--sidebar-size')`);
+  await evaluate(`(()=>{
+    window.__emptySnapshotCount=0;window.__emptyLiveFrames=[];
+    for(const host of [document,document.querySelector('#layout')])if(host.startViewTransition){const native=host.startViewTransition.bind(host);host.startViewTransition=(...args)=>{window.__emptySnapshotCount++;return native(...args)}}
+    const layout=document.querySelector('#layout'),native=layout.animate.bind(layout);
+    layout.animate=(...args)=>{const a=native(...args);const sample=()=>{if(a.playState!=='running')return;__emptyLiveFrames.push([...document.querySelectorAll('#sidebar,#center,#chat')].map(n=>({height:n.getBoundingClientRect().height,untransformed:new DOMMatrix(getComputedStyle(n).transform).isIdentity})));requestAnimationFrame(sample)};requestAnimationFrame(sample);return a};
+  })()`);
+
+  for (const [width,height] of [[1600,900],[1120,900],[1120,560]]) {
+    await command('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    await sleep(120); await settled();
+    for (const device of ['desktop','tablet','mobile']) {
+      await mode(device);
+      if (device==='mobile' && await evaluate('document.querySelector("#pvBody").classList.contains("dev-landscape")')) { await click('.pvdev[data-dev="mobile"]'); await settled(); }
+      const lock = await evaluate(`(()=>{const b=document.querySelector('#pvBody').getBoundingClientRect(),s=document.querySelector('.pv-gscreen').getBoundingClientRect(),c=document.querySelector('.pv-lock-clock').getBoundingClientRect(),h=document.querySelector('.pv-lock-hint').getBoundingClientRect();return {time:document.querySelector('.pv-lock-time').textContent,date:document.querySelector('.pv-lock-date').textContent,width:s.width,height:s.height,inside:s.left>=b.left&&s.right<=b.right&&s.top>=b.top&&s.bottom<=b.bottom,copyFits:c.bottom<h.top&&c.top>=s.top}})()`);
+      assert.match(lock.time,/^\d{2}:\d{2}$/); assert.ok(lock.date.includes('星期'));
+      assert.ok(lock.inside && lock.copyFits && lock.width>80 && lock.height>80, JSON.stringify({width,height,device,lock}));
+      await screenshot(`lock-${device}-${width}-${height}`);
+    }
+    await click('.pvdev[data-dev="mobile"]'); await settled();
+    const landscapeLock = await evaluate(`(()=>{const s=document.querySelector('.pv-gscreen').getBoundingClientRect(),c=document.querySelector('.pv-lock-clock').getBoundingClientRect(),h=document.querySelector('.pv-lock-hint').getBoundingClientRect();return {width:s.width,height:s.height,fits:c.bottom<h.top}})()`);
+    assert.ok(landscapeLock.width>landscapeLock.height*1.8 && landscapeLock.fits, JSON.stringify(landscapeLock));
+    await screenshot(`lock-landscape-${width}-${height}`);
+    await click('.pvdev[data-dev="mobile"]'); await settled();
+  }
+  await command('Emulation.setDeviceMetricsOverride', { width:1120,height:900,deviceScaleFactor:1,mobile:false });
+  await sleep(120); await mode('normal');
+  await assertEmptyFills();
+  const emptyMotion = await evaluate('({snapshots:__emptySnapshotCount,frames:__emptyLiveFrames})');
+  assert.equal(emptyMotion.snapshots,0,'Empty device switches must never snapshot/scale workspace text');
+  assert.ok(emptyMotion.frames.length>8,'Empty device choices retain real intermediate animation frames');
+  assert.ok(emptyMotion.frames.every(frame=>frame.every(pane=>pane.untransformed)),'Live pane text must remain untransformed');
+  pass('Empty device lock screens show local time/date and fit desktop, tablet, phone portrait/landscape at wide, narrow and short viewports');
+  await evaluate(`document.documentElement.dataset.theme='light'`);
+  for (const device of ['desktop','tablet','mobile']) {
+    await mode(device); await screenshot(`lock-${device}-light`);
+    assert.ok(await evaluate(`(()=>{const s=document.querySelector('.pv-gscreen').getBoundingClientRect();return s.width>80&&s.height>80&&getComputedStyle(document.querySelector('.pv-lock-time')).color==='rgb(255, 255, 255)'})()`));
+  }
+  await evaluate(`document.documentElement.dataset.theme='dark'`); await mode('normal');
 
   await treeFile('artifact.html');
   await until(async () => (await guestState('iframe'))?.id, 'HTML fixture ready');
   await guestState('iframe', 'retained input');
   const initialHTML = await guestState('iframe');
+  await rotation('iframe');
   await assertTouch('iframe', false); await assertNormal('iframe');
   for (const device of ['desktop', 'tablet', 'mobile']) {
     await mode(device); await assertTouch('iframe', device !== 'desktop');
@@ -160,7 +253,7 @@ try {
   await mode('mobile');
   await evaluate(`document.querySelector('.pvdev[data-dev="normal"]').click();[...document.querySelectorAll('#wsTree .fname')].find(item=>item.textContent==='second.html').closest('.trow').click()`);
   await settled(); await until(async () => (await guestState('iframe'))?.id, 'new HTML during mode change');
-  await assertTouch('iframe', false); await assertNormal('iframe'); pass('Opening a new HTML preview during mobile-to-normal switching finishes with touch disabled');
+  await assertTouch('iframe', false); await settled(); await assertNormal('iframe'); pass('Opening a new HTML preview during mobile-to-normal switching finishes with touch disabled');
 
   await evaluate(`(()=>{const d=window.__haloDispatch,text=${JSON.stringify(`[Local fixture](${websiteURL})`)};d({type:'agent_start'});d({type:'message_start',message:{role:'assistant',content:[]}});d({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:text}});d({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:'endTurn'}});d({type:'agent_end',messages:[],willRetry:false});d({type:'agent_settled'});})()`);
   await until(() => evaluate(`[...document.querySelectorAll('.md a')].some(link=>link.href===${JSON.stringify(websiteURL)})`), 'website link');
@@ -168,6 +261,7 @@ try {
   await until(() => evaluate(`document.querySelector('#pvBody webview')?.getTitle()==='Normal preview fixture'`), 'webview ready');
   await guestState('webview', 'retained website input');
   const initialWeb = await guestState('webview'), initialLoads = websiteLoads;
+  await rotation('webview');
   await assertTouch('webview', false); await assertNormal('webview', 38);
   for (const device of ['desktop', 'tablet', 'mobile']) {
     await mode(device); await assertTouch('webview', device !== 'desktop');
@@ -187,6 +281,30 @@ try {
   fs.writeFileSync(path.join(workspace, 'video.webm'), Buffer.from(video, 'base64')); await click('#treeRefresh');
   await treeFile('video.webm'); await until(() => evaluate('document.querySelector("#pvBody video")?.videoWidth===160'), 'video metadata');
   await assertNormal('.pv-video'); await screenshot('normal-video'); pass('Playable video preview has no device decoration');
+  } else {
+    await click('#btnPreviewToggle'); await settled(); await mode('normal');
+    await evaluate(`document.documentElement.dataset.theme='light';document.documentElement.dataset.surface='glass'`);
+    await until(() => evaluate('document.querySelector(".pv-devices").classList.contains("glass-surface")'), 'glass document fixture');
+  }
+
+  for (const name of ['report.pdf','report.docx']) {
+    await treeFile(name);
+    const isPDF=name.endsWith('.pdf');
+    await until(()=>evaluate(isPDF ? 'document.querySelector(".document-canvas img")?.naturalWidth>0' : 'document.querySelector(".office-frame")?.contentDocument?.body.textContent.includes("Document shell fixture")'),'document rendered');
+    if(!isPDF) await evaluate('window.__documentFrame=document.querySelector(".office-frame")');
+    for(const device of ['desktop','tablet','mobile','normal']) {
+      await mode(device);
+      const geometry=await evaluate(`(()=>{const shell=document.querySelector('.dev-document-shell'),screen=shell.querySelector('.dev-screen').getBoundingClientRect(),content=shell.querySelector('${isPDF?'.document-preview':'.office-frame'}').getBoundingClientRect(),nav=shell.querySelector('nav')?.getBoundingClientRect();return {shell:!!shell,width:screen.width,height:screen.height,inside:Math.abs(content.left-screen.left)<1&&Math.abs(content.top-screen.top)<1&&Math.abs(content.right-screen.right)<1&&Math.abs(content.bottom-screen.bottom)<1,nav:!nav||nav.bottom<=screen.bottom+1,same:${isPDF?'true':'window.__documentFrame===document.querySelector(".office-frame")'}}})()`);
+      assert.ok(geometry.shell&&geometry.inside&&geometry.nav&&geometry.same&&geometry.width>50&&geometry.height>50,JSON.stringify({name,device,geometry}));
+      await screenshot(`document-${name}-${device}`);
+    }
+    if(isPDF) {
+      const first=await evaluate('document.querySelector(".document-canvas img").src');
+      await click('#docNext');
+      await until(()=>evaluate(`document.querySelector('.document-pages span')?.textContent==='2 / 2'&&document.querySelector('.document-canvas img')?.src!==${JSON.stringify(first)}&&document.querySelector('.document-canvas img')?.naturalWidth>0`),'PDF second page');
+    }
+  }
+  pass('Real PDF and DOCX retain device shells, unclipped content/footer, PDF pagination and the same Word iframe across modes');
   assert.deepEqual(exceptions, [], 'No renderer exceptions');
   fs.writeFileSync(path.join(resultDir, 'report.json'), JSON.stringify({ fixture, passed, websiteLoads, measurements }, null, 2));
   console.log(`PASS ordinary preview: ${passed.length} checks; ${resultDir}`);

@@ -57,7 +57,8 @@ try {
     return response.result;
   }
   async function evaluate(expression) {
-    const response = await command('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    const response = await command('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
+      .catch(error => { throw Error(`${error.message}: ${expression.slice(0, 500)}`); });
     assert.equal(response.exceptionDetails, undefined, JSON.stringify(response));
     return response.result?.value;
   }
@@ -73,21 +74,62 @@ try {
     const result = await command('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(`test/results/environment-${name}${packaged ? '-packaged' : ''}.png`, Buffer.from(result.data, 'base64'));
   }
+  // Built-in entries come from actual packaged assets through the real IPC.
   await until('window.halo && document.querySelectorAll(".environment-tool").length === 3');
+  const builtin = await evaluate('window.halo.pkgBuiltin()');
+  assert.equal(builtin.ok, true);
+  assert.ok(builtin.data.some(item => item.name === 'halo-ui-design'));
+  await evaluate(`document.querySelector('#pkgTabs [data-t="builtin"]').click();document.querySelector('#btnSettings').click()`);
+  await until(`document.querySelectorAll('#pkgBuiltin .pkg-row').length === ${builtin.data.length}`);
+  assert.equal(await evaluate(`document.querySelector('#pkgPager').hidden && document.querySelector('#pkgMarketSec').hidden && document.querySelector('#pkgInstalledSec').hidden`), true);
+  assert.equal(await evaluate(`document.querySelectorAll('#pkgBuiltin [role="switch"]').length`), builtin.data.length);
+  assert.equal(await evaluate(`document.querySelector('#pkgBuiltin [data-act="remove"], #pkgBuiltin [data-act="install"]') === null`), true);
+  await evaluate(`document.querySelector('#pkgBuiltin [data-builtin-name="halo-ui-design"]').click()`);
+  await until(`document.querySelector('#pkgBuiltin [data-builtin-name="halo-ui-design"]').getAttribute('aria-checked') === 'false' && !document.querySelector('#pkgBuiltin [data-builtin-name="halo-ui-design"]').disabled`);
+  assert.equal(await evaluate(`document.querySelector('#pkgPendingBar').hidden`), false);
+  assert.equal(await evaluate(`window.halo.pkgBuiltin().then(result => result.data.find(item => item.name === 'halo-ui-design').enabled)`), false);
+  await evaluate(`document.querySelector('#settingsModal [data-close]').click();document.querySelector('#btnSettings').click()`);
+  await until(`document.querySelector('#pkgBuiltin [data-builtin-name="halo-ui-design"]').getAttribute('aria-checked') === 'false'`);
+  await evaluate(`document.querySelector('#pkgBuiltin [data-builtin-name="halo-ui-design"]').click()`);
+  await until(`document.querySelector('#pkgBuiltin [data-builtin-name="halo-ui-design"]').getAttribute('aria-checked') === 'true' && !document.querySelector('#pkgBuiltin [data-builtin-name="halo-ui-design"]').disabled`);
+  await screenshot('builtin-desktop');
+  await evaluate(`document.querySelector('#pkgSearchInput').value='界面';document.querySelector('#pkgSearchInput').dispatchEvent(new Event('input',{bubbles:true}))`);
+  await until(`document.querySelector('#pkgBuiltin').textContent.includes('halo-ui-design') && document.querySelectorAll('#pkgBuiltin .pkg-row').length < ${builtin.data.length}`);
+  await evaluate(`document.querySelector('#pkgSearchInput').value='no-such-builtin';document.querySelector('#pkgSearchInput').dispatchEvent(new Event('input',{bubbles:true}))`);
+  await until(`document.querySelector('#pkgBuiltin').textContent.includes('没有匹配')`);
+  await evaluate(`document.querySelector('#pkgSearchInput').value='';document.querySelector('#pkgSearchInput').dispatchEvent(new Event('input',{bubbles:true}))`);
+  await until(`document.querySelectorAll('#pkgBuiltin .pkg-row').length === ${builtin.data.length}`);
+  await command('Emulation.setDeviceMetricsOverride', { width: 600, height: 800, deviceScaleFactor: 1, mobile: false });
+  await screenshot('builtin-narrow');
+  assert.equal(await evaluate(`document.querySelector('#pkgBuiltin').scrollWidth <= document.querySelector('#pkgBuiltin').clientWidth + 1`), true);
+  await command('Emulation.clearDeviceMetricsOverride');
+  await evaluate(`document.querySelector('#pkgTabs [data-t="installed"]').click()`);
+  assert.equal(await evaluate(`!document.querySelector('#pkgInstalledSec').hidden && document.querySelector('#pkgBuiltinSec').hidden`), true);
+  await evaluate(`document.querySelector('#pkgTabs [data-t="builtin"]').click()`);
+  await until(`document.querySelectorAll('#pkgBuiltin .pkg-row').length === ${builtin.data.length}`);
+  console.log(`PASS built-in settings: ${builtin.data.length} real assets, search, empty state, tab isolation and narrow layout`);
+  await evaluate(`document.querySelector('#settingsModal [data-close]').click()`);
   await evaluate(`(async () => {
     const {initAppUpdates} = await import('./js/app-updates.mjs');
     const root = document.createElement('div');
     root.innerHTML = '<button id="appUpdateButton"></button>';
-    window.updateFixture = {root,downloads:0};
-    initAppUpdates({root,api:{onAppUpdate:fn=>updateFixture.emit=fn,appUpdateState:async()=>({ok:true,data:{status:'idle'}}),checkAppUpdate:async()=>{},downloadAppUpdate:async()=>{updateFixture.downloads++;}}});
+    window.updateFixture = {root,downloads:0,installs:0,cancels:0};
+    initAppUpdates({root,api:{onAppUpdate:fn=>updateFixture.emit=fn,appUpdateState:async()=>({ok:true,data:{status:'idle'}}),checkAppUpdate:async()=>{},downloadAppUpdate:async()=>{updateFixture.downloads++;},installAppUpdate:async()=>{updateFixture.installs++;},cancelAppUpdateInstall:async()=>{updateFixture.cancels++;}}});
   })()`);
   assert.equal(await evaluate(`document.querySelector('#modelCard #appUpdateButton').hidden`), false);
   assert.equal(await evaluate(`document.querySelector('#checkAppUpdate') === null`), true);
   await evaluate(`updateFixture.emit({status:'available',version:'1.0.2'}); updateFixture.root.querySelector('#appUpdateButton').click()`);
   assert.equal(await evaluate(`updateFixture.downloads`), 1);
   await evaluate(`updateFixture.emit({status:'downloading',percent:42})`);
-  assert.equal(await evaluate(`updateFixture.root.querySelector('#appUpdateButton').textContent`), '更新 42%');
+  assert.equal(await evaluate(`updateFixture.root.querySelector('#appUpdateButton').textContent`), '下载 42%');
   assert.equal(await evaluate(`updateFixture.root.querySelector('#appUpdateButton').disabled`), true);
+  await evaluate(`updateFixture.emit({status:'ready',version:'1.0.2'})`);
+  assert.equal(await evaluate('updateFixture.installs'),0);
+  assert.equal(await evaluate(`updateFixture.root.querySelector('#appUpdateButton').textContent`),'重启更新');
+  await evaluate(`updateFixture.root.querySelector('#appUpdateButton').click()`);
+  assert.equal(await evaluate('updateFixture.installs'),1);
+  await evaluate(`updateFixture.emit({status:'waiting',version:'1.0.2',tasks:[{}]});updateFixture.root.querySelector('#appUpdateButton').click()`);
+  assert.equal(await evaluate('updateFixture.cancels'),1);
   await evaluate(`updateFixture.emit({status:'error'})`);
   assert.equal(await evaluate(`updateFixture.root.querySelector('#appUpdateButton').textContent`), '重试更新');
   const siteURL = `http://127.0.0.1:${website.address().port}/`;
@@ -227,6 +269,7 @@ try {
   console.log(`PASS ${packaged ? 'packaged EXE' : 'Electron'} environment settings: real detection/IPC, missing tools, progress, duplicate clicks, stale response, errors, themes and WinGet help`);
 } catch (error) {
   console.error(output);
+  console.error(error);
   throw error;
 } finally {
   website.closeAllConnections(); website.close();

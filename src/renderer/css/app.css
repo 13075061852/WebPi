@@ -1007,7 +1007,7 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
   flex: none;
   position: relative;
   display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px;
-  padding: 5px 44px 5px 8px;
+  padding: 5px 40px;
   border-top: 1px solid var(--hair);
   background: var(--bg1);
 }
@@ -1099,66 +1099,52 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
 .md-view pre code { padding: 0; }
 .md-view a { text-decoration: underline; text-decoration-color: var(--hair-2); text-underline-offset: 3px; }
 .md-view hr { margin: 28px auto; }
-/* 空状态：幽灵设备轮廓（随底部设备切换变形），提示文字置于“屏幕”内 */
-.pv-empty {
-  position: absolute; inset: 0;
-  display: flex; align-items: center; justify-content: center;
-}
-.pv-ghost { display: flex; flex-direction: column; align-items: center; width: 100%; }
+/* Empty preview: a quiet lock screen inside the selected device. */
+.pv-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.pv-ghost { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 24px; container-type: size; }
 .pv-gscreen {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
-  border: 1.5px dashed var(--hair-2);
-  background: rgba(var(--ink-rgb), 0.015);
-  text-align: center;
-  padding: 24px;
+  position: relative; flex: none; isolation: isolate; overflow: hidden; container-type: inline-size;
+  width: min(86%, 680px, calc(72cqh * 1.7)); aspect-ratio: 16 / 9.4;
+  border: 7px solid #272d35; border-radius: 15px; background: #193c50;
+  box-shadow: 0 0 0 1px #86939d, inset 0 0 0 1px #ffffff30, 0 20px 50px -22px #10283866;
+  color: #fff; text-align: center;
 }
-.pv-empty .pv-empty-ico {
-  font-size: 72px;
-  color: var(--txt-faint);
-  opacity: 0.5;
-  line-height: 1;
-  /* 柔光晕：让空状态视觉重心落在图标上 */
-  text-shadow: 0 0 42px rgba(var(--ink-rgb), 0.16), 0 0 90px rgba(var(--ink-rgb), 0.1);
+.pv-lock-wallpaper { position: absolute; inset: 0; z-index: -1;
+  background: radial-gradient(ellipse at 68% 78%, #eec6a3 0, #de9b8360 20%, transparent 54%),
+    radial-gradient(ellipse at 8% 8%, #81b7c5 0, transparent 62%),
+    linear-gradient(155deg, #315b7a 5%, #5c8e9d 46%, #a1bab8 68%, #dab2a0);
 }
-.pv-empty p { margin: 0; font-size: 15px; font-weight: 500; color: var(--txt-dim); }
-.pv-empty .dim { font-size: 11px; font-weight: 400; color: var(--txt-faint); }
-.pv-gneck, .pv-gbase { display: none; }
-
-/* 电脑：显示器轮廓 + 幽灵支架 */
-.pv-body.dev-desktop:not(:has(:is(iframe, webview))) .pv-gscreen {
-  width: min(76%, 680px); aspect-ratio: 16 / 9.4;
-  border-radius: 12px;
-}
-.pv-body.dev-desktop:not(:has(:is(iframe, webview))) .pv-gneck {
-  display: block; width: 64px; height: 15px;
-  border: 1.5px dashed var(--hair-2); border-top: none;
-  border-radius: 0 0 6px 6px;
-}
-.pv-body.dev-desktop:not(:has(:is(iframe, webview))) .pv-gbase {
-  display: block; width: 148px; height: 7px;
-  border: 1.5px dashed var(--hair-2);
-  border-radius: 4px;
-}
-
-/* 平板：竖向圆角轮廓 */
-.pv-body.dev-tablet:not(:has(:is(iframe, webview))) .pv-gscreen {
-  width: min(58%, 460px); aspect-ratio: 3 / 4;
-  border-radius: 20px;
-}
-
-/* 手机：修长圆角轮廓 + 幽灵动岛 */
-.pv-body.dev-mobile:not(:has(:is(iframe, webview))) .pv-gscreen {
-  position: relative;
-  width: min(42%, 270px); aspect-ratio: 9 / 18.6;
-  border-radius: 28px;
-}
-.pv-body.dev-mobile:not(:has(:is(iframe, webview))) .pv-gscreen::before {
-  content: ""; position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
-  width: 64px; height: 17px; border-radius: 9px;
-  border: 1.5px dashed var(--hair-2);
-  background: var(--bg1);
-}
-
+.pv-lock-wallpaper::before, .pv-lock-wallpaper::after { content: ''; position: absolute; width: 160%; left: -28%; border-radius: 50% 50% 0 0; }
+.pv-lock-wallpaper::before { height: 72%; bottom: -42%; transform: rotate(-19deg); background: linear-gradient(150deg, #80b1bb, #315c79 72%); box-shadow: 0 -1px 0 #d6eef138; }
+.pv-lock-wallpaper::after { height: 62%; bottom: -42%; left: -6%; transform: rotate(18deg); background: linear-gradient(140deg, #24445f, #233c55); box-shadow: 0 -1px 0 #b6d9dd33; }
+.pv-lock-clock { position: absolute; top: 17%; left: 8%; right: 8%; display: flex; flex-direction: column; align-items: center; text-shadow: 0 2px 14px #163c5030; }
+.pv-lock-icon { width: 17px; height: 17px; margin-bottom: 12px; opacity: .9; }
+.pv-lock-time { font-family: var(--font); font-size: clamp(38px, 20cqw, 88px); font-weight: 300; letter-spacing: -.055em; line-height: 1.08; font-variant-numeric: tabular-nums; }
+.pv-lock-date { margin-top: 9px; font-size: clamp(10px, 3.8cqw, 14px); font-weight: 500; letter-spacing: .03em; opacity: .95; }
+.pv-lock-hint { position: absolute; left: 16px; right: 16px; bottom: 11%; color: #ffffffc9; font-size: clamp(9px, 3cqw, 11px); letter-spacing: .07em; }
+.pv-lock-home { display: none; position: absolute; bottom: 9px; left: 36%; right: 36%; height: 3px; border-radius: 4px; background: #ffffffa6; }
+.pv-gneck, .pv-gbase { display: none; flex: none; }
+.dev-desktop .pv-gneck { display: block; width: 42px; height: 24px; background: linear-gradient(90deg, #83919c, #b7c3cc 48%, #8d9ba6); }
+.dev-desktop .pv-gbase { display: block; width: 124px; height: 5px; border-radius: 6px 6px 2px 2px; background: linear-gradient(#d0d8dd, #8c9ba6); box-shadow: 0 7px 12px #10283820; }
+.dev-desktop .pv-lock-clock, .dev-normal .pv-lock-clock { top: auto; bottom: 24%; align-items: flex-start; }
+.dev-desktop .pv-lock-icon, .dev-normal .pv-lock-icon { display: none; }
+.dev-desktop .pv-lock-time, .dev-normal .pv-lock-time { font-size: clamp(32px, 13cqw, 80px); }
+.dev-desktop .pv-lock-hint, .dev-normal .pv-lock-hint { left: 8%; text-align: left; }
+.dev-tablet .pv-gscreen { width: min(82%, 420px, calc(86cqh * .75)); aspect-ratio: 3 / 4; border-radius: 28px; }
+.dev-mobile .pv-gscreen { width: min(78%, 300px, calc(86cqh * .462)); aspect-ratio: 9 / 19.5; border-radius: 36px; }
+.dev-mobile .pv-gscreen::before, .dev-tablet .pv-gscreen::before { content: ''; position: absolute; z-index: 1; top: 10px; left: 50%; transform: translateX(-50%); width: 56px; height: 15px; border-radius: 12px; background: #172733; }
+.dev-tablet .pv-gscreen::before { top: 7px; width: 4px; height: 4px; border-radius: 50%; }
+:is(.dev-tablet, .dev-mobile) .pv-lock-home { display: block; }
+.dev-mobile.dev-landscape .pv-gscreen { width: min(88%, 660px, calc(80cqh * 2.16)); aspect-ratio: 844 / 390; border-radius: 32px; }
+.dev-mobile.dev-landscape .pv-gscreen::before { top: 50%; left: 9px; width: 13px; height: 48px; transform: translateY(-50%); }
+.dev-mobile.dev-landscape .pv-lock-clock { top: 12%; }
+.dev-mobile.dev-landscape .pv-lock-icon { width: 12px; height: 12px; margin-bottom: 5px; }
+.dev-mobile.dev-landscape .pv-lock-time { font-size: clamp(26px, 11cqw, 66px); }
+.dev-mobile.dev-landscape .pv-lock-date { margin-top: 4px; font-size: clamp(9px, 2.6cqw, 12px); }
+.dev-mobile.dev-landscape .pv-lock-hint { bottom: 12%; font-size: 9px; }
+.dev-mobile.dev-landscape .pv-lock-home { bottom: 6px; height: 2px; }
+.dev-normal .pv-ghost { padding: 0; }
+.dev-normal .pv-gscreen { width: 100%; height: 100%; aspect-ratio: auto; border: 0; border-radius: 0; box-shadow: none; }
 /* ============================================================
    Chat panel
    ============================================================ */
@@ -2005,7 +1991,7 @@ details.process-group[open]::details-content { height: auto; opacity: 1; }
   margin: 14px 0 8px;
   display: flex; align-items: center; gap: 8px;
 }
-.set-sec h4 #pkgUpdateAll { margin-left: auto; font-size: 10.5px; padding: 3px 10px; }
+#pkgUpdateAll { display: block; margin: 0 0 12px auto; font-size: 10.5px; padding: 3px 10px; }
 .set-count { color: var(--txt-faint); font-weight: 400; }
 .pkg-list { display: flex; flex-direction: column; gap: 6px; }
 .pkg-empty { color: var(--txt-faint); font-size: 12px; padding: 18px 0; text-align: center; }
@@ -2716,6 +2702,9 @@ details.process-group[open]::details-content { height: auto; opacity: 1; }
   .digital-human-footer { padding: 14px 18px; }
 }
 #pkgInstalled .pkg-main { flex-wrap: wrap; }
+#pkgBuiltin .pkg-main { flex-wrap: wrap; min-width: 0; }
+#pkgBuiltin .pkg-row { align-items: flex-start; padding: 16px; }
+#pkgBuiltin .pkg-kind { overflow-wrap: anywhere; }
 .pkg-installed-desc { flex-basis: 100%; font-size: 12px; font-weight: 400; color: var(--txt-dim); line-height: 1.7; }
 #pkgInstalled .pkg-row { align-items: flex-start; padding: 16px; }
 #pkgInstalled .pkg-ops { flex-wrap: wrap; }
@@ -2962,6 +2951,20 @@ body.sidebar-height-dragging, body.sidebar-height-dragging * { cursor: row-resiz
 /* Reserve only the space each device needs, leaving the rest for chat. */
 body:not(.focus-mode):not(.preview-collapsed):not(.preview-auto-collapsed) #layout:has(#pvBody.dev-tablet) { grid-template-columns: var(--sidebar-size) minmax(0, min(850px, calc(100% - var(--sidebar-size) - 480px))) minmax(480px, 1fr); }
 body:not(.focus-mode):not(.preview-collapsed):not(.preview-auto-collapsed) #layout:has(#pvBody.dev-mobile) { grid-template-columns: var(--sidebar-size) minmax(0, min(454px, calc(100% - var(--sidebar-size) - 480px))) minmax(480px, 1fr); }
+body:not(.focus-mode):not(.preview-collapsed):not(.preview-auto-collapsed) #layout:has(#pvBody.dev-mobile.dev-landscape) { grid-template-columns: var(--sidebar-size) minmax(0, min(908px, calc(100% - var(--sidebar-size) - 480px))) minmax(480px, 1fr); }
+
+.pvdev .pv-phone-icon { flex: none; transition: transform .18s ease; }
+.pvdev[data-orientation="landscape"] .pv-phone-icon { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .pvdev .pv-phone-icon { transition: none; } }
+#center:has(#pvBody.dev-mobile) .pvdev { gap: 4px; padding-inline: 5px; }
+.pv-body.dev-mobile.dev-landscape .dev-shell {
+  flex: none; width: min(844px, 100%); align-self: center; aspect-ratio: 844 / 390;
+  flex-direction: row; padding: 9px;
+}
+.pv-body.dev-mobile.dev-landscape .dev-statusbar { display: none; }
+.pv-body.dev-mobile.dev-landscape .dev-shell::after { top: -3px; right: 25%; width: 48px; height: 3px; border-radius: 2px 2px 0 0; }
+.pv-body.dev-mobile.dev-landscape .dev-shell .dev-screen,
+.pv-body.dev-mobile.dev-landscape .dev-shell :is(iframe, webview) { border-radius: 34px; clip-path: inset(0 round 34px); }
 
 .pv-body.dev-desktop .dev-shell { flex: 0 1 100%; }
 .dev-screen { clip-path: inset(0 round 6px); }
@@ -3055,7 +3058,11 @@ body:not(.focus-mode):not(.preview-collapsed):not(.preview-auto-collapsed) #layo
 .tool-history > summary{gap:8px}
 
 
-.pv-body:has(> .document-preview),.pv-body:has(> .office-frame){padding:0!important;display:block;overflow:hidden}
+.pv-body .dev-document-shell .dev-screen { position: relative; background: light-dark(#f1f2f3, #17191d); }
+.pv-body .dev-document-shell .dev-statusbar { background: light-dark(#f1f2f3, #17191d); }
+.pv-body.dev-mobile .dev-document-shell .dev-screen { border-radius: 0 0 34px 34px; clip-path: inset(0 round 0 0 34px 34px); }
+.pv-body.dev-mobile.dev-landscape .dev-document-shell .dev-screen { border-radius: 34px; clip-path: inset(0 round 34px); }
+.pv-body.dev-normal .dev-document-shell .dev-screen { border-radius: 0; clip-path: none; }
 .document-preview{position:absolute;inset:0;display:flex;flex-direction:column;background:#e9ecf0;color:#465466}
 .document-canvas{flex:1;min-height:0;overflow:auto;padding:28px;box-sizing:border-box;text-align:center}
 .document-canvas img{display:block;width:100%;max-width:1100px;height:auto;margin:0 auto;box-shadow:0 3px 16px #1c2c4020;background:white}
