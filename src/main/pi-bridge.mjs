@@ -1540,6 +1540,8 @@ async _doStart() {
       const session = ctx.runtime.session, file = session.sessionFile;
       if (!file || PiBridge.normPath(ctx.cwd || '') !== PiBridge.normPath(cwd)) continue;
       const messages = session.messages || [];
+      // Draft reuse stays internal until the first message exists.
+      if (!messages.length) continue;
       const running = !!ctx.busy || !!session.isStreaming;
       const existing = out.find(item => PiBridge.normPath(item.file) === PiBridge.normPath(file));
       if (existing) {
@@ -1974,8 +1976,13 @@ async _doStart() {
   }
 
   /** 新会话：新建独立 runtime 并聚焦；旧会话（含执行中的任务）保留在池中后台继续 */
-  async newSession(serverId = null) {
-    const cwd = serverId ? this.serverWorkspace(serverId) : this.cwd;
+  async newSession(serverId = null, { cwd: projectCwd } = {}) {
+    // Create directly in the target project; never focus its previous history first.
+    const target = projectCwd == null ? this.cwd : String(projectCwd).replace(/\\/g, '/');
+    if (!serverId && projectCwd != null && (!target || !fs.existsSync(target) || !fs.statSync(target).isDirectory())) {
+      throw new Error('项目目录不存在');
+    }
+    const cwd = serverId ? this.serverWorkspace(serverId) : target;
     // Reuse one idle draft per project, including a draft left in the background.
     const draft = [...this.#pool.values()].find((c) =>
       PiBridge.normPath(c.cwd || "") === PiBridge.normPath(cwd) &&

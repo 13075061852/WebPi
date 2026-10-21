@@ -13,6 +13,11 @@ const releases = [];
 let aborts = 0;
 function runTask(session) {
   session.prompt = () => {
+    // The real runtime persists the user message before executing a task.
+    // Empty drafts are intentionally excluded from the conversation list.
+    const message = { role: 'user', content: [{ type: 'text', text: 'Keep working' }], timestamp: Date.now() };
+    session.sessionManager.appendMessage(message);
+    session.agent.state.messages.push(message);
     session.isStreaming = true;
     return new Promise(resolve => releases.push(() => { session.isStreaming = false; resolve(); }));
   };

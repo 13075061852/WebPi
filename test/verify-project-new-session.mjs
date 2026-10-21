@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { isolatePi } from './helpers/isolated-pi.mjs';
+const fixture = isolatePi('halo-direct-new-');
+const { PiBridge, HaloStore } = await import('../src/main/pi-bridge.mjs');
+const a = path.join(fixture.dir, 'a'), b = path.join(fixture.dir, 'b');
+fs.mkdirSync(a); fs.mkdirSync(b);
+const store = new HaloStore(path.join(fixture.dir, 'settings.json'));
+store.set('projects', [{ cwd: a }, { cwd: b }]);
+const bridge = new PiBridge(store, {}, { sessionDir: path.join(fixture.dir, 'sessions') });
+try {
+  await bridge.start(b);
+  const old = { role: 'user', content: [{ type: 'text', text: 'previous conversation' }], timestamp: Date.now() };
+  bridge.session.sessionManager.appendMessage(old);
+  bridge.session.agent.state.messages.push(old);
+  const previousFile = bridge.session.sessionFile;
+  await bridge.switchProject(a);
+  const focused = [];
+  bridge.emitter = (channel, state) => { if (channel === 'halo:state') focused.push(state.sessionFile); };
+  const state = await bridge.newSession(null, { cwd: b });
+  assert.equal(state.cwd.replaceAll('\\', '/'), b.replaceAll('\\', '/'));
+  assert.equal(bridge.session.messages.length, 0);
+  assert.notEqual(state.sessionFile, previousFile);
+  assert.ok(focused.length > 0);
+  assert.ok(focused.every(file => file === state.sessionFile), 'Never focus target project old conversation');
+  const reused = await bridge.newSession(null, { cwd: b });
+  assert.equal(reused.sessionFile, state.sessionFile, 'Reuse empty draft');
+  await assert.rejects(bridge.newSession(null, { cwd: path.join(fixture.dir, 'missing') }));
+  assert.equal(bridge.session.sessionFile, state.sessionFile, 'Failure preserves focus');
+  console.log('PASS direct project new: no intermediate old focus, empty draft reuse and invalid path rollback');
+} finally { await bridge.dispose(); fixture.cleanup(); }

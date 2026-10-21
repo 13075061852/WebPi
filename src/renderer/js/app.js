@@ -1,3 +1,6 @@
+import { createSessionPreviewState } from './session-preview-state.mjs';
+import { syncConversationSelection } from './conversation-selection.mjs';
+import { createConversationMotion } from './conversation-motion.mjs';
 import { resolvePreviewPath } from './preview-path.mjs';
 import { mountPDFPreview } from './pdf-preview.mjs';
 import { previewEmpty, initPreviewClock } from './preview-empty.mjs';
@@ -38,6 +41,8 @@ import { starterPrompts } from './starter-prompts.mjs';
    ============================================================ */
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const conversationMotion = createConversationMotion();
+const sessionPreviewState = createSessionPreviewState(localStorage);
 let environmentSettings;
 let videoSettings;
 let proxySettings;
@@ -230,18 +235,22 @@ const projectRunnerUI = initProjectRuns({api:window.halo, context:()=>S.state, s
     $('#projectRunLogBody').textContent=log;
     openModal('projectRunLogModal');
   }});
-async function openWebsite(value, projectRun = null) {
+async function openWebsite(value, projectRun = null, { reveal = true } = {}) {
   const url = websiteURL(value); if (!url) return;
-  if (window.innerWidth < 1120 && !await ensurePreviewWidth()) return;
+  if (reveal && window.innerWidth < 1120 && !await ensurePreviewWidth()) return;
   document.querySelector('.term-open')?.classList.remove('term-open');
   $('#btnTerm').classList.remove('active');
   closePreviewAddress();
-  setPreviewCollapsed(false);
+  if (reveal) setPreviewCollapsed(false);
+  sessionPreviewState.rememberTarget({ kind: "website", url });
   const request = ++portPreviewRequest;
   S.previewFile = null; selectedPortKey = null; updatePortSelection();
   previewService = {kind:'website', url, status:'loading',
     ...(projectRun?.cwd ? { projectCwd: projectRun.cwd, projectOrigin: new URL(url).origin } : {})};
   $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
+  $('#btnBrowser').classList.add('active');
+  $('#btnBrowser').title = '退出浏览器预览';
+  $('#btnBrowser').setAttribute('aria-label', '退出浏览器预览');
   $('#pvName').textContent = new URL(url).hostname;
   mountWebsiteBrowser($('#pvBody'), url, state => {
     if (request !== portPreviewRequest) return;
@@ -470,6 +479,7 @@ async function refreshServers() {
     $(".server-group-new", group).addEventListener("click", async () => {
       if (S.switchingSession) return;
       S.switchingSession = true;
+      setConversationWaiting(true);
       try {
         const result = await window.halo.serverNewSession(server.id);
         if (!result.ok) throw Error(result.error);
@@ -485,6 +495,8 @@ async function refreshServers() {
     for (const conversation of rows) {
       const button = document.createElement("button");
       button.className = "server-conversation" + (normPath(conversation.file) === normPath(S.state?.sessionFile) ? " active" : "");
+      button.dataset.conversationFile = conversation.file || "";
+      if (button.classList.contains("active")) button.setAttribute("aria-current", "true");
       button.textContent = conversation.name;
       button.title = conversation.name;
       if (conversation.running) { const indicator = document.createElement("i"); indicator.className = "conversation-spinner"; indicator.setAttribute("role", "img"); indicator.setAttribute("aria-label", "正在执行"); button.title += " · 正在执行"; button.prepend(indicator); }
@@ -569,8 +581,20 @@ function initServerUI() {
 function applyState(st) {
   document.documentElement.dataset.projectCwd = st?.cwd || "";
   if (!st) return;
-  if (S.state && previewWorkspaceKey(S.state) !== previewWorkspaceKey(st)) resetPreview();
+  const previewState = sessionPreviewState.activate(st);
+  if (previewState) resetPreview();
   S.state = st;
+  if (previewState) {
+    setPreviewCollapsed(previewState.collapsed, { remember: false });
+    const target = previewState.target;
+    if (target?.kind === 'file' && typeof target.file === 'string') {
+      S.previewMode = target.mode === 'source' ? 'source' : 'render';
+      void setPreview(target.file, true, { reveal: false }).catch(() => {});
+    } else if (target?.kind === 'website' && typeof target.url === 'string') {
+      void openWebsite(target.url, null, { reveal: false }).catch(() => {});
+    }
+  }
+  syncConversationSelection(st.sessionFile);
   document.dispatchEvent(new Event("projectstatechange"));
   if (st.sessionFile) saveWorkspace();
   if (st.cwd) {
@@ -805,7 +829,7 @@ function wirePi() {
   window.__haloRestoreView = async (view) => {
     ++S.sessionSwitchSeq;
     S.switchingSession = true;
-    clearChat();
+    setConversationWaiting(true);
     await restoreHistory(view);
     finishSessionSwitch();
   };
@@ -959,7 +983,7 @@ function ensureTurn() {
       </span>
 
     </div>`;
-  $("#messages").appendChild(wrap);
+  (S.historyHost || $("#messages")).appendChild(wrap);
   S.turn = wrap;
   scrollDown();
   return wrap;
@@ -1102,7 +1126,7 @@ async function showTurnArtifacts(turn) {
   }
   // Resolve delivery paths after renames; never advertise vanished intermediate files.
   const checked=await window.halo.artifactFiles(paths.slice(0,100), {imageHashes:!!turn.__imageResults?.size,videoHashes:!!turn.__videoResults?.size,mediaMetadata:true}).catch(()=>null);
-  if (!turn.isConnected || request !== turn.__artifactRequest || switchSeq !== S.sessionSwitchSeq ||
+  if ((!turn.isConnected && !S.historyHost?.contains(turn)) || request !== turn.__artifactRequest || switchSeq !== S.sessionSwitchSeq ||
       cwd !== (S.state?.cwd || '') || !checked?.ok) return;
   const mediaSizes = new Map(checked.data.filter(item => typeof item === 'object').map(item => [normPath(item.file), item.bytes]));
   const hashes = new Map(checked.data.filter(item => typeof item === 'object').map(item => [normPath(item.file), item.sha256]));
@@ -1159,21 +1183,20 @@ async function showTurnArtifacts(turn) {
       try { await setPreview(file,true); saveWorkspace(); } catch(error){toast(error.message,'err');}
     };
     let entry = button;
-    if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(file)) {
+    {
+      const image = /\.(png|jpe?g|webp|gif|bmp)$/i.test(file);
+      const label = image ? '图片' : '文件';
       const row=document.createElement('div');row.className='artifact-image-row';
       const copy=document.createElement('button');copy.className='artifact-copy-button';copy.type='button';
-      copy.title='复制图片';copy.setAttribute('aria-label','复制图片');
+      copy.title='复制'+label;copy.setAttribute('aria-label','复制'+label);
       copy.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg>';
       copy.onclick=async()=>{
         copy.disabled=true;
-        try {const r=await window.halo.copyImage(file);if(!r?.ok)throw Error(r?.error || '复制失败');toast('图片已复制','ok');}
+        try {const r=await (image ? window.halo.copyImage(file) : window.halo.copyFile(file));if(!r?.ok)throw Error(r?.error || '复制失败');toast(label+'已复制','ok');}
         catch(error){toast(error.message,'err');}
         finally{copy.disabled=false;}
       };
       row.append(button,copy);entry = row;
-    } else if (/\.(mp4|webm)$/i.test(file)) {
-      const row = document.createElement('div'); row.className = 'artifact-video-row';
-      row.append(button); entry = row;
     }
     entry.dataset.artifactPath = key;
     entry.dataset.artifactHash = hash || '';
@@ -1477,7 +1500,7 @@ function classifyError(msg = "") {
 }
 
 function renderModelError(raw, meta = {}) {
-  const parent = S.turn || $("#messages");
+  const parent = S.turn || S.historyHost || $("#messages");
   const identity = [String(raw).trim().replace(/\s+/g, ' '), meta.provider || '', meta.model || ''];
   const key = JSON.stringify(identity);
   const existing = $$(':scope > .error-card', parent).find(card => {
@@ -1725,10 +1748,11 @@ function closeMentions() {
 function updateMentions() {
   const input = $("#input"), before = input.value.slice(0, input.selectionStart);
   if (/^\/[^\s]*$/.test(before) && input.selectionStart === input.selectionEnd) return updateCommandSuggestions(before.slice(1));
-  const match = before.match(/(?:^|\s)@([^@\n]*)$/);
+  // A closing quote completes a file reference; following prose is not a query.
+  const match = before.match(/(?:^|\s)@("[^"\n]*|[^\s@"\n]*)$/);
   if (!match || input.selectionStart !== input.selectionEnd) return closeMentions();
   mentionStart = before.length - match[1].length - 1;
-  const query = match[1].toLowerCase();
+  const query = match[1].replace(/^"/, "").toLowerCase();
   const cwd = S.state?.cwd || "";
   const all = cwd ? [{ name: cwd.split(/[\\/]/).filter(Boolean).pop(), path: cwd, dir: true, root: true }] : [];
   const walk = (nodes) => { for (const node of nodes || []) { all.push(node); if (node.children) walk(node.children); } };
@@ -1799,6 +1823,10 @@ function insertMention(index) {
 function handleMentionKey(e) {
   if ($("#mentionMenu").hidden || e.isComposing) return false;
   if (!["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(e.key)) return false;
+  if ((e.key === "Enter" || e.key === "Tab") && (!mentionItems.length || e.shiftKey)) {
+    closeMentions();
+    return false;
+  }
   e.preventDefault(); e.stopPropagation();
   if (e.key === "Escape") closeMentions();
   else if (e.key === "Enter" || e.key === "Tab") insertMention(mentionIndex);
@@ -1905,7 +1933,7 @@ async function send() {
 function renderUserMsg(text, images) {
   text = userMessageText(text);
   // 对话开始后清掉遗留的系统提示，保持对话流只包含当前对话内容
-  $$("#messages > .notice").forEach((n) => n.remove());
+  if (!S.historyHost) $$("#messages > .notice").forEach((n) => n.remove());
   const wrap = document.createElement("div");
   wrap.className = "msg user";
   const imgs = (images || []).map((i) =>
@@ -1918,7 +1946,7 @@ function renderUserMsg(text, images) {
     img.addEventListener("click", () => openImagePreview(img.src, img.title));
     img.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openImagePreview(img.src, img.title); } });
   });
-  $("#messages").appendChild(wrap);
+  (S.historyHost || $("#messages")).appendChild(wrap);
   scrollDown(true);
 }
 
@@ -1932,17 +1960,23 @@ function abort() {
    history restore
    ============================================================ */
 async function restoreHistory(viewOverride) {
+  // An explicit new-conversation action owns the empty view until it settles.
+  if (S.newSessionPending) return;
   const switchSeq = S.sessionSwitchSeq;
   const r = viewOverride ? { ok: true, data: viewOverride } : await window.halo.snapshotView();
   if (switchSeq !== S.sessionSwitchSeq) return;
   if (!r?.ok) throw new Error(r?.error || "无法恢复会话");
   const view = r.data;
+  clearChat(true);
+  const historyHost = document.createElement("div");
+  historyHost.className = "restoring";
+  S.historyHost = historyHost;
   applyState(view.state);
   restoredEventSeq = view.seq;
   const msgs = [...(view.messages || [])];
   if (view.partial) msgs.push({ ...view.partial, __partial: true });
   // 历史回放不播入场动效（切换会话/启动时保持安静）
-  $("#messages").classList.add("restoring");
+  // Build off-screen so intermediate chunks never paint or change scroll position.
   const toolCards = new Map(); // toolCallId -> 卡片引用，用于回填 toolResult
   /* 逐条恢复（分块渲染：每帧最多 CHUNK 条，大会话不阻塞 UI） */
   let turnStart = null, savedTiming = null;
@@ -2037,7 +2071,11 @@ async function restoreHistory(viewOverride) {
     const step = () => {
       if (switchSeq !== S.sessionSwitchSeq) { resolve(); return; }
       const end = Math.min(i + CHUNK, msgs.length);
-      for (; i < end; i++) restoreOne(msgs[i]);
+      const deadline = performance.now() + 6;
+      for (; i < end; i++) {
+        restoreOne(msgs[i]);
+        if (performance.now() >= deadline) { i++; break; }
+      }
       if (i < msgs.length) requestAnimationFrame(step);
       else resolve();
     };
@@ -2070,10 +2108,11 @@ async function restoreHistory(viewOverride) {
     updateTurnStatus();
     showTurnArtifacts(turn);
   } else finalizeTurn();
-  scrollDown();
-  // 同步插入已完成（期间无帧绘制），此刻移除才不会触发入场动画
-  $("#messages").classList.remove("restoring");
+  for (const node of historyHost.children) node.classList.add("history-message");
+  $("#messages").replaceChildren(...historyHost.childNodes);
+  S.historyHost = null;
   scrollDown(true);
+  conversationMotion.reveal($("#messages").childElementCount ? $("#messages") : $("#chatWelcome"));
   if (live && window.halo.videoConfirmations) {
     const pending = await window.halo.videoConfirmations().catch(() => null);
     if (switchSeq !== S.sessionSwitchSeq) return;
@@ -2203,22 +2242,29 @@ async function restoreWorkspace() {
   await restoreHistory();
 }
 
+function setConversationWaiting(waiting) {
+  $("#conversationWaiting").hidden = !waiting;
+  if (waiting) $("#chat").setAttribute("aria-busy", "true");
+  else $("#chat").removeAttribute("aria-busy");
+}
+
 async function openSession(file) {
+  conversationMotion.cancel();
   const seq = ++S.sessionSwitchSeq;
   const previousCwd = S.state?.cwd;
   S.switchingSession = true;
-  clearChat();
+  setConversationWaiting(true);
   try {
     const r = await window.halo.openSession(file);
     if (seq !== S.sessionSwitchSeq) return;
     if (!r?.ok) throw Error(r?.error || '打开对话失败');
     const projectChanged = normPath(previousCwd || '') !== normPath(r.data?.cwd || '');
-    if (projectChanged) await applyProjectReset();
-    else clearChat();
-    if (r?.data) applyState(r.data); // 清理旧视图后再同步焦点流状态，运行中的会话仍显示“中止”
+    if (projectChanged) await applyProjectReset(true);
+    if (r?.data) applyState(r.data); // 同步焦点流状态；历史就绪后再替换可见消息
     await restoreHistory();
     if (seq !== S.sessionSwitchSeq) return;
-    await Promise.all([loadSessions(), ...(projectChanged ? [loadTree(true), loadResources()] : [])]);
+    // Sidebar/file refreshes must not keep conversation actions locked.
+    void Promise.all([loadSessions(), ...(projectChanged ? [loadTree(true), loadResources()] : [])]).catch(() => {});
   } catch (e) {
     if (seq === S.sessionSwitchSeq) toast(`打开失败：${e?.message || e}`, "err");
   } finally {
@@ -2226,37 +2272,58 @@ async function openSession(file) {
   }
 }
 
-async function newSession() {
-  if (S.switchingSession) return;
+async function newSession(projectCwd) {
+  if (S.newSessionPending) return;
+  const targetCwd = typeof projectCwd === "string" ? projectCwd : undefined;
+  const previousCwd = S.state?.cwd;
   // 多会话并发：执行中也可开新会话，原任务后台继续
   const seq = ++S.sessionSwitchSeq;
   S.switchingSession = true;
-  clearChat();
+  setConversationWaiting(true);
+  S.newSessionPending = true;
+  S.historyHost = null;
+  const messages = $("#messages");
+  const previousMessages = [...messages.childNodes];
+  const previousScroll = messages.scrollTop;
+  messages.replaceChildren();
+  conversationMotion.reveal($("#chatWelcome"));
+  $("#chat").setAttribute("aria-busy", "true");
   try {
-    const r = await window.halo.newSession();
+    const r = await window.halo.newSession(targetCwd);
     if (seq !== S.sessionSwitchSeq) return;
     if (!r?.ok) throw Error(r?.error || '新建对话失败');
+    const projectChanged = normPath(previousCwd) !== normPath(r.data?.cwd);
+    if (projectChanged) applyProjectReset();
+    else clearChat();
     if (r?.data) applyState(r.data);
     void loadQuota(S.state?.model?.provider, true);
     toast("新会话已开启", "ok");
-    loadSessions();
+    void Promise.all([loadSessions(), ...(projectChanged ? [loadTree(true), loadResources()] : [])]).catch(() => {});
   } catch (e) {
-    if (seq === S.sessionSwitchSeq) toast(`新建失败：${e?.message || e}`, "err");
+    if (seq === S.sessionSwitchSeq) {
+      messages.replaceChildren(...previousMessages);
+      messages.scrollTop = previousScroll;
+      conversationMotion.reveal(messages);
+      toast(`新建失败：${e?.message || e}`, "err");
+    }
   } finally {
+    S.newSessionPending = false;
     if (seq === S.sessionSwitchSeq) finishSessionSwitch();
   }
 }
 
 function finishSessionSwitch() {
   S.switchingSession = false;
+  setConversationWaiting(false);
   const events = pendingSessionEvents;
   pendingSessionEvents = [];
   for (const item of events) handlePiEvent(item.event, item.sessionId, item.seq);
 }
 
-function clearChat() {
+function clearChat(preserveMessages = false) {
   restoredEventSeq = 0;
-  $("#messages").innerHTML = "";
+  S.historyHost = null;
+  if (!preserveMessages) $("#messages").innerHTML = "";
   S.toolCards.clear();
   S.assistant = null;
   S.turn = null;
@@ -2539,6 +2606,7 @@ function wireUI() {
   // composer
   const input = $("#input");
   input.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (handleMentionKey(e)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -2743,7 +2811,16 @@ function wireCenter() {
     document.querySelector('.term-open')?.classList.remove('term-open');
     $('#btnTerm').classList.remove('active');
     const existingAddress = $('#pvBody .website-toolbar input');
-    if (existingAddress) { closeAddress(); existingAddress.focus(); existingAddress.select(); return; }
+    if (existingAddress) {
+      const previous = sessionPreviewState.target()?.previousFile;
+      resetPreview();
+      sessionPreviewState.rememberTarget(previous || null);
+      if (previous?.kind === 'file') {
+        S.previewMode = previous.mode === 'source' ? 'source' : 'render';
+        void setPreview(previous.file, true, { reveal: false }).catch(error => toast(error.message, 'err'));
+      }
+      return;
+    }
     if (!addressForm.hidden) { closeAddress(); return; }
     addressForm.hidden = false;
     $('#btnBrowser').setAttribute('aria-expanded', 'true');
@@ -2823,7 +2900,6 @@ const applyPreviewLayout = createLayoutMotion({ setPaused: paused => { layoutMot
 let previewPaneCollapsed = document.body.classList.contains('preview-collapsed');
 let previewVisibilityRequest = 0;
 let previewProjectRevision = 0;
-const previewWorkspaceKey = state => `${state?.serverId || ''}|${normPath(state?.cwd)}`;
 async function ensurePreviewWidth() {
   const request = ++previewVisibilityRequest;
   const project = previewProjectRevision;
@@ -2838,7 +2914,8 @@ async function ensurePreviewWidth() {
     return true;
   } catch (error) { toast(error.message, 'err'); return false; }
 }
-function setPreviewCollapsed(collapsed) {
+function setPreviewCollapsed(collapsed, { remember = true } = {}) {
+  if (remember) sessionPreviewState.remember(collapsed);
   previewPaneCollapsed = collapsed;
   const request = ++previewVisibilityRequest;
   const update = () => {
@@ -2867,15 +2944,19 @@ function setPreviewCollapsed(collapsed) {
 }
 function resetPreview() {
   closePreviewAddress();
+  $('#btnBrowser').classList.remove('active');
+  $('#btnBrowser').title = '浏览器预览';
+  $('#btnBrowser').setAttribute('aria-label', '浏览器预览');
   $('#previewAddress').value = '';
   previewProjectRevision++;
+  previewVisibilityRequest++;
   portPreviewRequest++;
   previewService = null; selectedPortKey = null; updatePortSelection();
   S.previewFile = null;
   $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
   $('#pvBody').innerHTML = previewEmpty();
   $('#pvName').textContent = '未选择文件';
-  setPreviewCollapsed(true);
+  // Visibility belongs to the conversation, even when its workspace is reset.
 }
 
 /* ---- file tree ---- */
@@ -2987,6 +3068,19 @@ function renderTree() {
         ? `<span class="arrow">▶</span><span class="fic">${FOLDER_IC}</span><span class="fname">${esc(n.name)}</span><button class="trow-del" title="删除">${TRASH_IC}</button>`
         : `<span class="arrow"></span><span class="fic">${fileIconFor(n.name)}</span><span class="fname">${esc(n.name)}</span><span class="fsize">${fmtSize(n.size || 0)}</span><button class="trow-del" title="删除">${TRASH_IC}</button>`;
       row.title = n.path;
+      const attach = document.createElement("button");
+      attach.type = "button";
+      attach.className = "trow-attach";
+      attach.title = "添加到当前对话";
+      attach.setAttribute("aria-label", "添加到当前对话 " + n.name);
+      attach.innerHTML = '<svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+      attach.addEventListener("click", e => {
+        e.stopPropagation();
+        addFileAttachment({ path: n.path, name: n.name, size: n.size });
+        closeMentions();
+        $("#input").focus();
+      });
+      row.insertBefore(attach, row.querySelector('.trow-del'));
       if (!n.dir) {
         const open = document.createElement("button");
         open.className = "trow-external";
@@ -3130,7 +3224,12 @@ async function setPreview(p, force, { reveal = true } = {}) {
   if (!force && S.previewFile === p) return;
   const request = ++portPreviewRequest;
   previewService = null; selectedPortKey = null; updatePortSelection();
-  S.previewFile = p; $("#btnOpenFile").hidden = !p;
+  $('#btnBrowser').classList.remove('active');
+  $('#btnBrowser').title = '浏览器预览';
+  $('#btnBrowser').setAttribute('aria-label', '浏览器预览');
+  S.previewFile = p;
+  sessionPreviewState.rememberTarget({ kind: "file", file: p, mode: S.previewMode });
+  $("#btnOpenFile").hidden = !p;
   const ext = p.split(".").pop().toLowerCase();
   $("#pvName").textContent = p.split(/[\\\\/]/).pop();
   const body = $("#pvBody");
@@ -3424,9 +3523,9 @@ function renderAttachments() {
 }
 
 /* ---- project (A9: no-op when unchanged) ---- */
-async function applyProjectReset() {
-  resetPreview();
-  clearChat();
+async function applyProjectReset(preserveMessages = false) {
+  // applyState owns preview reset/restore; a late project reply must not erase it.
+  clearChat(preserveMessages);
   S.expanded.clear();
   S.creating = null;
 }
@@ -3444,6 +3543,7 @@ async function pickProject() {
 async function switchProjectViaAdd(dir) {
   const seq = ++S.sessionSwitchSeq;
   S.switchingSession = true;
+  setConversationWaiting(true);
   toast(`正在添加项目 · ${String(dir).split(/[\\/]/).pop()}…`, "");
   const box = $("#projList");
   if (box) box.style.opacity = "0.5";
@@ -3572,15 +3672,18 @@ function renderProjectGroups(box, list, { onManage } = {}) {
       $('summary', group).title = '仓库操作';
     } else $(".project-remove", group).addEventListener("click", () => removeWorkspaceItem(() => window.halo.projectRemove(p.cwd)));
     $(".project-new", group).addEventListener("click", async () => {
-      if (!p.active) { await switchProject(p.cwd); if (normPath(S.state?.cwd) !== normPath(p.cwd)) return; }
-      collapsedProjects.delete(normPath(p.cwd)); saveProjectFolds(); await newSession(); await loadProjects(); $("#input").focus();
+      collapsedProjects.delete(normPath(p.cwd)); saveProjectFolds(); await newSession(p.cwd); await loadProjects(); $("#input").focus();
     });
     if (!p.sessions?.length) children.innerHTML = '<div class="server-conversation-empty">暂无对话，点击右上角新建</div>';
     for (const session of p.sessions || []) {
       const row = document.createElement("div"); row.className = "project-conversation server-conversation-row";
       const button = document.createElement("button"); button.className = "project-conversation-name server-conversation";
+      button.dataset.conversationFile = session.file || "";
       button.textContent = session.name || "新会话"; button.title = session.name || "新会话";
-      if (normPath(session.file) === normPath(S.state?.sessionFile)) button.classList.add("active");
+      if (normPath(session.file) === normPath(S.state?.sessionFile)) {
+        button.classList.add("active");
+        button.setAttribute("aria-current", "true");
+      }
       if (session.running) { const indicator = document.createElement("i"); indicator.className = "conversation-spinner"; indicator.setAttribute("role", "img"); indicator.setAttribute("aria-label", "正在执行"); button.title += " · 正在执行"; button.prepend(indicator); }
       button.addEventListener("click", async () => {
         await openSession(session.file); loadProjects();
@@ -3599,6 +3702,7 @@ async function removeWorkspaceItem(remove, serverId = null) {
   closeServerMenus();
   const seq = ++S.sessionSwitchSeq;
   S.switchingSession = true;
+  setConversationWaiting(true);
   try {
     const r = await remove();
     if (seq !== S.sessionSwitchSeq) return;
@@ -3620,6 +3724,7 @@ async function removeWorkspaceItem(remove, serverId = null) {
 async function switchProject(cwd) {
   const seq = ++S.sessionSwitchSeq;
   S.switchingSession = true;
+  setConversationWaiting(true);
   clearChat();
   try {
     const r = await window.halo.projectSwitch(cwd);
@@ -3709,6 +3814,7 @@ function autoGrow() {
 }
 
 function scrollDown(force = false) {
+  if (S.historyHost) return;
   const m = $("#messages");
   if (m.classList.contains("restoring")) return;
   const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 120;
@@ -4425,18 +4531,17 @@ function renderInstalled() {
   }
   box.innerHTML = rows.map(({ p, i }) => {
     const name = esc(p.raw.replace(/^npm:/, ""));
-    const ver = p.update ? `<span class="pkg-ver upd" title="${esc(p.version)} → ${esc(p.latest)}">${esc(p.version)} → ${esc(p.latest)}</span>` : p.version ? `<span class="pkg-ver">v${esc(p.version)}</span>` : "";
+    const ver = p.update ? `<span class="pkg-ver upd" title="${esc(p.version)} → ${esc(p.latest)}">${esc(p.version)} → ${esc(p.latest)}</span>` : p.version ? `<span>v${esc(p.version)}</span>` : "";
+    const badges = (p.types?.length ? p.types : ['package']).map(t => `<span class="pkg-type t-${esc(t)}">${PKG_TYPE_CN[t] || esc(t)}</span>`).join('');
     return `<div class="pkg-row${p.disabled ? " off" : ""}" data-i="${i}">
       <div class="pkg-main">
-        <span class="pkg-name">${name}</span>
-        ${ver}
-        <span class="pkg-kind">${p.kind === "npm" ? "npm" : p.kind === "git" ? "git" : "本地"}</span>
-        ${p.disabled ? `<span class="pkg-off-badge">已停用</span>` : ""}
-        <div class="pkg-installed-desc">${esc(p.desc || "暂未提供简短说明，可打开介绍页面查看功能与用法。")}</div>
+        <div class="pkg-c-head"><span class="pkg-name">${name}</span>${badges}
+          ${p.disabled ? `<span class="pkg-off-badge">已停用</span>` : ""}</div>
+        <div class="pkg-desc">${esc(trunc(p.desc || "暂未提供简短说明，可打开介绍页面查看功能与用法。", 120))}</div>
+        <div class="pkg-meta">${ver}${p.date ? `<span>${relTime(p.date)}</span>` : ''}${p.author ? `<span>@${esc(p.author)}</span>` : ''}${introButton(p)}</div>
       </div>
       <div class="pkg-ops">
         <button class="ext-switch${p.disabled ? "" : " on"}" data-act="toggle" title="${p.disabled ? "启用" : "停用"}"></button>
-        ${introButton(p)}
         ${p.update ? `<button class="mini-btn accent" data-act="update">更新</button>` : ""}
         <button class="mini-btn danger" data-act="remove">卸载</button>
       </div>
@@ -4545,9 +4650,8 @@ async function loadMarket(page) {
         <span>${relTime(p.date)}</span>
         ${p.author ? `<span>@${esc(p.author)}</span>` : ""}
         ${repo}
-        <span class="pkg-spacer"></span>
-        <button class="mini-btn accent" data-act="install" data-name="${esc(p.name)}">安装</button>
       </div>
+      <div class="pkg-ops"><button class="mini-btn accent" data-act="install" data-name="${esc(p.name)}">安装</button></div>
     </div>`;
     }).join("");
   }
@@ -4598,7 +4702,7 @@ async function onInstalledClick(e) {
         badge = document.createElement("span");
         badge.className = "pkg-off-badge";
         badge.textContent = "已停用";
-        main.appendChild(badge);
+        (main.querySelector('.pkg-c-head') || main).appendChild(badge);
       } else if (!p.disabled && badge) badge.remove();
       toast(p.disabled ? "已停用（新会话生效）" : "已启用（新会话生效）", "ok");
     } else {

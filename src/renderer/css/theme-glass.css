@@ -145,3 +145,14 @@
 @supports not (backdrop-filter: blur(1px)) {
   :root[data-surface="glass"] :is(.glass-surface, .input-shell, .modal-panel, .settings-panel) { background: #e8e8e8 !important; }
 }
+
+/* Completion menus sit over dense chat text and need a legible frosted backing. */
+:root[data-surface="glass"] #mentionMenu.glass-surface {
+  background: #f2f2f2 !important;
+  backdrop-filter: blur(20px) saturate(1.1) !important;
+  border-color: rgb(255 255 255 / .75) !important;
+  box-shadow: inset 0 1px 0 #fff9, 0 8px 28px #0002 !important;
+}
+:root[data-surface="glass"] #mentionMenu .mention-option:is(.active, :hover) {
+  background: rgb(0 0 0 / .075);
+}

@@ -11,7 +11,7 @@ function extract(start, end) {
 }
 function node() {
   return { style: {}, classList: { add() {}, remove() {}, contains() { return false; } },
-    appendChild() {}, addEventListener() {}, focus() {}, value: '', scrollHeight: 24, innerHTML: '' };
+    children: [], childNodes: [], replaceChildren() {}, appendChild() {}, addEventListener() {}, focus() {}, value: '', scrollHeight: 24, innerHTML: '' };
 }
 function harness() {
   const input = node(), attachments = node(), messages = node(), calls = [], rows = [], order = [], notices = [];
@@ -19,8 +19,8 @@ function harness() {
     switchingSession: false, streaming: false, images: [], files: [], composerRevision: 0, toolCards: new Map(),
     queued: { steering: [], followUp: [] } };
   const invoke = (method, ...args) => new Promise((resolve, reject) => calls.push({ method, args, resolve, reject }));
-  const context = vm.createContext({
-    S, Map, Date, compactingSessions: new Set(), userMessageParts, userMessageText,
+  const context = vm.createContext({ setConversationWaiting() {}, conversationMotion: { cancel() {}, reveal() {} },
+    S, Map, Date, performance, clearChat() { S.historyHost = null; }, compactingSessions: new Set(), userMessageParts, userMessageText,
     $: selector => ({ '#input': input, '#attachRow': attachments, '#messages': messages, '#projList': node() })[selector] || node(),
     $$: () => [], document: { createElement: node },
     window: { __piDebug: { ignored: 0 }, halo: Object.fromEntries(['prompt', 'steer', 'followUp', 'projectAdd'].map(method => [method, (...args) => invoke(method, ...args)])) },
@@ -43,7 +43,7 @@ function harness() {
     ['function renderAttachments()', '\n/* ---- project'],
     ['function autoGrow()', '\nfunction scrollDown('],
     ['let pendingSessionEvents =', '\nasync function refreshState()'],
-    ['function finishSessionSwitch()', '\nfunction clearChat()'],
+    ['function finishSessionSwitch()', '\nfunction clearChat('],
     ['async function restoreHistory(', '\n/* ============================================================\n   sessions'],
     ['async function switchProjectViaAdd(', '\n/* ---- 项目'],
   ]) vm.runInContext(extract(start, end), context);
@@ -187,7 +187,7 @@ for (const phase of ['project-result', 'history-result']) {
 for (const scenario of ['focused', 'preview', 'background', 'failure']) {
   const calls = [];
   const S = { sessionSwitchSeq: 0, switchingSession: false };
-  const context = vm.createContext({
+  const context = vm.createContext({ setConversationWaiting() {}, conversationMotion: { cancel() {}, reveal() {} },
     S, browsingServerId: 'deleted', previewService: scenario === 'preview' ? { serverId: 'deleted' } : null,
     closeServerMenus() {},
     applyProjectReset: async () => calls.push('reset'),
@@ -234,7 +234,7 @@ for (const method of ['prompt', 'steer', 'followUp']) {
   const end = main.indexOf('  // window controls', start);
   const handlers = {}, reads = [];
   let canceled = false;
-  const picker = vm.createContext({
+  const picker = vm.createContext({ setConversationWaiting() {}, conversationMotion: { cancel() {}, reveal() {} },
     mainWin: null, LIMITS: { IMAGE_PICK: 25 },
     path: { basename: value => value.split('/').at(-1), extname: value => '.' + value.split('.').at(-1) },
     dialog: { showOpenDialog: async (_window, options) => {
@@ -261,3 +261,11 @@ for (const method of ['prompt', 'steer', 'followUp']) {
   assert.equal((await handlers['halo:pick-attachments']()).files.length, 0);
 }
 console.log('PASS file picker, mixed attachments, file-only queue and draft recovery');
+
+// Late refreshes cannot replace the empty view owned by a pending new action.
+{
+  const h = harness();
+  h.S.newSessionPending = true;
+  await h.context.restoreHistory({ state: h.S.state, seq: 0, messages: [{ role: 'user', content: [{ type: 'text', text: 'stale history' }] }] });
+  assert.equal(h.rows.length, 0);
+}

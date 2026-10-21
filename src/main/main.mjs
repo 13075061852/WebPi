@@ -1,3 +1,4 @@
+import { copyFileToClipboard } from './copy-file.mjs';
 import { importWorkspaceFiles } from "./workspace-import.mjs";
 import { searchPackageNames } from './package-name-search.mjs';
 import { listBuiltinSkills, setBuiltinSkillEnabled } from './builtin-skills.mjs';
@@ -586,10 +587,10 @@ function bootstrap() {
   handle('halo:cancel-app-update-install', () => updates.cancelInstall());
   app.once('before-quit', () => updates.dispose());
   if (app.isPackaged && process.env.PI_OFFLINE !== '1') {
-    const firstCheck = setTimeout(() => void updates.check(), 3000);
-    const nextChecks = setInterval(() => void updates.check(), 6 * 60 * 60 * 1000);
-    firstCheck.unref(); nextChecks.unref();
-    app.once('before-quit', () => { clearTimeout(firstCheck); clearInterval(nextChecks); });
+    void updates.check();
+    const nextChecks = setInterval(() => void updates.check(), 60 * 1000);
+    nextChecks.unref();
+    app.once('before-quit', () => clearInterval(nextChecks));
   }
   handle("halo:server-save", (input) => { if (input.id && bridge.isServerBusy(input.id)) throw Error("服务器任务正在运行，请结束后再编辑"); return servers.save(input); });
   handle("halo:server-select", (id) => switchSession(async () => {
@@ -819,7 +820,7 @@ function bootstrap() {
     return result;
   };
   handle("halo:open-session", (file) => switchSession(() => bridge.openSession(file)));
-  handle("halo:new-session", () => switchSession(() => bridge.newSession()));
+  handle("halo:new-session", (cwd) => switchSession(() => bridge.newSession(null, { cwd })));
   handle("halo:delete-session", (file) => switchSession(() => bridge.deleteSession(file)));
   handle("halo:preview-touch", async ({ on }) => {
     previewTouch = !!on;
@@ -928,6 +929,16 @@ function bootstrap() {
     const abs = path.resolve(bridge.cwd || ".", file);
     if (!isInsideProject(abs)) throw new Error("路径超出项目范围");
     return previewDocument(abs, page);
+  });
+
+  handle("halo:copy-file", async (file) => {
+    if (typeof file !== 'string') throw Error('文件路径无效');
+    const abs = path.resolve(bridge.cwd || '.', file);
+    if (!isInsideProject(abs)) throw Error('路径超出项目范围');
+    const stat = await fs.promises.stat(abs).catch(() => null);
+    if (!stat?.isFile()) throw Error('文件已移动或删除');
+    await copyFileToClipboard(abs);
+    return true;
   });
 
   handle("halo:copy-image", async (file) => {
@@ -1078,6 +1089,8 @@ function bootstrap() {
       try {
         const pj = JSON.parse(fs.readFileSync(path.join(piHome(), "npm", "node_modules", name, "package.json"), "utf8"));
         p.version = pj.version || "";
+        p.types = pkgTypes(pj);
+        p.author = typeof pj.author === 'string' ? pj.author : pj.author?.name || '';
         p.desc = pj.description || "";
         p.homepage = pj.homepage || "";
         p.repo = typeof pj.repository === "string" ? pj.repository : pj.repository?.url || "";
@@ -1087,6 +1100,8 @@ function bootstrap() {
         if (res.ok) {
           const j = await res.json();
           p.latest = j.version || "";
+          p.types ||= pkgTypes(j);
+          p.author ||= j._npmUser?.name || (typeof j.author === 'string' ? j.author : j.author?.name) || '';
           p.desc ||= j.description || "";
           p.homepage ||= j.homepage || "";
           p.repo ||= typeof j.repository === "string" ? j.repository : j.repository?.url || "";
@@ -1103,6 +1118,8 @@ function bootstrap() {
         p.desc = pj.description || "";
         p.homepage = pj.homepage || "";
         p.version = pj.version || "";
+        p.types = pkgTypes(pj);
+        p.author = typeof pj.author === 'string' ? pj.author : pj.author?.name || '';
       } catch {}
     }
     return list;

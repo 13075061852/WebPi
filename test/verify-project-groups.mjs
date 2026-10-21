@@ -1,21 +1,30 @@
 import assert from 'node:assert/strict';
-import { PiBridge, HaloStore } from '../src/main/pi-bridge.mjs';
-import { mkdtempSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
-const dir=mkdtempSync(path.join(tmpdir(),'halo-project-groups-'));
-const a=path.join(dir,'a'),b=path.join(dir,'b');mkdirSync(a);mkdirSync(b);
-const store=new HaloStore(path.join(dir,'settings.json'));
-store.set('projects',[{cwd:a},{cwd:b}]);
-const bridge=new PiBridge(store,{}, {sessionDir:path.join(dir,'sessions')});
+import { isolatePi } from './helpers/isolated-pi.mjs';
+const fixture = isolatePi('halo-project-groups-');
+const { PiBridge, HaloStore } = await import('../src/main/pi-bridge.mjs');
+const a = path.join(fixture.dir, 'a'), b = path.join(fixture.dir, 'b');
+fs.mkdirSync(a); fs.mkdirSync(b);
+const store = new HaloStore(path.join(fixture.dir, 'settings.json'));
+store.set('projects', [{ cwd: a }, { cwd: b }]);
+const bridge = new PiBridge(store, {}, { sessionDir: path.join(fixture.dir, 'sessions') });
+bridge.servers = { list: () => [{ id: 'server-only' }] };
 try {
- await bridge.start(a); const draft=await bridge.newSession();
- const projects=await bridge.projectsList();
- assert.ok(projects.find(p=>p.cwd===a).sessions.some(s=>s.file===draft.sessionFile));
- assert.equal(projects.find(p=>p.cwd===b).sessions.length,0);
- await bridge.newSession('server-only');
- const local=(await bridge.projectsList()).find(p=>p.cwd===a).sessions;
- assert.equal(local.length,1);
- console.log('PASS project conversation grouping, draft visibility and server isolation');
-}finally{await bridge.runtime?.dispose();}
-process.exit(0);
+  await bridge.start(a);
+  const draft = await bridge.newSession();
+  assert.equal((await bridge.listSessions()).length, 0);
+  assert.ok((await bridge.projectsList()).every(p => p.sessions.length === 0));
+  const repeated = await bridge.newSession();
+  assert.equal(repeated.sessionId, draft.sessionId, 'Invisible empty draft is still reused');
+  const message = { role: 'user', content: [{ type: 'text', text: 'first message' }], timestamp: Date.now() };
+  bridge.session.sessionManager.appendMessage(message);
+  bridge.session.agent.state.messages.push(message);
+  const projects = await bridge.projectsList();
+  assert.equal(projects.find(p => p.cwd === a).sessions.length, 1);
+  assert.equal(projects.find(p => p.cwd === a).sessions[0].file, draft.sessionFile);
+  assert.equal(projects.find(p => p.cwd === b).sessions.length, 0);
+  await bridge.newSession('server-only');
+  assert.equal((await bridge.projectsList()).find(p => p.cwd === a).sessions.length, 1);
+  console.log('PASS project groups: hidden empty drafts, draft reuse, first message visibility and server isolation');
+} finally { await bridge.dispose(); fixture.cleanup(); }

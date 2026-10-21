@@ -3,7 +3,7 @@ window.initTerminals = (getCwd, toast, openPreview) => {
   const $ = id => document.getElementById(id);
   const records = new Map(), activeByProject = new Map();
   const host = $("termHost"), pane = $("cpane-preview");
-  let tiled = false, sequence = 0, resizeTimer = 0;
+  let tiled = false, resizeTimer = 0;
   const key = () => getCwd().replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
   const current = () => [...records.values()].filter(r => r.project === key());
   const active = () => records.get(activeByProject.get(key()));
@@ -72,7 +72,10 @@ window.initTerminals = (getCwd, toast, openPreview) => {
     const id = crypto.randomUUID(), project = key(), cwd = getCwd();
     const panel = document.createElement("section"); panel.className = "terminal-panel";
     panel.dataset.terminalId = id;
-    const name = "终端 " + (++sequence);
+    const usedNames = new Set(current().map(record => record.name));
+    let number = 1;
+    while (usedNames.has("终端 " + number)) number++;
+    const name = "终端 " + number;
     const label = document.createElement("div"); label.className = "terminal-panel-label"; label.textContent = name;
     const mount = document.createElement("div"); mount.className = "terminal-mount";
     panel.append(label, mount); host.append(panel);

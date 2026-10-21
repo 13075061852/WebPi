@@ -10,12 +10,13 @@ const pending = new Map();
 const body = { innerHTML: '' }, name = {}, mode = {};
 const visibilityChanges = [];
 const context = vm.createContext({
+  sessionPreviewState: { rememberTarget() {} },
   portPreviewRequest: 0, previewService: null, selectedPortKey: null,
   S: { state: { cwd: 'C:/project' }, previewFile: null, previewMode: 'source' },
   resolvePreviewPath,
   setPreviewCollapsed: collapsed => visibilityChanges.push(collapsed),
   updatePortSelection() {},
-  $: selector => ({ '#pvBody': body, '#pvName': name, '#pvMode': mode, '#btnOpenFile': {} })[selector],
+  $: selector => ({ '#pvBody': body, '#pvName': name, '#pvMode': mode, '#btnOpenFile': {}, '#btnBrowser': { classList: { remove() {} }, setAttribute() {} } })[selector],
   window: { halo: { readFile: p => new Promise(resolve => pending.set(p, resolve)) } },
   document: { documentElement: { dataset: { projectCwd: 'C:/project' } } },
   esc: text => text,

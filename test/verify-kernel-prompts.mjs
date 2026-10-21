@@ -69,7 +69,7 @@ try {
   assert.equal((await bridge.start(project)).ready, true);
   const loader = bridge.services.resourceLoader;
   assert.ok(loader instanceof sdk.DefaultResourceLoader, 'Exercise the real production resource loader');
-  const skillNames = ['halo-word', 'halo-excel', 'halo-powerpoint', 'halo-pdf', 'halo-imagegen', 'halo-video-prompt', 'halo-ui-design'];
+  const skillNames = ['halo-word', 'halo-excel', 'halo-powerpoint', 'halo-pdf', 'halo-imagegen', 'halo-video-prompt', 'halo-ui-design', 'halo-video-subtitles'];
   for (const name of skillNames) {
     const skill = loader.getSkills().skills.find(item => item.name === name);
     assert.ok(skill, `Bundled ${name} must be discoverable`);
