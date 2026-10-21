@@ -15,6 +15,8 @@
 6. 上传脚本成功确认三个资产的哈希、大小、状态后，使用同一 CLI 包装入口为草稿设置更新说明并正式发布为 latest。保留本地 EXE、blockmap、latest.yml；下载匿名 `releases/latest/download/latest.yml` 并与本地哈希比较。
 7. 运行 `node scripts/verify-public-update.mjs --installer dist/Pi-Halo-Setup-<上一版>.exe --from <上一版> --to <新版本> --manifest dist/latest.yml`。它使用真实旧安装包和旧 updater 匿名查询正式源，禁止下载/安装，核对新版本、SHA-512 和大小。报告本地绝对路径、版本、Release URL、提交与阶段耗时。
 
+公开更新探针默认直连。若本机需代理访问 GitHub，可在 `verify-public-update.mjs` 命令末尾加 `--proxy http://127.0.0.1:7890`（端口按实际配置）；它只配置隔离探针，不修改个人设置。报告记录直连/代理模式，仍使用真实旧包和匿名更新源，禁止下载或安装。网络失败只重试探针，不重新构建或上传安装器。
+
 流程预览：`npm run release:local -- --plan` 不构建、不访问网络、不修改远端。
 
 ### 单阶段恢复与证据

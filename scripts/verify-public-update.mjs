@@ -15,6 +15,15 @@ const require = createRequire(import.meta.url);
 const argv = process.argv.slice(2);
 const option = name => { const index = argv.indexOf(name); return index < 0 ? undefined : argv[index + 1]; };
 const from = option('--from'), to = option('--to'), installerArg = option('--installer');
+const proxyArg = option('--proxy');
+let proxy;
+if (proxyArg) {
+  const url = new URL(proxyArg);
+  assert.ok(url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname) && !url.username && !url.password && url.port,
+    'Use an explicit local HTTP proxy URL with a port and without credentials');
+  assert.ok(url.pathname === '/' && !url.search && !url.hash, 'Proxy URL must not contain a path, query or fragment');
+  proxy = url.origin === 'null' ? `${url.protocol}//${url.host}` : url.origin;
+}
 assert.ok(from && to && installerArg, 'Required: --installer <previous EXE> --from <version> --to <version>');
 assert.match(from, /^\d+\.\d+\.\d+$/); assert.match(to, /^\d+\.\d+\.\d+$/);
 const installer = path.resolve(installerArg);
@@ -41,9 +50,9 @@ try {
   assert.ok(!config.token && !config.private && !config.requestHeaders, 'Expected an anonymous public GitHub provider');
   const profile = path.join(dir, 'profile'), sdk = path.join(dir, 'pi-sdk.cjs'), resultPath = path.join(dir, 'result.json');
   for (const folder of ['profile', 'roaming', 'local', 'agent', 'gh', 'gcm']) fs.mkdirSync(path.join(dir, folder), { recursive: true });
-  fs.writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({ globalProxy: { mode: 'direct' } }));
+  fs.writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({ globalProxy: proxy ? { mode: 'proxy', port: Number(new URL(proxy).port) } : { mode: 'direct' } }));
   fs.writeFileSync(path.join(dir, 'gitconfig'), '');
-  const options = { from, to, expected: expected.files[0], resultPath };
+  const options = { from, to, proxy, expected: expected.files[0], resultPath };
   const probe = String.raw`
 exports.initTheme = () => {
   if (globalThis.__haloPublicUpdateProbe) return;
@@ -77,6 +86,7 @@ exports.initTheme = () => {
     const requests = [], headersChecked = [];
     const hosts = new Set(['github.com', 'api.github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
     const netSession = updater.netSession;
+    await netSession.setProxy(options.proxy ? { mode: 'fixed_servers', proxyRules: options.proxy, proxyBypassRules: '<local>' } : { mode: 'direct' });
     netSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
       const url = new URL(details.url);
       const blocked = url.protocol !== 'https:' || !hosts.has(url.hostname) || /\.(?:exe|blockmap)(?:$|\/)/i.test(url.pathname);
@@ -105,6 +115,7 @@ exports.initTheme = () => {
     assert.ok(headersChecked.length > 0 && headersChecked.every(item => !item.authenticated));
     const report = { pass: true, from: manifest.version, to: result.updateInfo.version, updaterVersion: oldRequire('electron-updater/package.json').version,
       provider: { provider: 'github', owner: '13075061852', repo: 'WebPi' }, sha512: file.sha512, installerSize: file.size, installerFile: file.url,
+      networkMode: options.proxy ? 'proxy' : 'direct',
       autoDownload: updater.autoDownload, autoInstallOnAppQuit: updater.autoInstallOnAppQuit, anonymous: true, requests, headersChecked };
     fs.writeFileSync(options.resultPath, JSON.stringify(report, null, 2));
     clearTimeout(timeout); app.exit(0);
