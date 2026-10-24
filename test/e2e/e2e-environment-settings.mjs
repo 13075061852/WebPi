@@ -149,7 +149,7 @@ try {
     turn.querySelector('.website-open').click();
   })()`);
   await until(`document.querySelector('#pvName').textContent === 'Website preview /'`);
-  await until(`document.querySelector('.website-load').hidden && !document.querySelector('#pvBody webview').isLoading()`);
+  await until(`!document.querySelector('#pvBody webview').isLoading()`);
   assert.equal(await evaluate(`document.querySelector('.website-open span').textContent`), siteURL);
   assert.equal(await evaluate(`document.querySelectorAll('#websiteFixture .md a').length`), 1);
   assert.equal(await evaluate(`document.querySelector('#websiteFixture .md a').textContent`), '文档');
@@ -158,8 +158,8 @@ try {
   assert.deepEqual(isolation, {node:'undefined', bridge:'undefined'});
   await evaluate(`document.querySelector('#pvBody webview').executeJavaScript('document.querySelector("a").click()', true)`);
   await until(`document.querySelector('.website-toolbar input').value.endsWith('/next')`);
-  await until(`document.querySelector('.website-load').hidden`);
-  assert.equal(await evaluate(`document.querySelector('[data-nav=back], [data-nav=forward]') === null`), true);
+  await until(`document.querySelector('.website-load') === null`);
+  assert.equal(await evaluate(`document.querySelector('[data-nav=forward]') === null`), true);
   const initialViewport = await evaluate(`document.querySelector('#pvBody webview').executeJavaScript('window.innerWidth')`);
   await evaluate(`for (let i=0;i<6;i++) document.querySelector('[data-zoom=in]').click()`);
   await until(`document.querySelector('#pvBody webview').executeJavaScript('window.innerWidth').then(width => Math.abs(width * 2 - ${initialViewport}) < 3)`);
@@ -173,13 +173,13 @@ try {
   assert.equal(await evaluate(`document.querySelector('#pvBody webview').getZoomFactor()`), 0.9);
   const refreshLayout = await evaluate(`(() => {
     const guest = document.querySelector('#pvBody webview'), before = guest.getBoundingClientRect();
-    const button = document.querySelector('[data-nav=reload]'); button.click();
+    const button = document.querySelector('.website-toolbar [type=submit]'); button.click();
     const after = guest.getBoundingClientRect();
-    return {busy:button.getAttribute('aria-busy'), hidden:document.querySelector('.website-load').hidden, stable:before.y === after.y && before.height === after.height};
+    return {busy:button.getAttribute('aria-busy'), hidden:document.querySelector('.website-load') === null, stable:before.y === after.y && before.height === after.height};
   })()`);
   assert.deepEqual(refreshLayout, {busy:'true', hidden:true, stable:true});
-  await until(`document.querySelector('.website-load').hidden && !document.querySelector('#pvBody webview').isLoading()`);
-  await until(`document.querySelector('[data-nav=reload]').getAttribute('aria-busy') === 'false'`);
+  await until(`!document.querySelector('#pvBody webview').isLoading()`);
+  await until(`document.querySelector('.website-toolbar [type=submit]').getAttribute('aria-busy') === 'false'`);
   assert.equal(await evaluate(`document.querySelector('#pvBody webview').getZoomFactor()`), 0.9);
   await evaluate(`document.querySelector('[data-zoom=reset]').click()`);
   assert.equal(await evaluate(`document.querySelector('#pvBody webview').getZoomFactor()`), 1);

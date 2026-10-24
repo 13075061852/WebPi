@@ -1,3 +1,4 @@
+import { readEditableFile, saveEditableFile } from './text-file-editor.mjs';
 import { copyFileToClipboard } from './copy-file.mjs';
 import { importWorkspaceFiles } from "./workspace-import.mjs";
 import { searchPackageNames } from './package-name-search.mjs';
@@ -966,6 +967,9 @@ function bootstrap() {
     }));
     return found.filter(Boolean);
   });
+
+  handle("halo:read-editable-file", p => readEditableFile(bridge.cwd || process.cwd(), p));
+  handle("halo:save-editable-file", input => saveEditableFile(bridge.cwd || process.cwd(), input));
 
   handle("halo:read-file", async (p) => {
     const abs = path.resolve(bridge.cwd || ".", p);

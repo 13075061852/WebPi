@@ -149,6 +149,8 @@ contextBridge.exposeInMainWorld("halo", {
   copyFile: (file) => ipcRenderer.invoke("halo:copy-file", file),
   copyImage: (file) => ipcRenderer.invoke("halo:copy-image", file),
   artifactFiles: (files, options) => ipcRenderer.invoke("halo:artifact-files", files, options),
+  readEditableFile: p => ipcRenderer.invoke("halo:read-editable-file", p),
+  saveEditableFile: input => ipcRenderer.invoke("halo:save-editable-file", input),
   readFile: (p) => ipcRenderer.invoke("halo:read-file", p),
   openPath: (p) => ipcRenderer.invoke("halo:open-path", p),
   openExternal: (url) => ipcRenderer.invoke("halo:open-external", url),

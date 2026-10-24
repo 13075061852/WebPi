@@ -1,3 +1,6 @@
+import { createFileEditor } from './file-editor.mjs';
+import { initTooltips } from './tooltips.mjs';
+import { fileIconFor } from './file-icons.mjs';
 import { createSessionPreviewState } from './session-preview-state.mjs';
 import { syncConversationSelection } from './conversation-selection.mjs';
 import { createConversationMotion } from './conversation-motion.mjs';
@@ -10,7 +13,7 @@ import { initProxySettings } from './proxy-settings.mjs';
 import { initThemePreviews } from './theme-previews.mjs';
 import { initGlassMaterial } from './glass-material.mjs';
 import { initReleaseHistory } from './release-history.mjs';
-import { initStartupProgress } from './startup.mjs';
+import { initStartupProgress, waitForStartupFrame } from './startup.mjs';
 import { createLayoutMotion } from './layout-motion.mjs';
 import { createModalMotion } from './modal-motion.mjs';
 import { websiteURL, websiteAddress, renderWebsiteCards, mountWebsiteBrowser } from './website-preview.mjs';
@@ -41,6 +44,9 @@ import { starterPrompts } from './starter-prompts.mjs';
    ============================================================ */
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+initTooltips();
+const fileEditor = createFileEditor({ api: window.halo, body: $('#pvBody'), status: $('#fileEditStatus'),
+  notify: (...args) => toast(...args) });
 const conversationMotion = createConversationMotion();
 const sessionPreviewState = createSessionPreviewState(localStorage);
 let environmentSettings;
@@ -195,8 +201,8 @@ function restoreInitialWorkspace() {
     await Promise.all([loadSessions(), loadResources()]);
     await restoreWorkspace();
     await Promise.all([loadTree(true), loadProjects()]);
-    // Commit the restored layout before main replaces the small launch window.
-    await new Promise(resolve => requestAnimationFrame(resolve));
+    // Yield for layout without waiting a full throttled hidden-window frame.
+    await waitForStartupFrame();
     await window.halo.workspaceReady?.();
   })().catch(reportWorkspaceFailure).finally(() => { initialWorkspacePromise = null; });
   return initialWorkspacePromise;
@@ -247,7 +253,7 @@ async function openWebsite(value, projectRun = null, { reveal = true } = {}) {
   S.previewFile = null; selectedPortKey = null; updatePortSelection();
   previewService = {kind:'website', url, status:'loading',
     ...(projectRun?.cwd ? { projectCwd: projectRun.cwd, projectOrigin: new URL(url).origin } : {})};
-  $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
+  fileEditor.detach(); $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
   $('#btnBrowser').classList.add('active');
   $('#btnBrowser').title = '退出浏览器预览';
   $('#btnBrowser').setAttribute('aria-label', '退出浏览器预览');
@@ -376,7 +382,7 @@ async function loadServerPorts(force = false) {
       const request = ++portPreviewRequest;
       selectedPortKey = key; updatePortSelection();
       previewService = {kind:"service", serverId:id, port:item.port, protocol:item.protocol, address:item.address, process:item.process, status:"opening", request};
-      S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true;
+      S.previewFile = null; fileEditor.detach(); $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true;
       const serverLabel = document.querySelector('.server-group[data-server-id="' + CSS.escape(id) + '"] .server-group-toggle span')?.textContent || "服务器";
       $("#pvName").textContent = serverLabel + " · " + item.port;
       body.innerHTML = '<div class="pv-empty"><p>正在连接网页服务…</p></div>';
@@ -416,7 +422,8 @@ async function refreshServers() {
   const r = await window.halo.serverList();
   if (request !== serverListRequest || draggedServer) return;
   if (!r?.ok) { toast(r?.error || "服务器列表读取失败", "err"); return; }
-  const { items, selected, conversations = [] } = r.data;
+  const { items, selected } = r.data;
+  const conversations = (r.data.conversations || []).filter(sessionNotDeleted);
   syncServerPorts(selected, items);
   const list = $("#serverList"); list.replaceChildren();
   if (!items.length) list.innerHTML = '<div class="res-empty">添加服务器，通过 SSH 远程管理</div>';
@@ -506,7 +513,8 @@ async function refreshServers() {
       remove.title = "删除会话"; remove.setAttribute("aria-label", "删除会话 " + conversation.name);
       remove.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>';
       remove.addEventListener("click", () => requestDeleteSession(conversation, row, remove));
-      row.append(button, conversationRenameButton(conversation), remove); children.appendChild(row);
+      row.append(button, conversationActions(conversation, remove));
+      syncSessionDeleteControls(conversation, row, remove); children.appendChild(row);
     }
     if (server.id === selected) group.classList.add("current");
     list.appendChild(group);
@@ -1978,7 +1986,7 @@ async function restoreHistory(viewOverride) {
   // 历史回放不播入场动效（切换会话/启动时保持安静）
   // Build off-screen so intermediate chunks never paint or change scroll position.
   const toolCards = new Map(); // toolCallId -> 卡片引用，用于回填 toolResult
-  /* 逐条恢复（分块渲染：每帧最多 CHUNK 条，大会话不阻塞 UI） */
+  /* 逐条恢复：离屏分块，避免隐藏窗口的动画帧限速拖住启动。 */
   let turnStart = null, savedTiming = null;
   const restoreOne = (m) => {
     const timestamp = m.timestamp ? new Date(m.timestamp).getTime() : null;
@@ -2065,19 +2073,26 @@ async function restoreHistory(viewOverride) {
       renderModelError(m.errorMessage, { provider: m.provider, model: m.model });
     }
   };
-  await new Promise((resolve) => {
+  await new Promise((resolve, reject) => {
     let i = 0;
     const CHUNK = 24;
     const step = () => {
-      if (switchSeq !== S.sessionSwitchSeq) { resolve(); return; }
-      const end = Math.min(i + CHUNK, msgs.length);
-      const deadline = performance.now() + 6;
-      for (; i < end; i++) {
-        restoreOne(msgs[i]);
-        if (performance.now() >= deadline) { i++; break; }
+      try {
+        if (switchSeq !== S.sessionSwitchSeq) { resolve(); return; }
+        const end = Math.min(i + CHUNK, msgs.length);
+        const deadline = performance.now() + 6;
+        for (; i < end; i++) {
+          restoreOne(msgs[i]);
+          if (performance.now() >= deadline) { i++; break; }
+        }
+        // The history is built off-screen. It need not wait for paint frames,
+        // which can arrive only once per second while the launch window is up.
+        if (i < msgs.length) setTimeout(step, 0);
+        else resolve();
+      } catch (error) {
+        if (S.historyHost === historyHost) S.historyHost = null;
+        reject(error);
       }
-      if (i < msgs.length) requestAnimationFrame(step);
-      else resolve();
     };
     step();
   });
@@ -2139,7 +2154,7 @@ async function loadSessions() {
   loadProjects();
   const r = await window.halo.listSessions();
   if (request !== sessionListRequest || cwd !== S.state?.cwd) return;
-  S.sessions = r?.data || [];
+  S.sessions = (r?.data || []).filter(sessionNotDeleted);
   const cur = normPath(S.state?.sessionFile || "");
   const list = $("#sessionList");
   if (!S.sessions.length) {
@@ -2156,6 +2171,7 @@ async function loadSessions() {
     const file = (s.file || "").split(/[\\/]/).pop().replace(/\.jsonl$/, "");
     const main = document.createElement("button");
     main.className = "s-main";
+    main.dataset.conversationFile = s.file || "";
     main.innerHTML = `<span class="s-head"><span class="s-name">${esc(s.name || friendlySession(file))}</span>
       ${s.running ? `<span class="s-run"><i class="s-busy"></i>运行中</span>` : ""}</span>
       <span class="s-meta">${s.modified ? new Date(s.modified).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}${s.messageCount != null ? " · " + s.messageCount + "条" : ""}</span>`;
@@ -2172,39 +2188,78 @@ async function loadSessions() {
       requestDeleteSession(s, item, del);
     });
     item.append(main, del);
+    syncSessionDeleteControls(s, item, del);
     list.appendChild(item);
   }
 }
 
-/* 删除会话：两步确认，避免误删；删除当前会话时先切到新会话 */
-function requestDeleteSession(s, item, del) {
-  if (!item.classList.contains("confirm")) {
-    item.classList.add("confirm");
-    del.title = "再次点击确认删除";
-    clearTimeout(item._confirmTimer);
-    item._confirmTimer = setTimeout(() => {
-      item.classList.remove("confirm");
-      del.title = "删除会话";
-    }, CONFIRM_RESET_MS);
+// Keep confirmation/pending state by file, since background updates rebuild rows.
+const sessionDeletions = new Map();
+const sessionNotDeleted = session => !sessionDeletions.get(normPath(session.file))?.deleted;
+function syncSessionDeleteControls(session, item, del) {
+  const state = sessionDeletions.get(normPath(session.file));
+  item.classList.toggle("confirm", !!state && !state.pending && !state.deleted);
+  if (state?.pending) item.setAttribute("aria-busy", "true");
+  else item.removeAttribute("aria-busy");
+  for (const button of item.querySelectorAll("button")) button.disabled = !!state?.pending;
+  del.title = state?.pending ? "正在删除会话" : state ? "再次点击确认删除" : "删除会话";
+}
+function syncSessionDeleteRows(file) {
+  for (const button of document.querySelectorAll('[data-conversation-file]')) {
+    if (normPath(button.dataset.conversationFile) !== normPath(file)) continue;
+    const row = button.closest('.server-conversation-row, .session-item');
+    if (!row) continue;
+    if (sessionDeletions.get(normPath(file))?.deleted) { row.remove(); continue; }
+    syncSessionDeleteControls({ file }, row, row.querySelector('.server-conversation-delete:not(.server-conversation-rename), .s-del'));
+  }
+}
+/* Two clicks confirm deletion, including across background list refreshes. */
+async function requestDeleteSession(s, item, del) {
+  const key = normPath(s.file), previous = sessionDeletions.get(key);
+  if (previous?.pending || previous?.deleted) return;
+  if (!previous) {
+    const state = { timer: setTimeout(() => {
+      if (sessionDeletions.get(key) !== state) return;
+      sessionDeletions.delete(key);
+      syncSessionDeleteRows(s.file);
+    }, CONFIRM_RESET_MS) };
+    sessionDeletions.set(key, state);
+    syncSessionDeleteControls(s, item, del);
+    syncSessionDeleteRows(s.file);
     return;
   }
-  clearTimeout(item._confirmTimer);
-  const isCurrent = normPath(S.state?.sessionFile || "") === normPath(s.file || "");
-  if (isCurrent && S.streaming) return toast("任务进行中，先按 Esc 中止再删除", "err");
-  del.disabled = true;
-  window.halo.deleteSession(s.file)
-    .then(async (r) => {
-      if (!r?.ok) throw new Error(r?.error || "删除失败");
-      if (r.data?.switched) {
-        clearChat();
-        await restoreHistory();
-        toast("会话已删除", "ok");
-      } else {
-        toast("会话已删除", "ok");
-      }
-      await Promise.all([loadSessions(), refreshServers()]);
-    })
-    .catch((e) => { toast(e.message || "删除失败", "err"); loadSessions(); refreshServers(); });
+  clearTimeout(previous.timer);
+  const isCurrent = normPath(S.state?.sessionFile) === key;
+  if (isCurrent && S.streaming) {
+    sessionDeletions.delete(key); syncSessionDeleteRows(s.file);
+    return toast("任务进行中，先按 Esc 中止再删除", "err");
+  }
+  sessionDeletions.set(key, { pending: true });
+  syncSessionDeleteRows(s.file);
+  const switchSeq = S.sessionSwitchSeq;
+  try {
+    const r = await window.halo.deleteSession(s.file);
+    if (!r?.ok) throw new Error(r?.error || "删除失败");
+    // Remove immediately, before restoring another conversation. Retain a
+    // tombstone so older list replies cannot resurrect a deleted row.
+    sessionDeletions.set(key, { deleted: true });
+    S.sessions = S.sessions.filter(sessionNotDeleted);
+    syncSessionDeleteRows(s.file);
+    toast("会话已删除", "ok");
+    void Promise.all([loadSessions(), refreshServers()]).catch(() => {});
+    if (r.data?.switched && switchSeq === S.sessionSwitchSeq) {
+      clearChat();
+      await restoreHistory();
+    }
+  } catch (error) {
+    // A history reload failure must not undo a successful deletion.
+    if (!sessionDeletions.get(key)?.deleted) {
+      sessionDeletions.delete(key);
+      syncSessionDeleteRows(s.file);
+      void Promise.all([loadSessions(), refreshServers()]).catch(() => {});
+    }
+    toast(error.message || "删除失败", "err");
+  }
 }
 
 const normPath = (p) => String(p || "").replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
@@ -2596,7 +2651,12 @@ function wireUI() {
       finally { expandingPreviewWindow = false; }
     } else setPreviewCollapsed(!previewPaneCollapsed);
   });
+  $('#btnPreviewExclusive').addEventListener('click', () => applyPreviewLayout(() => {
+    document.body.classList.remove('focus-mode');
+    document.body.classList.toggle('preview-exclusive');
+  }, { maskPreview: true }));
   $("#btnFocus").addEventListener("click", () => applyPreviewLayout(() => {
+    document.body.classList.remove('preview-exclusive');
     const on = document.body.classList.toggle("focus-mode");
     $("#btnFocus").title = on ? "退出专注模式（恢复侧栏与工作区）" : "专注模式 · 对话全屏（隐藏侧栏与工作区）";
   }));
@@ -2892,7 +2952,7 @@ function toggleSidebar() {
 let layoutMotionPaused = false;
 function syncPreviewMotion(settle = false) {
   const paused = layoutMotionPaused || !!$('.modal:not([hidden]), .image-viewer[open]') ||
-    document.body.classList.contains('preview-collapsed') || document.body.classList.contains('preview-auto-collapsed') || document.body.classList.contains('focus-mode');
+    (!document.body.classList.contains('preview-exclusive') && (document.body.classList.contains('preview-collapsed') || document.body.classList.contains('preview-auto-collapsed'))) || document.body.classList.contains('focus-mode');
   return window.halo.previewMotion?.(paused, settle).catch(() => {});
 }
 const applyPreviewLayout = createLayoutMotion({ setPaused: paused => { layoutMotionPaused = paused; return syncPreviewMotion(paused); } });
@@ -2922,6 +2982,7 @@ function setPreviewCollapsed(collapsed, { remember = true } = {}) {
     // A queued reveal must not win over a later project switch or manual fold.
     if (request !== previewVisibilityRequest) return;
     document.body.classList.remove('focus-mode');
+    if (collapsed) document.body.classList.remove('preview-exclusive');
     document.body.classList.toggle('preview-collapsed', collapsed);
     $('#center').inert = collapsed;
     const button = $('#btnPreviewToggle');
@@ -2953,7 +3014,7 @@ function resetPreview() {
   portPreviewRequest++;
   previewService = null; selectedPortKey = null; updatePortSelection();
   S.previewFile = null;
-  $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
+  fileEditor.detach(); $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
   $('#pvBody').innerHTML = previewEmpty();
   $('#pvName').textContent = '未选择文件';
   // Visibility belongs to the conversation, even when its workspace is reset.
@@ -2989,12 +3050,6 @@ const fmtSize = (n) => (n >= 1024 * 1024 ? (n / 1048576).toFixed(1) + "M" : n >=
 const FOLDER_IC = `<svg viewBox="0 0 24 24" class="ic f-ic dir-ic"><path d="M4 6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg>`;
 const FILE_IC = `<svg viewBox="0 0 24 24" class="ic f-ic"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>`;
 const TRASH_IC = `<svg viewBox="0 0 24 24" class="ic"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>`;
-const EXT_COLORS = { html: "#e8622d", htm: "#e8622d", css: "#3b82c4", js: "#c4a13b", mjs: "#c4a13b", ts: "#3b76c4", py: "#3b76c4", md: "#6b7f96", json: "#8a8f3a", svg: "#9a5fc4" };
-const fileIconFor = (name) => {
-  const ext = name.split(".").pop().toLowerCase();
-  const col = EXT_COLORS[ext];
-  return col ? FILE_IC.replace("class=\"ic f-ic\"", `class=\"ic f-ic\" style=\"color:${col}\"`) : FILE_IC;
-};
 
 function findNodeByPath(nodes, p) {
   for (const n of nodes) {
@@ -3135,7 +3190,7 @@ function renderTree() {
         if (r?.error) { del.disabled = false; toast(r.error, "err"); return; }
         toast("已删除 ✓", "ok");
         const d = normSlashes(n.path);
-        if (S.previewFile && normSlashes(S.previewFile).startsWith(d)) { S.previewFile = null; $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true; $("#pvName").textContent = "未选择文件"; $("#pvBody").innerHTML = previewEmpty(); }
+        if (S.previewFile && normSlashes(S.previewFile).startsWith(d)) { S.previewFile = null; fileEditor.detach(); $("#btnOpenFile").hidden = true; $("#pvMode").hidden = true; $("#pvName").textContent = "未选择文件"; $("#pvBody").innerHTML = previewEmpty(); }
         if (S.selectedFile && normSlashes(S.selectedFile).startsWith(d)) S.selectedFile = null;
         if (S.creating?.parent && normSlashes(S.creating.parent).startsWith(d)) S.creating = null;
         await loadTree(true);
@@ -3231,15 +3286,23 @@ async function setPreview(p, force, { reveal = true } = {}) {
   sessionPreviewState.rememberTarget({ kind: "file", file: p, mode: S.previewMode });
   $("#btnOpenFile").hidden = !p;
   const ext = p.split(".").pop().toLowerCase();
+  fileEditor.select(p, !['pdf', 'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt', 'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac',
+    'mp4', 'webm', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'exe', 'dll', 'zip', '7z', 'gz', 'wasm'].includes(ext));
   $("#pvName").textContent = p.split(/[\\\\/]/).pop();
   const body = $("#pvBody");
   const isHtml = ext === "html" || ext === "htm";
+  const isMarkdown = ext === "md" || ext === "markdown";
   const modeCtl = $("#pvMode");
   if (modeCtl) {
-    modeCtl.hidden = !isHtml;
-    modeCtl.textContent = S.previewMode === "source" ? "渲染" : "源码";
-    modeCtl.title = S.previewMode === "source" ? "渲染页面" : "查看源代码";
+    modeCtl.hidden = !isHtml && !isMarkdown;
+    modeCtl.textContent = S.previewMode === "source" ? "预览" : "源码";
+    modeCtl.title = S.previewMode === "source" ? "预览文件" : "编辑源代码";
     modeCtl.ariaLabel = modeCtl.title;
+  }
+  if ((!isHtml && !isMarkdown) || S.previewMode === 'source' || (!isMarkdown && fileEditor.hasDraft(p))) {
+    body.innerHTML = '<div class="fv-note">加载中…</div>';
+    const opened = await fileEditor.open({ quiet: true });
+    if (request !== portPreviewRequest || opened) return;
   }
   if (["pdf", "docx", "xlsx", "pptx", "doc", "xls", "ppt"].includes(ext)) {
     body.innerHTML = '<div class="fv-note">正在加载文档…</div>';
@@ -3280,7 +3343,8 @@ async function setPreview(p, force, { reveal = true } = {}) {
     img.src=previewURL(p);body.replaceChildren(mediaPreviewShell(img));
   } else if (["md", "markdown"].includes(ext)) {
     body.innerHTML = `<div class="md-view">加载中…</div>`;
-    const r = await window.halo.readFile(p);
+    const draft = fileEditor.draftContent(p);
+    const r = draft === undefined ? await window.halo.readFile(p) : { data: { content: draft, path: p } };
     if (request !== portPreviewRequest) return;
     body.innerHTML = r?.data
       ? `<div class="md-view">${mdRender(r.data.content, r.data.path || p)}</div>`
@@ -3640,7 +3704,7 @@ async function loadProjects() {
   const r = await window.halo.projectsList();
   if (request !== projectListRequest) return;
   if (!r?.ok) { toast(r?.error || "项目列表读取失败", "err"); return; }
-  const list = r?.data || [];
+  const list = (r?.data || []).map(project => ({ ...project, sessions: (project.sessions || []).filter(sessionNotDeleted) }));
   projectRows = list;
   renderProjectGroups(box, list);
   gitRepositoriesUI?.updateProjects();
@@ -3675,7 +3739,7 @@ function renderProjectGroups(box, list, { onManage } = {}) {
       collapsedProjects.delete(normPath(p.cwd)); saveProjectFolds(); await newSession(p.cwd); await loadProjects(); $("#input").focus();
     });
     if (!p.sessions?.length) children.innerHTML = '<div class="server-conversation-empty">暂无对话，点击右上角新建</div>';
-    for (const session of p.sessions || []) {
+    for (const session of (p.sessions || []).filter(sessionNotDeleted)) {
       const row = document.createElement("div"); row.className = "project-conversation server-conversation-row";
       const button = document.createElement("button"); button.className = "project-conversation-name server-conversation";
       button.dataset.conversationFile = session.file || "";
@@ -3691,7 +3755,8 @@ function renderProjectGroups(box, list, { onManage } = {}) {
       const remove = document.createElement("button"); remove.className = "project-conversation-remove server-conversation-delete"; remove.title = "删除会话"; remove.setAttribute("aria-label", "删除会话 " + (session.name || "新会话"));
       remove.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>';
       remove.addEventListener("click", () => requestDeleteSession(session, row, remove));
-      row.append(button, conversationRenameButton(session), remove); children.appendChild(row);
+      row.append(button, conversationActions(session, remove));
+      syncSessionDeleteControls(session, row, remove); children.appendChild(row);
     }
     projectRunnerUI.mount(group, p);
     box.appendChild(group);
@@ -3748,9 +3813,17 @@ async function switchProject(cwd) {
    ============================================================ */
 const modalMotion = createModalMotion({ syncPreview: syncPreviewMotion });
 let renameTarget = null;
+function conversationActions(conversation, remove) {
+  const group = document.createElement('div');
+  group.className = 'conversation-actions';
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', '对话操作');
+  group.append(conversationRenameButton(conversation), remove);
+  return group;
+}
 function conversationRenameButton(conversation) {
   const button = document.createElement('button');
-  button.className = 'server-conversation-rename server-conversation-delete';
+  button.className = 'server-conversation-rename';
   button.title = '重命名对话';
   button.setAttribute('aria-label', '重命名对话 ' + (conversation.name || '新会话'));
   button.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="m15 5 4 4M4 20l4-1L20 7l-4-4L4 15Z"/></svg>';

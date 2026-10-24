@@ -1,3 +1,19 @@
+/** Hidden Windows renderers can receive animation frames only once per second.
+ * Prefer the next frame, but do not hold a restored workspace behind that delay.
+ * Showing the already-painted window commits the latest DOM in either case. */
+export function waitForStartupFrame(host = window) {
+  return new Promise(resolve => {
+    let frame, timer;
+    const finish = () => {
+      host.cancelAnimationFrame(frame);
+      host.clearTimeout(timer);
+      resolve();
+    };
+    frame = host.requestAnimationFrame(finish);
+    timer = host.setTimeout(finish, 50);
+  });
+}
+
 /** A compact, accessible view of actual startup work; no simulated percentage. */
 export function initStartupProgress({ api = window.halo, root = document, onRetry = () => {} } = {}) {
   const panel = root.getElementById('startupProgress');

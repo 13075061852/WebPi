@@ -11,22 +11,11 @@ function within(promise, ms) {
 export function createLayoutMotion({ setPaused }) {
   const root = document.documentElement;
   const layout = document.querySelector('#layout');
-  const host = typeof layout.startViewTransition === 'function' ? layout : root;
   const pending = [];
   const masks = new Set();
   let maskFades = [];
   let running = false;
   const selectors = { sidebar: '#sidebar', center: '#center', chat: '#chat', device: '#pvBody .dev-shell' };
-  function measure(morphingDevice = false, captureDevice = true) {
-    return Object.fromEntries(Object.entries(selectors).map(([name, selector]) => {
-      const element = document.querySelector(selector);
-      const rect = element?.getBoundingClientRect();
-      const chrome = morphingDevice && name === 'device';
-      const visible = (name !== 'device' || captureDevice) && rect?.width > 1 && rect.height > 1 && (chrome || element.checkVisibility({ visibilityProperty: true, opacityProperty: true }));
-      if (element) element.style.viewTransitionName = visible && !chrome ? `layout-${name}` : 'none';
-      return [name, visible ? rect : null];
-    }));
-  }
   function holdViewports() {
     const held = [...document.querySelectorAll('#pvBody iframe, #pvBody webview')].map(element => {
       const { width, height } = element.getBoundingClientRect();
@@ -72,7 +61,7 @@ export function createLayoutMotion({ setPaused }) {
   async function slideLivePanes(changes) {
     // Panes must stay live in every theme: scaling captured textures can stretch
     // the entire text layer during Chromium's snapshot capture/handoff.
-    const panes = [...layout.children].filter(element => element.matches('#sidebar, #center'));
+    const panes = [...layout.children].filter(element => element.matches('#sidebar, #center, #chat'));
     const visible = panes.filter(element => element.getBoundingClientRect().width > 1 && element.checkVisibility({ visibilityProperty: true }));
     const before = getComputedStyle(layout).gridTemplateColumns;
     const restoreViewports = holdViewports();
@@ -113,149 +102,104 @@ export function createLayoutMotion({ setPaused }) {
     }
     await within(setPaused(true), 350).catch(() => {});
   }
+  async function morphLiveDevice(changes) {
+    const panes = [...layout.children].filter(element => element.matches('#sidebar, #center, #chat'));
+    const before = new Map(panes.map(element => [element, element.getBoundingClientRect()]));
+    const restoreViewports = holdViewports();
+    const morph = createDeviceMorph();
+    const animations = [];
+    const restores = [];
+    let interrupted = false;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+    const cancel = () => animations.forEach(animation => animation.cancel());
+    const interrupt = () => { interrupted = true; cancel(); };
+    const hidden = () => { if (document.hidden) interrupt(); };
+    const reduce = () => { if (reduced.matches) interrupt(); };
+    root.classList.add('layout-motion', 'layout-motion-live');
+    panes.filter(element => element.checkVisibility({ visibilityProperty: true })).forEach(element => element.classList.add('layout-live-visible'));
+    try {
+      // Commit the final grid once. Interpolating grid tracks reflows a long
+      // transcript on every frame; translate and clip fixed-size live panes.
+      changes.forEach(item => item.change());
+      const after = new Map(panes.map(element => [element, element.getBoundingClientRect()]));
+      const options = { duration: 280, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'both' };
+      if (morph) animations.push(...morph.animate(options));
+      for (const element of panes) {
+        const first = before.get(element), last = after.get(element);
+        if (!first.width || !last.width || (first.x === last.x && first.width === last.width)) continue;
+        const width = Math.max(first.width, last.width);
+        const properties = ['width', 'will-change', 'overflow'];
+        const saved = properties.map(key => [key, element.style.getPropertyValue(key), element.style.getPropertyPriority(key)]);
+        restores.push(() => saved.forEach(([key, value, priority]) => value ? element.style.setProperty(key, value, priority) : element.style.removeProperty(key)));
+        element.style.width = `${width}px`;
+        const clips = element.id !== 'chat';
+        element.style.willChange = clips ? 'transform, clip-path' : 'transform';
+        element.style.overflow = 'hidden';
+        // The window already clips the chat's right edge. An additional moving
+        // clip on the transcript needlessly rasterizes newly exposed text tiles.
+        const animation = element.animate([
+          { transform: `translateX(${first.x - last.x}px)`, ...(clips ? { clipPath: `inset(0 ${width - first.width}px 0 0)` } : {}) },
+          { transform: 'translateX(0px)', ...(clips ? { clipPath: `inset(0 ${width - last.width}px 0 0)` } : {}) },
+        ], options);
+        animation.id = 'device-pane-motion';
+        animations.push(animation);
+      }
+      // Raster the fixed-size panes and new chrome before advancing the clocks.
+      // Otherwise uploading the first text texture consumes the first slide frames.
+      // Raster a subpixel intermediate shape too, so new clip surfaces are
+      // uploaded while stationary rather than during the first moving frames.
+      for (const animation of animations) { animation.pause(); animation.currentTime = 1; }
+      // Capture before an interrupt can replace a cancelled .finished promise.
+      const finished = Promise.allSettled(animations.map(animation => animation.finished));
+      window.addEventListener('resize', interrupt);
+      document.addEventListener('visibilitychange', hidden);
+      reduced.addEventListener('change', reduce);
+      await new Promise(resolve => {
+        let frame, paints = 0;
+        const finish = () => { clearTimeout(timer); cancelAnimationFrame(frame); resolve(); };
+        const timer = setTimeout(finish, 120);
+        const raster = () => { if (++paints === 4) finish(); else frame = requestAnimationFrame(raster); };
+        frame = requestAnimationFrame(raster);
+      });
+      for (const animation of animations) if (animation.playState === 'paused') { animation.currentTime = 0; animation.play(); }
+      await within(finished, 1500).catch(() => {});
+    } finally {
+      window.removeEventListener('resize', interrupt);
+      document.removeEventListener('visibilitychange', hidden);
+      reduced.removeEventListener('change', reduce);
+      if (interrupted) morph?.dispose();
+      else morph?.finish();
+      cancel();
+      restores.forEach(restore => restore());
+      restoreViewports();
+      // Paint the guest at its final viewport before removing the chrome cover.
+      await within(setPaused(true), 350).catch(() => {});
+      morph?.dispose();
+      panes.forEach(element => element.classList.remove('layout-live-visible'));
+      root.classList.remove('layout-motion-live');
+    }
+  }
   async function drain() {
     running = true;
     try {
+      // Drain the guest's already-scheduled native frame before starting the
+      // slide; otherwise a busy canvas uploads its last frame mid-animation.
       await within(setPaused(true), 350).catch(() => {});
       while (pending.length) {
         const changes = pending.splice(0);
         if (masks.size || changes.some(item => item.maskPreview)) coverPreview();
-        const livePanes = changes.some(item => !item.device);
-        if (document.hidden || (!livePanes && !document.startViewTransition) || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        if (document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches) {
           changes.forEach(item => item.change());
           await within(setPaused(true), 350).catch(() => {});
           if (!pending.length) await revealPreview();
           continue;
         }
-        // Only embedded websites use the captured guest/chrome handoff. Local
-        // documents and lock screens must keep the workspace live: capturing
-        // these surfaces can stretch text layers and flash an empty shell.
         const embeddedPage = document.querySelector('#pvBody .dev-shell:not(.dev-document-shell) :is(iframe, webview)');
-        if (livePanes || !embeddedPage) {
-          await slideLivePanes(changes);
-          if (!pending.length) await revealPreview();
-          continue;
-        }
-        root.classList.add('layout-motion');
-        root.classList.toggle('layout-motion-global', host === root);
-        const origin = host === root ? { x: 0, y: 0 } : host.getBoundingClientRect();
-        const previewFold = changes.some(item => item.previewFold);
-        root.classList.toggle('layout-preview-fold', previewFold);
-        // Capture the preview as one surface so its device chrome cannot float
-        // above the chat while the chat covers/unveils the preview.
-        const before = measure(false, !previewFold);
-        const deviceMorph = host !== root && before.device && masks.size ? createDeviceMorph() : null;
-        const motionOptions = { duration: 280, easing: deviceMorph ? 'cubic-bezier(.4,0,.2,1)' : 'cubic-bezier(.22,.68,0,1)', fill: 'both' };
-        const restoreViewports = holdViewports();
-        root.classList.toggle('layout-device-held', !!before.device && !deviceMorph);
-        let after, committed = false;
-        const update = () => {
-          if (committed) return;
-          committed = true;
-          changes.forEach(item => item.change());
-          after = measure(!!deviceMorph, !previewFold);
-          root.classList.toggle('layout-sidebar-enter', !before.sidebar && !!after.sidebar);
-          root.classList.toggle('layout-sidebar-leave', !!before.sidebar && !after.sidebar);
-        };
-        const transition = host === root ? document.startViewTransition(update) : host.startViewTransition({ update });
-        const temporary = [];
-        const resize = () => { transition.skipTransition(); temporary.forEach(animation => animation.cancel()); deviceMorph?.cancel(); };
-        const hidden = () => { if (document.hidden) resize(); };
-        if (deviceMorph) window.addEventListener('resize', resize, { once: true });
-        document.addEventListener('visibilitychange', hidden);
-        try {
-          // Keep this await on the native promise: another microtask between
-          // readiness and animation replacement exposes cancelled snapshots.
-          const readyTimer = setTimeout(() => transition.skipTransition(), 1800);
-          try { await transition.ready; } finally { clearTimeout(readyTimer); }
-          if (previewFold && !!before.center !== !!after.center) {
-            const rect = before.center || after.center;
-            const closing = !!before.center;
-            const pseudoElement = '::view-transition-group(layout-center)';
-            for (const animation of document.getAnimations()) {
-              if (animation.effect?.pseudoElement === pseudoElement) animation.cancel();
-            }
-            temporary.push(host.animate([
-              { clipPath: closing ? 'inset(0 0% 0 0)' : 'inset(0 100% 0 0)' },
-              { clipPath: closing ? 'inset(0 100% 0 0)' : 'inset(0 0% 0 0)' },
-            ], { ...motionOptions, pseudoElement }));
-            temporary.push(host.animate({
-              width: [`${rect.width}px`, `${rect.width}px`],
-              height: [`${rect.height}px`, `${rect.height}px`],
-              transform: [`translate(${rect.x - origin.x}px, ${rect.y - origin.y}px)`, `translate(${rect.x - origin.x}px, ${rect.y - origin.y}px)`],
-            }, { ...motionOptions, pseudoElement }));
-          }
-          for (const animation of document.getAnimations()) {
-            const name = animation.effect?.pseudoElement?.match(/^::view-transition-group\(layout-(\w+)\)$/)?.[1];
-            const first = before[name], last = after[name];
-            if (!first || !last) continue;
-            // Default View Transitions interpolate width/height on the main thread.
-            // Constant bounds + transforms let the compositor run the motion.
-            const pseudoElement = animation.effect.pseudoElement;
-            animation.cancel();
-            temporary.push(host.animate([
-              { width: `${last.width}px`, height: `${last.height}px`, transform: `translate(${first.x - origin.x}px, ${first.y - origin.y}px) scale(${first.width / last.width}, ${first.height / last.height})` },
-              { width: `${last.width}px`, height: `${last.height}px`, transform: `translate(${last.x - origin.x}px, ${last.y - origin.y}px) scale(1, 1)` },
-            ], { ...motionOptions, pseudoElement }));
-          }
-          const motions = [
-            ...document.getAnimations().filter(animation => animation.effect?.target === host && animation.effect.pseudoElement),
-            ...(deviceMorph?.animate(motionOptions) || []),
-          ];
-          for (const animation of motions) { animation.pause(); animation.currentTime = 0; }
-          // Capture these promises before a resize can cancel native snapshots.
-          // Reading .finished after cancellation creates a new, pending promise.
-          const motionsFinished = Promise.allSettled(motions.map(animation => animation.finished));
-          // Raster the snapshot surfaces before starting their clocks. Otherwise
-          // the first texture upload can land in the middle of the slide.
-          await new Promise(resolve => {
-            let firstFrame, secondFrame;
-            const finish = () => { clearTimeout(timeout); cancelAnimationFrame(firstFrame); cancelAnimationFrame(secondFrame); resolve(); };
-            const timeout = setTimeout(finish, 200);
-            firstFrame = requestAnimationFrame(() => { secondFrame = requestAnimationFrame(finish); });
-          });
-          if (document.hidden) {
-            resize();
-            await within(transition.updateCallbackDone, 800).catch(() => {});
-            continue;
-          }
-          for (const animation of motions) if (animation.playState === 'paused') animation.play();
-          if (deviceMorph) {
-            await within(motionsFinished, 1500);
-            restoreViewports();
-            await within(setPaused(true), 350).catch(() => {});
-          } else if (before.device && after.device) {
-            // Keep the old texture over the live guest until motion has finished.
-            // Resizing a busy canvas must not compete with the sliding animation.
-            const hold = host.animate({ opacity: [1, 1] }, { duration: 10000, fill: 'both', pseudoElement: '::view-transition-old(layout-device)' });
-            temporary.push(hold);
-            await within(motionsFinished, 1500);
-            restoreViewports();
-            await within(setPaused(true), 350).catch(() => {});
-            if (!masks.size && !document.hidden) {
-              const reveal = host.animate({ opacity: [0, 1] }, { duration: 100, fill: 'forwards', pseudoElement: '::view-transition-new(layout-device)' });
-              temporary.push(reveal);
-              await within(reveal.finished, 700).catch(() => {});
-            }
-            hold.cancel();
-          }
-          await within(transition.finished, 1800);
-        } catch {
-          // A window resize or another native transition can skip the animation;
-          // the requested state update must still complete exactly once.
-          transition.skipTransition();
-          await within(transition.updateCallbackDone, 800).catch(() => {});
-          update();
-        } finally {
-          window.removeEventListener('resize', resize);
-          document.removeEventListener('visibilitychange', hidden);
-          temporary.forEach(animation => animation.cancel());
-          restoreViewports();
-          deviceMorph?.dispose();
-        }
+        if (changes.every(item => item.device) && embeddedPage) await morphLiveDevice(changes);
+        else await slideLivePanes(changes);
         if (!pending.length && masks.size) {
-          // The actual viewport and its first paint must settle before uncovering it.
-          await within(setPaused(true), 350).catch(() => {});
+          // Both motion paths already fence the final guest paint. Do not wait
+          // for a second identical IPC/paint round before revealing it.
           await revealPreview();
         }
       }

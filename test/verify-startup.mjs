@@ -2,6 +2,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { createStartupLifecycle } from '../src/main/startup-lifecycle.mjs';
+import { waitForStartupFrame } from '../src/renderer/js/startup.mjs';
+
+// Workspace handoff must survive a hidden renderer whose frame never arrives.
+for (const first of ['frame', 'timer']) {
+  let frameCallback, timerCallback, cancelled = false, cleared = false, settled = false;
+  const waiting = waitForStartupFrame({
+    requestAnimationFrame(fn) { frameCallback = fn; return 1; },
+    cancelAnimationFrame(id) { assert.equal(id, 1); cancelled = true; },
+    setTimeout(fn, delay) { assert.equal(delay, 50); timerCallback = fn; return 2; },
+    clearTimeout(id) { assert.equal(id, 2); cleared = true; },
+  }).then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false, 'Restoration yields before revealing');
+  (first === 'frame' ? frameCallback : timerCallback)();
+  await waiting;
+  assert.ok(cancelled && cleared && settled, 'Either route cleans up both callbacks');
+}
 
 // A painted shell warms the core, but the small window stays until work completes.
 for (const order of [['painted', 'wired'], ['wired', 'painted']]) {

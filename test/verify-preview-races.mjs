@@ -10,6 +10,7 @@ const pending = new Map();
 const body = { innerHTML: '' }, name = {}, mode = {};
 const visibilityChanges = [];
 const context = vm.createContext({
+  fileEditor: { select() {}, detach() {}, ready() {}, hasDraft() { return false; }, async open() { return false; }, draftContent() { return undefined; } },
   sessionPreviewState: { rememberTarget() {} },
   portPreviewRequest: 0, previewService: null, selectedPortKey: null,
   S: { state: { cwd: 'C:/project' }, previewFile: null, previewMode: 'source' },
@@ -26,7 +27,9 @@ vm.runInContext(source.slice(start, end), context);
 for (const old of ['old.md', 'old.html', 'old.txt']) {
   context.S.previewFile = null;
   const older = context.setPreview(old);
+  await new Promise(setImmediate);
   const newer = context.setPreview('new.md');
+  await new Promise(setImmediate);
   pending.get('C:/project/new.md')({ data: { content: 'latest preview' } });
   await newer;
   pending.get('C:/project/' + old)({ data: { content: 'stale preview' } });
@@ -37,6 +40,7 @@ for (const old of ['old.md', 'old.html', 'old.txt']) {
 }
 context.S.previewFile = null;
 const first = context.setPreview('same.md');
+await new Promise(setImmediate);
 const changesBeforeReopen = visibilityChanges.length;
 await context.setPreview('same.md');
 assert.deepEqual(visibilityChanges.slice(changesBeforeReopen), [false], 'Same-file early return must still reveal the preview');
@@ -45,11 +49,13 @@ await first;
 assert.match(body.innerHTML, /same file completes/);
 const changesBeforeRefresh = visibilityChanges.length;
 const background = context.setPreview('same.md', true, { reveal: false });
+await new Promise(setImmediate);
 pending.get('C:/project/same.md')({ data: { content: 'background update' } });
 await background;
 assert.equal(visibilityChanges.length, changesBeforeRefresh, 'Background refresh leaves visibility untouched');
 assert.match(body.innerHTML, /background update/);
 const nested = context.setPreview('docs/README.md');
+await new Promise(setImmediate);
 pending.get('C:/project/docs/README.md')({ data: { path: 'C:/project/docs/README.md', content: '![figure](./images/figure.png)\n[guide](../guide.md)' } });
 await nested;
 assert.match(body.innerHTML, /src="halo-preview:\/\/local\/C%3A\/project\/docs\/images\/figure.png"/);
@@ -57,6 +63,7 @@ assert.match(body.innerHTML, /href="halo-preview:\/\/local\/C%3A\/project\/guide
 assert.doesNotMatch(body.innerHTML, /__chat__/);
 const widening = [], errors = [];
 const wideningContext = vm.createContext({
+  fileEditor: { select() {}, detach() {}, ready() {}, hasDraft() { return false; }, async open() { return false; }, draftContent() { return undefined; } },
   previewVisibilityRequest: 0, previewProjectRevision: 0,
   window: { halo: { expandForPreview: () => new Promise(resolve => widening.push(resolve)) } },
   toast: message => errors.push(message),

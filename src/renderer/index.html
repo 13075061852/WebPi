@@ -135,9 +135,11 @@
           <span id="wsPath" class="ct-path"></span>
           <span class="ct-spacer"></span>
           <div class="pv-actions" role="group" aria-label="预览操作">
+          <span id="fileEditStatus" class="file-edit-status" role="status" title="Ctrl+S 保存" hidden></span>
           <button id="pvMode" class="pv-mode pv-action" type="button" hidden title="查看源代码" aria-label="查看源代码" aria-controls="pvBody">源码</button>
           <button id="btnOpenFile" class="pv-action" type="button" hidden title="使用系统默认应用打开文件" aria-label="使用默认应用打开文件"><svg viewBox="0 0 24 24" class="ic"><path d="M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg></button>
           <button id="btnBrowser" class="pv-action" type="button" aria-label="浏览器预览" title="浏览器预览" aria-expanded="false" aria-controls="previewAddressForm"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg></button>
+          <button id="btnPreviewExclusive" class="pv-action" type="button" aria-label="预览独享（收起聊天区）" title="预览独享（收起聊天区）" aria-controls="chat" aria-expanded="true" aria-pressed="false"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16M7 9l3 3-3 3"/></svg></button>
           <button id="btnTerm" class="pv-term-btn pv-action" type="button" aria-label="打开控制台" title="控制台 · 命令提示符">
             <svg viewBox="0 0 24 24" class="ic"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9.5l2.8 2.5L7 14.5M13 15h4"/></svg>
           </button>
@@ -183,15 +185,15 @@
     <!-- ------------- chat panel ------------- -->
     <section id="chat" class="fx t-r">
       <header id="chatHead">
-        <button id="btnChatSidebar" title="收起/展开侧栏" aria-label="收起/展开侧栏" aria-controls="sidebar"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M11 4v16M6 8h2M6 12h2M6 16h2"/></svg></button>
-        <button id="btnPreviewToggle" title="展开预览区" aria-label="展开预览区" aria-expanded="false" aria-controls="center"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v5M8 21h8"/></svg></button>
         <div class="chat-stats" id="chatStats">
           <span title="输入 tokens">↑ 0</span><span title="输出 tokens">↓ 0</span>
           <span title="缓存读取">R 0</span><span title="缓存写入">W 0</span>
           <span title="花费">$0.0000</span>
         </div>
         <div class="chat-actions">
-          <button id="btnFocus" title="专注模式 · 对话全屏（隐藏侧栏与工作区）">
+          <button id="btnChatSidebar" class="pv-action" title="收起/展开侧栏" aria-label="收起/展开侧栏" aria-controls="sidebar"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M11 4v16M6 8h2M6 12h2M6 16h2"/></svg></button>
+          <button id="btnPreviewToggle" class="pv-action" title="展开预览区" aria-label="展开预览区" aria-expanded="false" aria-controls="center"><svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v5M8 21h8"/></svg></button>
+          <button id="btnFocus" class="pv-action" title="专注模式 · 对话全屏（隐藏侧栏与工作区）">
             <svg viewBox="0 0 24 24" class="ic ic-expand"><path d="M9 4H5a1 1 0 0 0-1 1v4M15 4h4a1 1 0 0 1 1 1v4M9 20H5a1 1 0 0 1-1-1v-4M15 20h4a1 1 0 0 0 1-1v-4"/></svg>
             <svg viewBox="0 0 24 24" class="ic ic-collapse"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
           </button>

@@ -37,15 +37,29 @@ export function createDeviceMorph() {
     overlay.appendChild(container);
     return { container, chrome, screen };
   }
+  function place(skin, frame) {
+    // Set the underlying geometry as well as the animation's first keyframe.
+    // A newly attached WAAPI effect may not be sampled until the next frame.
+    Object.assign(skin.container.style, frame.body);
+    Object.assign(skin.chrome.style, frame.shell);
+  }
+  function clip(frame) {
+    const rect = frame.body;
+    return `inset(${rect.top} ${innerWidth - parseFloat(rect.left) - parseFloat(rect.width)}px ${innerHeight - parseFloat(rect.top) - parseFloat(rect.height)}px ${rect.left})`;
+  }
   const first = capture(), old = layer();
-  Object.assign(old.container.style, first.body);
-  Object.assign(old.chrome.style, first.shell);
+  place(old, first);
+  overlay.style.clipPath = clip(first);
   document.body.appendChild(overlay);
   body.classList.add('device-morph-hidden');
   shell.style.viewTransitionName = 'none';
+  let finalFrame = first;
   return {
     animate(options) {
       const last = capture(), next = layer();
+      finalFrame = last;
+      place(next, first);
+      animations.push(overlay.animate({ clipPath: [clip(first), clip(last)] }, options));
       for (const skin of [old, next]) {
         animations.push(
           skin.container.animate([first.body, last.body], options),
@@ -56,6 +70,20 @@ export function createDeviceMorph() {
         );
       }
       return animations;
+    },
+    finish() {
+      // Keep the final chrome in place while the guest paints its resized
+      // viewport. Cancelling filled effects alone exposes the old geometry.
+      overlay.style.clipPath = clip(finalFrame);
+      for (const container of overlay.children) {
+        Object.assign(container.style, finalFrame.body);
+        Object.assign(container.querySelector('.device-morph-shell').style, finalFrame.shell);
+      }
+      overlay.firstElementChild.style.opacity = '0';
+      overlay.lastElementChild.style.opacity = '1';
+      // The opaque overlay still covers the guest. Make its real surface visible
+      // before the paint fence: hidden frames cannot deliver the requested paint.
+      body.classList.remove('device-morph-hidden');
     },
     cancel() { animations.forEach(animation => animation.cancel()); },
     dispose() {

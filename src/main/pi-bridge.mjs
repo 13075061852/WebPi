@@ -17,6 +17,7 @@ import { OutputRate } from '../shared/output-rate.mjs';
 import { refreshBillingFx } from './billing-fx.mjs';
 import { estimateSubscriptionCost, isSubscriptionProvider } from '../shared/subscription-cost.mjs';
 import { presentConversations, renameConversation } from './conversation-meta.mjs';
+import { conversationHistory } from './conversation-history.mjs';
 import { imageTool, resolveImageCredential } from "./image-generation.mjs";
 import { videoTool } from "./video-generation.mjs";
 import { cloudflareTool } from './cloudflare.mjs';
@@ -2086,7 +2087,7 @@ async _doStart() {
   snapshotMessages() {
     // shallow, UI-safe copy of history for restoring chat view
     // 包含 thinking / toolCall / toolResult，恢复后思考与工具调用记录才能完整回放
-    const msgs = this.session?.messages || [];
+    const msgs = conversationHistory(this.session);
     return msgs.map((m) => ({
       role: m.role,
       toolCallId: m.toolCallId || null,

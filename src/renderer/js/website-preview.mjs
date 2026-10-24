@@ -51,20 +51,38 @@ export function renderWebsiteCards(turn, open) {
 }
 
 export function mountWebsiteBrowser(body, url, onChange, createDeviceShell) {
-  body.innerHTML = '<div class="website-browser"><form class="website-toolbar"><button type="button" data-nav="reload" title="刷新" aria-label="刷新">↻</button><input aria-label="网站地址" type="text" inputmode="url" required><button type="submit">前往</button><span class="website-zoom"><button type="button" data-zoom="out" aria-label="缩小网页" title="缩小网页">−</button><button type="button" data-zoom="reset" aria-label="恢复到 100%" title="恢复到 100%">100%</button><button type="button" data-zoom="in" aria-label="放大网页" title="放大网页">+</button></span><button type="button" data-nav="external" title="外部打开" aria-label="外部打开">↗</button></form><div class="website-load" role="status" hidden></div><webview title="网站预览" partition="website-preview"></webview></div>';
-  const guest = body.querySelector('webview'), input = body.querySelector('input'), status = body.querySelector('.website-load');
+  // Let new-window links reach the main-process handler, which denies windows
+  // and loads HTTP(S) destinations into this same isolated guest instead.
+  body.innerHTML = `<div class="website-browser">
+    <form class="website-toolbar">
+      <button type="button" data-nav="back" title="返回上一页" aria-label="返回上一页" disabled><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14"/></svg></button>
+      <div class="website-address">
+        <input aria-label="网站地址" type="text" inputmode="url" spellcheck="false" autocomplete="off" required>
+        <button type="submit" title="前往" aria-label="前往"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 5 7 7-7 7M5 12h14"/></svg></button>
+      </div>
+      <span class="website-zoom" role="group" aria-label="网页缩放">
+        <button type="button" data-zoom="out" aria-label="缩小网页" title="缩小网页"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
+        <button type="button" data-zoom="reset" aria-label="恢复到 100%" title="恢复到 100%">100%</button>
+        <button type="button" data-zoom="in" aria-label="放大网页" title="放大网页"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M12 6v12"/></svg></button>
+      </span>
+      <button type="button" data-nav="external" title="外部打开" aria-label="外部打开"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7M21 3 11 13M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg></button>
+    </form>
+    <webview aria-label="网站预览" partition="website-preview" allowpopups></webview>
+  </div>`;
+  const guest = body.querySelector('webview'), input = body.querySelector('input');
   if (createDeviceShell) {
     const browser = body.querySelector('.website-browser');
     browser.append(createDeviceShell(guest));
   }
-  const reload = body.querySelector('[data-nav=reload]'), go = body.querySelector('[type=submit]');
-  let loadingButton = reload;
-  const setLoading = loading => {
-    for (const button of [reload, go]) {
+  const back = body.querySelector('[data-nav=back]'), go = body.querySelector('[type=submit]');
+  let loadingButton = null, loading = false;
+  const setLoading = value => {
+    loading = value;
+    for (const button of [back, go]) {
       const busy = loading && button === loadingButton;
       button.classList.toggle('is-loading', busy);
       button.setAttribute('aria-busy', String(busy));
-      button.disabled = loading;
+      button.disabled = button === back ? !ready || !guest.canGoBack() : loading;
     }
   };
   const levels = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
@@ -93,29 +111,34 @@ export function mountWebsiteBrowser(body, url, onChange, createDeviceShell) {
     if (!guest.isConnected) { stopZoom?.(); cleanup.disconnect(); }
   });
   cleanup.observe(body, {childList:true, subtree:true});
-  guest.addEventListener('dom-ready', () => { ready = true; applyZoom(); });
+  guest.addEventListener('dom-ready', () => { ready = true; applyZoom(); setLoading(loading); });
   input.value = url;
   const sync = () => {
     if (!guest.isConnected) return;
+    back.disabled = !ready || !guest.canGoBack();
     input.value = guest.getURL();
     onChange({url:input.value, title:guest.getTitle()});
   };
-  guest.addEventListener('did-start-loading', () => { status.hidden = true; setLoading(true); });
-  guest.addEventListener('did-stop-loading', () => { setLoading(false); loadingButton = reload; sync(); });
+  guest.addEventListener('did-start-loading', () => { setLoading(true); });
+  guest.addEventListener('did-stop-loading', () => { setLoading(false); loadingButton = null; sync(); });
   guest.addEventListener('did-navigate', sync);
-  guest.addEventListener('did-navigate-in-page', sync);
-  guest.addEventListener('page-title-updated', sync);
-  guest.addEventListener('did-fail-load', event => {
-    if (event.isMainFrame && event.errorCode !== -3) { status.hidden = false; status.textContent = '网页暂时无法加载，请刷新重试或外部打开'; }
+  guest.addEventListener('did-navigate-in-page', () => {
+    setLoading(guest.isLoading());
+    if (!loading) loadingButton = null;
+    sync();
   });
+  guest.addEventListener('page-title-updated', sync);
   input.addEventListener('input', () => input.setCustomValidity(''));
   body.querySelector('form').onsubmit = event => {
     event.preventDefault(); const next = websiteAddress(input.value);
     if (!next) { input.setCustomValidity('请输入有效的 HTTP 或 HTTPS 网址'); input.reportValidity(); return; }
     input.value = next;
-    loadingButton = go; status.hidden = true; setLoading(true); guest.src = next;
+    loadingButton = go; setLoading(true); guest.src = next;
   };
-  reload.onclick = () => { loadingButton = reload; status.hidden = true; setLoading(true); guest.reloadIgnoringCache(); };
+  back.onclick = () => {
+    if (!ready || !guest.canGoBack()) return;
+    loadingButton = back; setLoading(true); guest.goBack();
+  };
   body.querySelector('[data-nav=external]').onclick = () => { const target = websiteURL(input.value); if (target) void window.halo.openExternal(target); };
   guest.src = url;
   return guest;

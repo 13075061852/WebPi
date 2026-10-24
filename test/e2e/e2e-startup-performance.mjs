@@ -1,4 +1,4 @@
-// Compare packaged startup with isolated accounts, profiles and a local model fixture.
+// Compare startup with isolated accounts, profiles and a local model fixture.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -6,9 +6,11 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 
-const exe = path.resolve(process.argv[2] || 'dist/win-unpacked/Pi Halo.exe');
-const runs = Number(process.argv[3] || 3);
-const label = process.argv[4] || 'current';
+const source = process.argv.includes('--source');
+const args = process.argv.slice(2).filter(arg => arg !== '--source');
+const exe = path.resolve(args[0] || (source ? 'node_modules/electron/dist/electron.exe' : 'dist/win-unpacked/Pi Halo.exe'));
+const runs = Number(args[1] || 3);
+const label = args[2] || 'current';
 assert.ok(fs.existsSync(exe), `Missing executable: ${exe}`);
 const parent = path.resolve('tmp/startup-performance');
 fs.mkdirSync(parent, { recursive: true });
@@ -33,7 +35,7 @@ for (let run = 0; run < runs; run++) {
     USERPROFILE: dir, HOME: dir, APPDATA: path.join(dir, 'roaming'), LOCALAPPDATA: path.join(dir, 'local'),
     TEMP: dir, TMP: dir, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', NO_PROXY: '*', HALO_STARTUP_TRACE: '1' };
   const started = performance.now();
-  const child = spawn(exe, [`--user-data-dir=${profile}`, `--remote-debugging-port=${port}`], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(exe, [...(source ? ['.'] : []), `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '', ws, sequence = 0;
   const pending = new Map();
   for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { output = (output + data).slice(-16000); });
@@ -63,8 +65,16 @@ for (let run = 0; run < runs; run++) {
     assert.equal(state?.data?.ready, true, `Core initialization failed: ${output}`);
     assert.equal(state.data.model?.provider, 'startup-fixture');
     const coreReadyMs = Math.round(performance.now() - started);
+    let startup;
+    while (performance.now() - started < 45000) {
+      startup = await evaluate('window.halo.startupState().then(r => r.data)');
+      if (startup?.ready && startup.timings.windowShown !== undefined) break;
+      await sleep(40);
+    }
+    assert.ok(startup?.ready && startup.timings.windowShown !== undefined, 'Workspace must finish before measuring window visibility');
+    const windowShownMs = Math.round(performance.now() - started);
     const responsiveness = await evaluate(`new Promise(resolve => { const gaps=[]; let previous=performance.now(); const timer=setInterval(()=>{ const now=performance.now(); gaps.push(now-previous); previous=now; if(gaps.length===30){clearInterval(timer); resolve({maxGapMs:Math.round(Math.max(...gaps)),samples:gaps.length});}},16); })`);
-    const result = { run: run + 1, mainPageMs, coreReadyMs, ...responsiveness };
+    const result = { run: run + 1, mainPageMs, coreReadyMs, windowShownMs, timings: startup.timings, ...responsiveness };
     results.push(result); fs.writeFileSync(path.join(dir, 'process.log'), output); console.log(JSON.stringify(result));
   } finally {
     ws?.close(); child.kill();
@@ -72,6 +82,6 @@ for (let run = 0; run < runs; run++) {
   }
 }
 const median = key => results.map(r => r[key]).sort((a, b) => a - b)[Math.floor(results.length / 2)];
-const report = { label, executable: exe, root, results, medianMainPageMs: median('mainPageMs'), medianCoreReadyMs: median('coreReadyMs') };
+const report = { label, source, executable: exe, root, results, medianMainPageMs: median('mainPageMs'), medianCoreReadyMs: median('coreReadyMs'), medianWindowShownMs: median('windowShownMs') };
 fs.writeFileSync(path.join(parent, label + '.json'), JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report));

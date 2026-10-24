@@ -5,17 +5,26 @@ export function initResponsiveLayout({ onToggleSidebar, onChange = () => {} } = 
   const sidebarQuery = matchMedia('(max-width: 759px)');
   const sidebar = document.querySelector('#sidebar');
   const center = document.querySelector('#center');
+  const chat = document.querySelector('#chat');
+  const exclusiveButton = document.querySelector('#btnPreviewExclusive');
   const sidebarButton = document.querySelector('#btnChatSidebar');
   const previewButton = document.querySelector('#btnPreviewToggle');
   const sync = () => {
     body.classList.toggle('preview-auto-collapsed', previewQuery.matches);
     body.classList.toggle('sb-auto-collapsed', sidebarQuery.matches);
     const focused = body.classList.contains('focus-mode');
+    const exclusive = body.classList.contains('preview-exclusive');
     const drawer = sidebarQuery.matches && body.classList.contains('sb-drawer-open');
     const sidebarHidden = focused || (!drawer && (sidebarQuery.matches || body.classList.contains('sb-collapsed')));
-    const previewHidden = focused || previewQuery.matches || body.classList.contains('preview-collapsed');
+    const previewHidden = focused || (!exclusive && (previewQuery.matches || body.classList.contains('preview-collapsed')));
     sidebar.inert = sidebarHidden;
     center.inert = previewHidden;
+    chat.inert = exclusive;
+    exclusiveButton.classList.toggle('active', exclusive);
+    exclusiveButton.setAttribute('aria-pressed', String(exclusive));
+    exclusiveButton.setAttribute('aria-expanded', String(!exclusive));
+    exclusiveButton.title = exclusive ? '恢复聊天区' : '预览独享（收起聊天区）';
+    exclusiveButton.setAttribute('aria-label', exclusiveButton.title);
     sidebarButton.setAttribute('aria-expanded', String(!sidebarHidden));
     sidebarButton.title = sidebarHidden ? '展开侧栏' : '收起侧栏';
     sidebarButton.setAttribute('aria-label', sidebarButton.title);

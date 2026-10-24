@@ -89,6 +89,13 @@ try {
     Element.prototype.animate=function(...args){
       const animation=nativeAnimate.apply(this,args);
       if(this.matches('.device-switch-mask'))window.__maskReveals.push(performance.now());
+      if(this.matches('.device-morph-layer')&&!this.parentElement.__motionRecord){
+        const record={created:performance.now(),ready:performance.now(),masks:maskState(),groups:[]};
+        this.parentElement.__motionRecord=record;window.__motionRecords.push(record);
+        queueMicrotask(()=>{record.chrome=[...document.querySelectorAll('.device-morph-shell')].map(node=>({transform:getComputedStyle(node).transform,keyframes:node.getAnimations().find(a=>!a.effect.pseudoElement)?.effect.getKeyframes()}));});
+        animation.finished.then(()=>{record.finished=record.slideEnd=performance.now();record.motionStart=animation.startTime;}).catch(()=>{record.finished=performance.now();record.cancelled=true;});
+      }
+
       if(this.id==='layout'&&!animation.effect?.pseudoElement&&animation.effect.getKeyframes().some(frame=>frame.gridTemplateColumns)){
         const record={created:performance.now(),ready:performance.now(),keyframes:animation.effect.getKeyframes(),masks:maskState(),samples:[]};window.__liveRecords.push(record);
         const sample=now=>{if(record.finished)return;record.samples.push({at:now,panes:window.__livePaneGeometry()});requestAnimationFrame(sample);};requestAnimationFrame(sample);
@@ -100,8 +107,10 @@ try {
       }
       return animation;
     };
+    window.__nativeLayoutSnapshots=0;
     const host=document.querySelector('#layout'),native=host.startViewTransition.bind(host);
     host.startViewTransition=options=>{
+      window.__nativeLayoutSnapshots++;
       const record={created:performance.now()};window.__motionRecords.push(record);
       const t=native(options);
       t.ready.then(()=>{
@@ -136,7 +145,8 @@ try {
       assert.ok(motion.slideEnd - motion.ready >= 200, `${name} must not jump directly to the final layout`);
       assert.ok(motion.frames >= 8, `${name} must present intermediate animation frames`);
       if (device) {
-        assert.equal(sample.live.length,0,'Pure device choices retain their dedicated chrome morph');
+        assert.equal(sample.live.length,0,'Device changes must not reflow the transcript by interpolating grid columns');
+        assert.equal(await evaluate('window.__nativeLayoutSnapshots'),0,'Device switching must never capture sidebar/chat textures');
         for (const group of motion.groups) {
           if (group.keyframes.length < 2 || !group.keyframes[0].width) continue;
           assert.equal(group.keyframes[0].width, group.keyframes.at(-1).width, 'Snapshot width must remain fixed during compositor motion');
@@ -175,17 +185,25 @@ try {
     assert.equal(await evaluate('document.querySelectorAll(".layout-motion,.layout-motion-live,.layout-live-visible").length'),0,'Completed animations must clear their live layout markers');
     assert.equal(await evaluate('[...document.querySelectorAll("#pvBody iframe,#pvBody webview")].some(node=>node.getAttribute("style")?.includes("important"))'),false,'Completed animations must release held viewport dimensions');
   }
-  for (const [name, selector] of [['sidebar-close','#btnChatSidebar'],['sidebar-open','#btnChatSidebar'],['tablet','.pvdev[data-dev="tablet"]'],['phone','.pvdev[data-dev="mobile"]'],['desktop','.pvdev[data-dev="desktop"]'],['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['settings-open','#btnSettings'],['settings-close','#settingsModal [data-close]'],['model-open','#btnModel'],['model-close','#modelModal [data-close]'],['think-open','#btnThink'],['think-close','#thinkModal [data-close]']]) {
+  for (const [name, selector] of [['sidebar-close','#btnChatSidebar'],['sidebar-open','#btnChatSidebar'],['tablet','.pvdev[data-dev="tablet"]'],['phone','.pvdev[data-dev="mobile"]'],['desktop','.pvdev[data-dev="desktop"]'],['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['preview-exclusive','#btnPreviewExclusive'],['chat-restore','#btnPreviewExclusive'],['settings-open','#btnSettings'],['settings-close','#settingsModal [data-close]'],['model-open','#btnModel'],['model-close','#modelModal [data-close]'],['think-open','#btnThink'],['think-close','#thinkModal [data-close]']]) {
     await sampleMotion(name,selector);
+    if (name === 'preview-exclusive' || name === 'chat-restore') {
+      const exclusive = name === 'preview-exclusive';
+      const state = await evaluate(`({chatWidth:document.querySelector('#chat').getBoundingClientRect().width,inert:document.querySelector('#chat').inert,previewInert:document.querySelector('#center').inert,pressed:document.querySelector('#btnPreviewExclusive').getAttribute('aria-pressed')})`);
+      assert.equal(state.inert, exclusive);
+      assert.equal(state.pressed, String(exclusive));
+      assert.equal(state.previewInert, false);
+      assert.equal(state.chatWidth === 0, exclusive);
+    }
   }
   // Capture real intermediate frames separately from the timing run.
   for (const [name, selector] of [['preview-close','#btnPreviewToggle'],['preview-open','#btnPreviewToggle'],['sidebar','#btnChatSidebar'],['phone','.pvdev[data-dev="mobile"]']]) {
     const device=name==='phone';
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
     await waitFor(() => evaluate(device
-      ? 'document.getAnimations().some(a=>a.playState==="running"&&a.effect?.pseudoElement?.startsWith("::view-transition-group(layout-"))'
+      ? 'document.querySelector(".device-morph-shell")?.getAnimations().some(a=>a.playState==="running"&&!a.effect.pseudoElement)'
       : 'document.querySelector("#layout").getAnimations().some(a=>a.playState==="running"&&!a.effect?.pseudoElement&&a.effect.getKeyframes().some(frame=>frame.gridTemplateColumns))'), 'No running geometry animation');
-    await evaluate('window.__pausedAnimations=document.getAnimations().filter(a=>a.effect?.pseudoElement||a.effect?.target?.closest(".device-morph-overlay")||(a.effect?.target?.id==="layout"&&a.effect.getKeyframes().some(frame=>frame.gridTemplateColumns)));for(const a of __pausedAnimations){a.pause();a.currentTime=110;}');
+    await evaluate('window.__pausedAnimations=document.getAnimations().filter(a=>a.effect?.pseudoElement||a.effect?.target?.closest(".device-morph-overlay")||(a.id==="device-pane-motion")||(a.effect?.target?.id==="layout"&&a.effect.getKeyframes().some(frame=>frame.gridTemplateColumns)));for(const a of __pausedAnimations){a.pause();a.currentTime=110;}');
     if (!device) {
       const coverage = await evaluate(`(()=>{
         const center=document.querySelector('#center'),style=getComputedStyle(center),panes=__livePaneGeometry();
@@ -227,13 +245,8 @@ try {
   await evaluate('document.querySelector("#btnChatSidebar").click();document.querySelector(".pvdev[data-dev=desktop]").click()');
   await waitFor(() => evaluate('!document.documentElement.classList.contains("layout-motion") && document.querySelector("#pvBody").classList.contains("dev-desktop")'), 'Reset layout');
   // Check both directions for all three device pairs, including the handoff frame.
-  await evaluate(`window.__paneRects=()=>Object.fromEntries(['sidebar','center','chat'].map(name=>{const r=document.querySelector('#'+name).getBoundingClientRect();return [name,{x:r.x,y:r.y,width:r.width,height:r.height}]}));
-    window.__snapshotRects=()=>Object.fromEntries(['sidebar','center','chat'].map(name=>{
-      const host=document.querySelector('#layout'),bounds=host.getBoundingClientRect(),style=getComputedStyle(host,'::view-transition-group(layout-'+name+')');
-      const matrix=new DOMMatrix(style.transform),width=parseFloat(style.width),height=parseFloat(style.height);
-      const origins=style.transformOrigin.split(' ').map((value,index)=>parseFloat(value)*(value.endsWith('%')?[width,height][index]/100:1));
-      return [name,{x:bounds.x+matrix.e+origins[0]*(1-matrix.a)-origins[1]*matrix.c,y:bounds.y+matrix.f+origins[1]*(1-matrix.d)-origins[0]*matrix.b,width:width*matrix.a,height:height*matrix.d,origin:style.transformOrigin}];
-    }));`);
+  await evaluate(`window.__paneRects=()=>Object.fromEntries(['sidebar','center','chat'].map(name=>{const node=document.querySelector('#'+name),r=node.getBoundingClientRect(),clip=getComputedStyle(node).clipPath;return [name,{x:r.x,y:r.y,width:name==='chat'?Math.min(r.width,innerWidth-r.x):r.width-(clip.startsWith('inset(')?parseFloat(clip.slice(6).split(' ')[1])||0:0),height:r.height}]}));
+    window.__snapshotRects=window.__paneRects;`);
   const chromeSamples=[];
   for(const mode of ['mobile','tablet','desktop','tablet','mobile','desktop']) {
     const before=await evaluate('(()=>{const n=document.querySelector("#pvBody .dev-shell"),r=n.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,radius:parseFloat(getComputedStyle(n).borderRadius)}})()');
@@ -241,12 +254,17 @@ try {
     await evaluate(`document.querySelector('.pvdev[data-dev="${mode}"]').click()`);
     await waitFor(()=>evaluate('document.querySelector(".device-morph-shell")?.getAnimations().some(a=>a.playState==="running"&&!a.effect.pseudoElement)'),'Chrome animation did not start');
     const samples=await evaluate(`(()=>{
-      const animations=document.getAnimations().filter(a=>a.effect?.pseudoElement||a.effect?.target?.closest('.device-morph-overlay'));
+      const animations=document.getAnimations().filter(a=>a.effect?.pseudoElement||a.effect?.target?.closest('.device-morph-overlay')||(a.id==='device-pane-motion')||(a.effect?.target?.id==='layout'&&a.effect.getKeyframes().some(frame=>frame.gridTemplateColumns)));
       animations.forEach(a=>a.pause());window.__pausedAnimations=animations;
       const rect=n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {x:r.x,y:r.y,width:r.width,height:r.height,radius:parseFloat(s.borderRadius),border:parseFloat(s.borderTopWidth),transform:s.transform}};
+      animations.forEach(a=>a.currentTime=280);
+      const center=document.querySelector('#center'),heldWidth=center.style.width;
+      center.style.removeProperty('width');
       const final=rect(document.querySelector('#pvBody .dev-shell'));
+      center.style.width=heldWidth;
+      const panesFinal=__paneRects();
       const frames=[0,40,80,140,210,280].map(time=>{animations.forEach(a=>a.currentTime=time);return {time,panes:__snapshotRects(),skins:[...document.querySelectorAll('.device-morph-shell')].map(rect)}});
-      return {final,frames,panesFinal:__paneRects(),guests:document.querySelectorAll('.device-morph-overlay iframe,.device-morph-overlay webview').length};
+      return {final,frames,panesFinal,guests:document.querySelectorAll('.device-morph-overlay iframe,.device-morph-overlay webview').length};
     })()`);
     assert.equal(samples.guests,0,'Chrome copies must never create another embedded page');
     for(const [index,expected] of [[0,before],[samples.frames.length-1,samples.final]]) for(const skin of samples.frames[index].skins) {
@@ -271,6 +289,27 @@ try {
     await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")'),'Chrome handoff did not finish');
     assert.equal(await evaluate('document.querySelectorAll(".device-morph-overlay,.device-morph-hidden").length'),0);
   }
+  // A delayed guest paint must retain the final chrome, including the frames
+  // after filled WAAPI effects are cancelled and before the cover is removed.
+  await evaluate(`(async()=>{
+    const {createLayoutMotion}=await import('./js/layout-motion.mjs');
+    let paintFences=0;
+    const motion=createLayoutMotion({setPaused:async(paused,settle)=>{
+      if(paused&&settle!==false&&++paintFences===2){window.__holdingDevicePaint=true;await new Promise(resolve=>window.__releaseDevicePaint=resolve);}
+    }});
+    motion(()=>{
+      const body=document.querySelector('#pvBody');body.classList.remove('dev-desktop');body.classList.add('dev-mobile');
+      const r=body.querySelector('.dev-shell').getBoundingClientRect();window.__expectedDevicePaint={x:r.x,y:r.y,width:r.width,height:r.height};
+    },{device:true,maskPreview:true});
+  })()`);
+  await waitFor(()=>evaluate('window.__holdingDevicePaint'),'Final guest paint was not fenced');
+  const handoff=await evaluate(`(()=>{const n=document.querySelector('.device-morph-layer:last-child .device-morph-shell'),r=n.getBoundingClientRect();return {expected:__expectedDevicePaint,actual:{x:r.x,y:r.y,width:r.width,height:r.height},opacity:+getComputedStyle(n.parentElement).opacity}})()`);
+  assert.equal(handoff.opacity,1,'Final chrome must stay visible during guest paint');
+  for(const key of ['x','y','width','height']) assert.ok(Math.abs(handoff.expected[key]-handoff.actual[key])<.6,`Guest paint reset the final chrome ${key}: ${JSON.stringify(handoff)}`);
+  await evaluate('__releaseDevicePaint()');
+  await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")'),'Delayed paint did not clean up');
+  await evaluate('document.querySelector(".pvdev[data-dev=desktop]").click()');
+  await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")&&document.querySelector("#pvBody").classList.contains("dev-desktop")'),'Restore after delayed paint');
   // Open and close really animate; reversing a close preserves its current opacity.
   await evaluate('document.querySelector("#btnSettings").click()');
   await waitFor(() => evaluate('document.querySelector("#settingsModal").getAnimations().some(a=>a.playState==="running")'), 'Modal opening did not animate');
@@ -311,6 +350,7 @@ try {
   await waitFor(()=>evaluate('!document.documentElement.classList.contains("layout-motion")'),'Window resize must not leave a frozen overlay');
   assert.equal(await evaluate('document.querySelectorAll(".device-morph-overlay,.device-morph-hidden").length'),0,'Window resize must restore live device chrome');
   await send('Emulation.clearDeviceMetricsOverride');
+  await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve,60))))');
   // Exercise losing visibility both during geometry motion and during uncovering.
   for(const [mode,phase] of [['mobile','chrome'],['desktop','reveal']]) {
     await evaluate(`document.querySelector('.pvdev[data-dev="${mode}"]').click()`);
@@ -385,7 +425,28 @@ try {
     await waitFor(() => evaluate('innerWidth >= 1120 && !document.querySelector("#center").inert && !document.documentElement.classList.contains("layout-motion")'), 'Preview click must widen the native window and reveal the pane');
     assert.equal((await guest()).id, initial.id, 'Expanding the window must preserve the preview instance');
   }
-  const report={fixture,previewFile:previewFile||'generated canvas',initial,final,results,chromeSamples,responsive:{medium,narrow,restored,manuallyFolded,clickToExpand:true}};
+  // A real, dense transcript exposes per-frame text reflow that an empty chat
+  // cannot reveal. Track live content widths and renderer layout cost separately.
+  await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
+  await evaluate(`document.querySelector('#messages').innerHTML=Array.from({length:120},(_,i)=>'<div class="msg assistant"><div class="md"><p>第'+i+'段：保留聊天记录、文件预览和全部业务功能。</p><ul><li>拆分运行控制、流解析、输入与草稿</li><li>修复会话切换状态和中文回车</li></ul><table><tbody><tr><td>项目</td><td>结果</td></tr><tr><td>生产构建</td><td>通过验证</td></tr></tbody></table><pre><code>const value = currentSession.messages;</code></pre></div></div>').join('')`);
+  await send('Performance.enable');
+  const denseMotion=[];
+  for(const mode of ['desktop','mobile','desktop','tablet','mobile','mobile']) {
+    const before=(await send('Performance.getMetrics')).result.metrics;
+    const sample=await evaluate(`(async()=>{
+      const widths=[],gaps=[];let last=performance.now(),running=true;const start=last;
+      function tick(now){gaps.push(now-last);last=now;widths.push(document.querySelector('#messages').clientWidth);if(running)requestAnimationFrame(tick)}requestAnimationFrame(tick);
+      document.querySelector('.pvdev[data-dev="${mode}"]').click();
+      await new Promise(resolve=>{const poll=()=>{if(document.documentElement.classList.contains('layout-motion'))setTimeout(poll,10);else resolve()};setTimeout(poll,30)});
+      running=false;return {duration:performance.now()-start,frames:gaps.length,maxGap:Math.max(...gaps),widths:[...new Set(widths)]};
+    })()`);
+    const after=(await send('Performance.getMetrics')).result.metrics;
+    const metric=name=>after.find(m=>m.name===name).value-before.find(m=>m.name===name).value;
+    denseMotion.push({mode,...sample,layouts:metric('LayoutCount'),layoutMs:metric('LayoutDuration')*1000});
+    assert.ok(sample.widths.length<=3,`Dense transcript must not reflow at every slide frame: ${JSON.stringify(sample)}`);
+    assert.equal(await evaluate('document.querySelectorAll("#messages > .msg").length'),120,'Device changes must retain the whole transcript');
+  }
+  const report={fixture,previewFile:previewFile||'generated canvas',initial,final,results,chromeSamples,handoff,denseMotion,responsive:{medium,narrow,restored,manuallyFolded,clickToExpand:true}};
   fs.writeFileSync(path.join(fixture,'motion-report.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({ok:true,fixture,results:results.map(r=>({name:r.name,motion:[...r.transitions,...r.live].map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.slideEnd-t.motionStart)})),modal:r.modals.map(t=>({frames:t.frames,maxGap:t.maxGap,duration:Math.round(t.finished-t.motionStart)}))}))}));
   await evaluate('setTimeout(()=>window.halo.close(),30);true');await waitFor(()=>exitCode!==undefined,'App did not close');
