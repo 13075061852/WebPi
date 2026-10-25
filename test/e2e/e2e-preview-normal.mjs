@@ -314,9 +314,8 @@ try {
   }
   assert.equal(websiteLoads, initialLoads, 'Mode switches must not issue new website loads');
   await assertFooter(); pass('Loopback webview fills normal mode below 38px toolbar without guest reload on any device round trip');
-  await evaluate(`document.documentElement.dataset.theme='light';document.documentElement.dataset.surface='glass'`);
-  await until(() => evaluate('document.querySelector(".pv-devices").classList.contains("glass-surface")'), 'glass theme applied');
-  await assertNormal('webview', 38); await assertFooter(); await screenshot('normal-website-glass'); pass('Glass theme keeps normal geometry and footer legible');
+  await evaluate(`document.documentElement.dataset.theme='dark'`);
+  await assertNormal('webview', 38); await assertFooter(); await screenshot('normal-website-dark'); pass('Dark theme keeps normal geometry and footer legible');
 
   await treeFile('image.svg'); await until(() => evaluate('document.querySelector("#pvBody img")?.naturalWidth===320'), 'image loaded');
   await assertNormal('.pv-img'); await screenshot('normal-image'); pass('Image preview has no shell, stand, or rounded screen');
@@ -327,8 +326,7 @@ try {
   await assertNormal('.pv-video'); await screenshot('normal-video'); pass('Playable video preview has no device decoration');
   } else {
     await click('#btnPreviewToggle'); await settled(); await mode('normal');
-    await evaluate(`document.documentElement.dataset.theme='light';document.documentElement.dataset.surface='glass'`);
-    await until(() => evaluate('document.querySelector(".pv-devices").classList.contains("glass-surface")'), 'glass document fixture');
+    await evaluate(`document.documentElement.dataset.theme='dark'`);
   }
 
   for (const name of ['report.pdf','report.docx']) {

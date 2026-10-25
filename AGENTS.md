@@ -19,7 +19,12 @@ Windows proxy and motion preflight before tagging. Record stage timings and
 prefer removing duplicate work over weakening release gates.
 
 Default release delivery is local Windows packaging followed by GitHub upload.
-Keep the verified EXE, blockmap and latest.yml in local dist. Do not trigger a
+Keep only the latest verified EXE, its blockmap and latest.yml in local dist after
+publication and public-updater verification succeed. Keep the previous installer
+until that update probe completes, then remove older versioned installers and
+their blockmaps from local dist only. Failed publication or verification must
+retain the candidate for retries; GitHub release history stays available.
+Do not trigger a
 cloud build when pushing a release tag; the cloud release workflow is manual
 fallback only, used when the user explicitly asks for a cloud build. Reuse the
 same local artifacts when upload or verification needs a retry.

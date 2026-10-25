@@ -128,8 +128,8 @@ try {
   assert.equal(await evaluate('document.querySelector("#environmentCopyDiagnostics").hidden'), false);
   assert.equal(await evaluate('document.querySelector("#environmentProgress details").open'), false);
   assert.ok(await evaluate('document.querySelector("[data-tool=git] .environment-tool-detail").textContent.length<100'));
-  for (const theme of ['light', 'dark', 'glass']) {
-    await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme === 'dark' ? 'dark' : 'light')};${theme === 'glass' ? "document.documentElement.dataset.surface='glass'" : 'delete document.documentElement.dataset.surface'}`);
+  for (const theme of ['light', 'dark']) {
+    await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
     await sleep(200);
     await click('#environmentProgress summary');
     assert.equal(await evaluate('document.querySelector("#environmentProgress details").open'), true);
@@ -138,7 +138,7 @@ try {
     await click('#environmentProgress summary');
     await screenshot(`failure-${theme}`);
   }
-  pass('Failure summaries stay concise; detailed logs expand/collapse and fit all three themes');
+  pass('Failure summaries stay concise; detailed logs expand/collapse and fit both themes');
   await click('#environmentCopyDiagnostics');
   const report = JSON.parse(await evaluate('envFixture.clipboard'));
   assert.equal(report.platform, 'win32'); assert.equal(report.arch, 'arm64'); assert.equal(report.osRelease, '10.0.26100');

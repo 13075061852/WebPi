@@ -1,5 +1,6 @@
 import { createFileEditor } from './file-editor.mjs';
 import { initTooltips } from './tooltips.mjs';
+import { createThemeMotion } from './theme-motion.mjs';
 import { fileIconFor } from './file-icons.mjs';
 import { createSessionPreviewState } from './session-preview-state.mjs';
 import { syncConversationSelection } from './conversation-selection.mjs';
@@ -11,7 +12,6 @@ import { artifactPath, replyArtifacts, decorateArtifactCard, filterArtifactPlayb
 import { initAppUpdates } from './app-updates.mjs';
 import { initProxySettings } from './proxy-settings.mjs';
 import { initThemePreviews } from './theme-previews.mjs';
-import { initGlassMaterial } from './glass-material.mjs';
 import { initReleaseHistory } from './release-history.mjs';
 import { initStartupProgress, waitForStartupFrame } from './startup.mjs';
 import { createLayoutMotion } from './layout-motion.mjs';
@@ -48,6 +48,7 @@ initTooltips();
 const fileEditor = createFileEditor({ api: window.halo, body: $('#pvBody'), status: $('#fileEditStatus'),
   notify: (...args) => toast(...args) });
 const conversationMotion = createConversationMotion();
+const themeMotion = createThemeMotion({ applyTheme });
 const sessionPreviewState = createSessionPreviewState(localStorage);
 let environmentSettings;
 let videoSettings;
@@ -108,9 +109,8 @@ const S = {
 
 /* ---------- theme: 黑 / 白 ---------- */
 function applyTheme(t, { persist = true } = {}) {
-  const selected = [...Object.keys(window.HALO_THEME_PALETTES || {}), 'light', 'dark', 'glass'].includes(t) ? t : 'dark';
-  document.documentElement.dataset.theme = window.HALO_THEME_PALETTES?.[selected] || (['light', 'glass'].includes(selected) ? 'light' : 'dark');
-  document.documentElement.dataset.surface = selected === 'glass' ? 'glass' : '';
+  const selected = [...Object.keys(window.HALO_THEME_PALETTES || {}), 'light', 'dark'].includes(t) ? t : 'light';
+  document.documentElement.dataset.theme = window.HALO_THEME_PALETTES?.[selected] || selected;
   document.documentElement.dataset.wallpaper = Object.hasOwn(window.HALO_THEME_PALETTES || {}, selected) ? selected : '';
   if (persist) { try { localStorage.setItem("halo-theme", selected); } catch {} }
   document.dispatchEvent(new CustomEvent("themechange"));
@@ -2534,23 +2534,9 @@ function wireUI() {
   $("#winMin").addEventListener("click", () => window.halo.minimize());
   $("#winMax").addEventListener("click", () => window.halo.maximize());
   $("#winClose").addEventListener("click", () => window.halo.close());
-  let themeTransition = null;
-  let targetTheme = document.documentElement.dataset.surface || document.documentElement.dataset.theme;
-  $('#themeToggle').addEventListener('click', () => {
-    const root = document.documentElement;
-    const themes = ['light', 'dark', 'glass'];
-    const current = themeTransition ? targetTheme : (root.dataset.surface || root.dataset.theme);
-    targetTheme = themes[(themes.indexOf(current) + 1) % themes.length];
-    const next = targetTheme;
-    themeTransition?.skipTransition();
-    const update = () => applyTheme(next);
-    if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) { update(); return; }
-    root.classList.add('theme-x');
-    const transition = document.startViewTransition(update);
-    themeTransition = transition;
-    transition.finished.catch(() => {}).finally(() => {
-      if (themeTransition === transition) { themeTransition = null; root.classList.remove('theme-x'); }
-    });
+  $('#themeToggle').addEventListener('click', event => {
+    const current = themeMotion.target || document.documentElement.dataset.theme;
+    themeMotion.switchTo(current === 'light' ? 'dark' : 'light', event.currentTarget);
   });
 
   // sidebar tabs
@@ -4258,19 +4244,21 @@ $('#wallpaperTransparency').addEventListener('input', (event) => {
 });
 function syncThemeChoices() {
   syncWallpaperTransparency();
-  const current = document.documentElement.dataset.surface || document.documentElement.dataset.theme;
-  const next = { light: 'dark', dark: 'glass', glass: 'light' }[current] || 'light';
+  const current = document.documentElement.dataset.theme;
+  const next = { light: 'dark', dark: 'light' }[current] || 'light';
   const toggle = $('#themeToggle');
   toggle.dataset.nextTheme = next;
-  toggle.title = `切换为${{ light: '浅色', dark: '深色', glass: '液态玻璃' }[next]}主题`;
+  toggle.title = `切换为${{ light: '浅色', dark: '深色' }[next]}主题`;
   toggle.setAttribute('aria-label', toggle.title);
-  $$("[data-theme-choice]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeChoice === (document.documentElement.dataset.surface || document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme))));
+  $$("[data-theme-choice]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeChoice === (document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme))));
 }
 document.addEventListener("themechange", syncThemeChoices);
 initThemePreviews();
-initGlassMaterial();
 $("#settingsAuth").addEventListener("click", () => { closeModal($("#settingsModal")); openAuthModal(); });
-$$("[data-theme-choice]").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themeChoice)));
+$$("[data-theme-choice]").forEach((b) => b.addEventListener("click", () => {
+  themeMotion.cancel();
+  applyTheme(b.dataset.themeChoice);
+}));
 
 function getDigitalHuman() {
   digitalHuman ||= initDigitalHuman({
@@ -4885,5 +4873,5 @@ $$('[data-theme-tab]').forEach((button, index, tabs) => {
     selectThemeCategory(tabs[next].dataset.themeTab, true);
   });
 });
-const selectedThemeCard = $('[data-theme-choice="' + (document.documentElement.dataset.surface || document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme) + '"]');
+const selectedThemeCard = $('[data-theme-choice="' + (document.documentElement.dataset.wallpaper || document.documentElement.dataset.theme) + '"]');
 selectThemeCategory(selectedThemeCard?.closest('[data-theme-panel]')?.dataset.themePanel || 'nature');

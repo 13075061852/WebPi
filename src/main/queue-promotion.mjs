@@ -1,4 +1,4 @@
-// Pi 1.3.0 still has no public queue move operation. Isolate its two
+// Pi 1.4.0 still has no public queue move operation. Isolate its two
 // synchronous queue writers here, retaining already expanded input and images.
 export async function promoteQueuedMessage(session, index, expected, beforeQueue = () => {}) {
   const pending = [...session.getFollowUpMessages()];

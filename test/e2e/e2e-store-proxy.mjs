@@ -110,15 +110,14 @@ try {
   assert.equal(calls().filter(call => call.action === 'repair').length, 0);
   pass('Opening proxy settings reads Store status through real preload; no implicit repair');
 
-  for (const theme of ['light', 'dark', 'glass']) {
+  for (const theme of ['light', 'dark']) {
     await click('.set-nav[data-pane="appearance"]'); await click(`[data-theme-choice="${theme}"]`); await click('.set-nav[data-pane="proxy"]');
     await until(async () => (await ui()).status === '未配置', `${theme} status`);
     await sleep(250);
     assert.ok(await evaluate(`(()=>{const p=document.querySelector('#setPane-proxy .set-body'),b=document.querySelector('#proxyStoreRepair'),r=b.getBoundingClientRect();return p.scrollWidth-p.clientWidth<2&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===b})()`));
-    if (theme === 'glass') assert.equal(await evaluate(`document.querySelector('.proxy-store-card').classList.contains('glass-surface')`), true);
     await screenshot(theme);
   }
-  pass('Microsoft Store card fits light, dark and glass; action remains clickable');
+  pass('Microsoft Store card fits light and dark; action remains clickable');
 
   writeState({ repairDelay: 650, repair: { ok: false, error: '已取消系统授权，可重新点击配置。' } });
   await click('#proxyStoreRepair'); await click('#proxyStoreRepair'); await click('#proxyStoreRepair');

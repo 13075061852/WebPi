@@ -300,7 +300,7 @@ try {
   pass('Repository sidebar shows saved local projects without login, remote account controls or REST loading');
   await until(() => evaluate(`getComputedStyle(document.querySelector('#sidebar')).opacity==='1'`), 'sidebar entrance animation settles');
 
-  for (const theme of ['light', 'dark', 'glass']) {
+  for (const theme of ['light', 'dark']) {
     await applyTheme(theme);
     const bounds = await evaluate(`(()=>{const pane=document.querySelector('.side-section[data-pane="git"]'),side=document.querySelector('#sidebar'),nav=document.querySelector('#sideNav'),s=side.getBoundingClientRect(),p=pane.getBoundingClientRect(),style=getComputedStyle(pane),b=document.querySelector('#gitBrowse').getBoundingClientRect(),c=document.querySelector('#gitCreate').getBoundingClientRect();return {theme:document.documentElement.dataset.surface||document.documentElement.dataset.theme,pane:{client:pane.clientWidth,scroll:pane.scrollWidth,contentLeft:p.left+parseFloat(style.paddingLeft),contentRight:p.right-parseFloat(style.paddingRight)},browse:{left:b.left,right:b.right,height:b.height,top:b.top},create:{left:c.left,right:c.right,height:c.height,top:c.top},nav:{client:nav.clientWidth,scroll:nav.scrollWidth},buttons:[...nav.querySelectorAll('.nav-item')].map(b=>{const r=b.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width,disabled:b.disabled}}),side:{left:s.left,right:s.right},rows:[...pane.querySelectorAll('.project-group')].map(b=>{const r=b.getBoundingClientRect();return {left:r.left,right:r.right}})}})()`);
     assert.equal(bounds.buttons.length, 3); assert.ok(bounds.nav.scroll <= bounds.nav.client + 1); assert.ok(bounds.pane.scroll <= bounds.pane.client + 1);
@@ -310,7 +310,7 @@ try {
     themes.push(bounds); const screenshot = await command('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(reports, `${theme}.png`), Buffer.from(screenshot.data, 'base64'));
   }
-  pass('Three navigation tabs and local project groups fit in light, dark and glass themes');
+  pass('Three navigation tabs and local project groups fit in light and dark themes');
   await browse(); await until(() => evaluate(`document.querySelector('#gitAccount')?.textContent==='未登录'`), 'logged-out picker');
   assert.equal((await rows()).length, 0);
   assert.equal(await evaluate(`!!document.querySelector('#gitLogin,#gitRefresh')`), false);
@@ -321,11 +321,11 @@ try {
   assert.ok((await rows()).some(row => row.fullName === 'team/shared-readonly'));
   assert.deepEqual((await localRows()).map(row => row.fullName), ['team/shared-readonly']);
   pass('Remote picker loads private and shared repositories without adding uncloned entries to the sidebar');
-  for (const theme of ['light', 'dark', 'glass']) {
+  for (const theme of ['light', 'dark']) {
     await applyTheme(theme); await checkPickerLayout(theme, `picker-${theme}.png`);
   }
-  fs.copyFileSync(path.join(reports, 'picker-glass.png'), path.join(reports, 'remote-picker.png'));
-  pass('Seventeen repositories fit in all three themes; team labels stay concise and only the list scrolls');
+  fs.copyFileSync(path.join(reports, 'picker-dark.png'), path.join(reports, 'remote-picker.png'));
+  pass('Seventeen repositories fit in both themes; team labels stay concise and only the list scrolls');
   await command('Emulation.setDeviceMetricsOverride', { width: 760, height: 700, deviceScaleFactor: 1, mobile: false });
   await checkPickerLayout('760x700', 'picker-narrow.png');
   pass('Narrow picker keeps static account information, equal-height toolbar and search visible without overflow');
@@ -420,7 +420,7 @@ try {
   pass('Filename and checkbox clicks stay linked; cached and in-flight previews are reused until refresh');
   assert.equal(await evaluate(`(()=>{const a=document.querySelector('.git-file-column').getBoundingClientRect(),b=document.querySelector('.git-pending-detail').getBoundingClientRect();return a.right<b.left&&Math.abs(a.top-b.top)<1})()`),true);
   const pendingScreenshot=await command('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(reports,'pending-split.png'),Buffer.from(pendingScreenshot.data,'base64'));
-  for (const theme of ['light', 'dark', 'glass']) {
+  for (const theme of ['light', 'dark']) {
     await applyTheme(theme); await settleAnimations('repository detail ' + theme);
     await checkBottomActions();
     assert.equal(await evaluate(`(()=>{const a=document.querySelector('.git-file-header'),b=document.querySelector('.git-pending-detail-title'),x=a.getBoundingClientRect(),y=b.getBoundingClientRect(),r=document.querySelector('.git-pending-entry').getBoundingClientRect();return a.textContent.includes('文件')&&a.textContent.includes('状态')&&Math.abs(x.top-y.top)<1&&Math.abs(x.bottom-y.bottom)<1&&r.top>=x.bottom})()`),true,'Both file and preview headers align above the first row');
@@ -531,7 +531,7 @@ try {
   await until(() => calls('upload').length === 3, 'AI fills description then submits automatically');
   assert.equal(await evaluate(`document.querySelector('#gitCommitMessage').value`), '更新 notes.txt 的改动');
   assert.equal(calls('upload')[2].input.message, '更新 notes.txt 的改动');
-  for (const theme of ['light', 'dark', 'glass']) {
+  for (const theme of ['light', 'dark']) {
     await applyTheme(theme); await settleAnimations('push button progress ' + theme); await checkBottomActions();
     assert.equal(await evaluate(`(()=>{const button=document.querySelector('#gitRepoUpload'),s=getComputedStyle(button,'::before'),r=button.getBoundingClientRect(),p=document.querySelector('.git-repository-panel').getBoundingClientRect();return button.textContent==='推送中…'&&button.classList.contains('is-loading')&&s.animationName==='spin'&&r.right<=p.right&&!document.querySelector('#gitRepoMessage').textContent})()`), true);
     const shot=await command('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(reports,'push-progress-'+theme+'.png'),Buffer.from(shot.data,'base64'));
@@ -544,7 +544,7 @@ try {
   assert.equal(calls('commit-ai').length, 2, 'Push retry reuses the generated description');
   assert.deepEqual(calls('upload')[2].input.files, ['notes.txt']); pass('Unselected files remain dirty until another explicit submission');
   pass('AI fills the description before push; progress stays inside the button across themes');
-  for (const theme of ['light', 'dark', 'glass']) {
+  for (const theme of ['light', 'dark']) {
     await applyTheme(theme); await settleAnimations('empty repository ' + theme);
     await checkBottomActions();
     assert.equal(await evaluate(`(()=>{const p=document.querySelector('.git-repository-panel');return !document.querySelector('.git-pending-split,.git-pending-detail,#gitCommitMessage')&&!!document.querySelector('.git-pending-empty')&&document.querySelector('#gitRepoUpload').disabled&&p.getBoundingClientRect().height<400&&p.scrollWidth<=p.clientWidth+1})()`),true,'Clean repository uses compact empty state');

@@ -57,10 +57,42 @@
   color-scheme: light;
 }
 
-/* smooth cross-fade while switching themes (class added by JS) */
+/* Palette snapshots carry the transition; live controls must not cross-fade. */
 .theme-x, .theme-x * , .theme-x *::before, .theme-x *::after {
   transition: none !important;
 }
+
+.theme-ripple-anchor { position: fixed; inset: 0; pointer-events: none; view-transition-name: theme-ripple; }
+html.theme-x::view-transition { pointer-events: none; }
+html.theme-x::view-transition-group(*) { animation: none; pointer-events: none; }
+html.theme-x::view-transition-image-pair(root) { isolation: isolate; }
+html.theme-x::view-transition-old(root), html.theme-x::view-transition-new(root) {
+  animation: none; opacity: 1; mix-blend-mode: normal;
+}
+html.theme-x::view-transition-old(root) { z-index: 1; }
+html.theme-x::view-transition-new(root) {
+  z-index: 2;
+  clip-path: circle(0px at var(--theme-origin-x) var(--theme-origin-y));
+}
+html.theme-x::view-transition-group(theme-ripple) {
+  z-index: 3;
+  width: calc(var(--theme-radius) * 2);
+  height: calc(var(--theme-radius) * 2);
+  left: calc(var(--theme-origin-x) - var(--theme-radius));
+  top: calc(var(--theme-origin-y) - var(--theme-radius));
+  transform-origin: center;
+  will-change: transform, opacity;
+  /* Paint each ring once; only its compositor transform changes per frame. */
+  background:
+    radial-gradient(circle var(--theme-radius) at center,
+      transparent calc(100% - 5px), rgb(153 211 227 / .16) calc(100% - 3px),
+      rgb(240 251 255 / .36) calc(100% - 1px), transparent 100%),
+    radial-gradient(circle var(--theme-radius) at center,
+      transparent calc(86% - 2px), rgb(169 219 232 / .2) calc(86% - 1px), transparent calc(86% + 2px)),
+    radial-gradient(circle var(--theme-radius) at center,
+      transparent calc(72% - 2px), rgb(238 250 255 / .14) calc(72% - 1px), transparent calc(72% + 2px));
+}
+html.theme-x::view-transition-image-pair(theme-ripple) { display: none; }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -175,8 +207,7 @@ button:active { transform: scale(0.96); }
 .tb-btn .ic { width: 15px; height: 15px; }
 #themeToggle .ic { display: none; }
 #themeToggle[data-next-theme="light"] .ic-sun,
-#themeToggle[data-next-theme="dark"] .ic-moon,
-#themeToggle[data-next-theme="glass"] .ic-glass { display: block; }
+#themeToggle[data-next-theme="dark"] .ic-moon { display: block; }
 
 .win-controls { display: flex; }
 .win-controls button {
@@ -449,8 +480,6 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
 .git-loading { color: var(--txt-dim); font-size: 12px; padding: 8px 0; }
 .git-dialog :is(button, input):disabled { opacity: .5; cursor: default; }
 .git-repo-row:active, .git-repository-panel button:active { transform: none; }
-:root[data-surface="glass"] #gitSearch { background: var(--glass-fill); }
-:root[data-surface="glass"] .git-repo-row:is(:hover, :active) { transform: none; filter: none; }
 
 /* 侧栏底部：工作区文件列表（固定可见） */
 .side-files {

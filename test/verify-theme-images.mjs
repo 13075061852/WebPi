@@ -2,7 +2,30 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { createThemeImages } from '../src/main/theme-images.mjs';
+
+// Run the actual pre-paint restoration script against saved user preferences.
+const restoreTheme = await fs.readFile(new URL('../src/renderer/js/theme.js', import.meta.url), 'utf8');
+const catalog = await fs.readFile(new URL('../src/renderer/js/theme-catalog.js', import.meta.url), 'utf8');
+for (const [saved, expected, palette] of [[null, 'light', 'light'], ['glass', 'light', 'light'],
+  ['unknown-theme', 'light', 'light'], ['dark', 'dark', 'dark'], ['scene-moon', 'scene-moon', 'dark']]) {
+  const values = new Map(saved === null ? [] : [['halo-theme', saved]]);
+  const root = { dataset: {}, style: { setProperty() {} } };
+  const context = vm.createContext({ window: {}, document: { documentElement: root }, localStorage: {
+    getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value),
+  } });
+  vm.runInContext(catalog + '\n' + restoreTheme, context);
+  assert.equal(root.dataset.theme, palette);
+  assert.equal(root.dataset.wallpaper, expected.startsWith('scene-') ? expected : '');
+  assert.equal(root.dataset.surface, undefined, 'Removed theme cannot initialize a glass surface');
+  if (saved !== null) assert.equal(values.get('halo-theme'), expected, 'Persist migration before first paint');
+}
+const unavailableStorage = vm.createContext({ document: { documentElement: { dataset: {} } },
+  localStorage: { getItem() { throw Error('Storage unavailable'); } } });
+vm.runInContext(restoreTheme, unavailableStorage);
+assert.equal(unavailableStorage.document.documentElement.dataset.theme, 'light');
+console.log('PASS legacy glass migration, valid theme preservation and unavailable-storage fallback');
 
 const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'halo-themes-'));
 try {

@@ -296,7 +296,7 @@ try {
   const preview = await evaluate('({src:document.querySelector(".pv-video").getAttribute("src"),controls:document.querySelector(".pv-video").controls})');
   assert.ok(decodeURIComponent(preview.src).includes(path.basename(delivery)), `Click must open the final file: ${JSON.stringify(preview)}`);
   assert.equal(preview.controls, true);
-  await evaluate('document.documentElement.dataset.theme = "light"; document.documentElement.dataset.surface = "glass"; document.dispatchEvent(new CustomEvent("themechange"))');
+  await evaluate('document.documentElement.dataset.theme = "dark"; document.dispatchEvent(new CustomEvent("themechange"))');
   await sleep(400);
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(reports, 'video-artifacts.png'), Buffer.from(screenshot.data, 'base64'));
