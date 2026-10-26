@@ -4,19 +4,29 @@
  * Verifies the full renderer pipeline without depending on network/model access.
  */
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {createServer} from 'node:http';
+import net from 'node:net';
 
-const PORT = 9352;
+const probe = net.createServer();
+await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+const PORT = probe.address().port;
+await new Promise(resolve => probe.close(resolve));
+const fixture = mkdtempSync(path.join(tmpdir(), 'halo-terminal-e2e-'));
+const profile = path.join(fixture, 'profile'), workspace = path.join(fixture, 'workspace'), agent = path.join(fixture, 'agent');
+for (const dir of [profile, workspace, agent]) mkdirSync(dir);
+writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({ cwd: workspace, projects: [{ cwd: workspace }] }));
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL|ELECTRON_RUN_AS_NODE)/i.test(key)));
+Object.assign(env, { USERPROFILE: fixture, HOME: fixture, APPDATA: path.join(fixture, 'roaming'), LOCALAPPDATA: path.join(fixture, 'local'), PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1' });
 const website = createServer((_request,response)=>{response.setHeader('Content-Type','text/html');response.end('<title>Terminal preview test</title><h1>Preview works</h1>');});
 await new Promise(resolve=>website.listen(0,'127.0.0.1',resolve));
 const terminalURL = `http://127.0.0.1:${website.address().port}/terminal-preview/`;
 const electron = spawn(
   process.env.HALO_TEST_EXECUTABLE || (process.platform === "win32" ? "node_modules/electron/dist/electron.exe" : "node_modules/.bin/electron"),
-  [...(process.env.HALO_TEST_EXECUTABLE ? [] : ["."]), `--remote-debugging-port=${PORT}`, `--user-data-dir=${mkdtempSync(path.join(tmpdir(), 'halo-render-'))}`],
-  { stdio: ["ignore", "pipe", "pipe"] }
+  [...(process.env.HALO_TEST_EXECUTABLE ? [] : ["."]), `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`],
+  { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
 );
 electron.stderr.on("data", () => {});
 electron.on("exit", (c) => console.log("electron exited", c));
@@ -63,6 +73,9 @@ async function evalJS(expression) {
   return r.result?.result?.value;
 }
 async function screenshot(file) {
+  const directory = process.env.HALO_TEST_OUTPUT_DIR || path.join(tmpdir(), 'halo-terminal-screenshots');
+  mkdirSync(directory, { recursive: true });
+  file = path.join(directory, path.basename(file));
   const r = await send("Page.captureScreenshot", { format: "png" });
   writeFileSync(file, Buffer.from(r.result.data, "base64"));
   console.log("saved", file);
@@ -88,6 +101,8 @@ await evalJS(`
 
 
 try {
+if (await evalJS(`typeof window.Terminal !== 'undefined'`)) throw Error('Terminal runtime must not block app startup');
+await evalJS(`import('./js/terminal-runtime.mjs').then(m => m.loadTerminalRuntime())`);
 await evalJS(`window.testTerminalRefs=[];const OriginalTerminal=window.Terminal;window.Terminal=class extends OriginalTerminal{constructor(options){super(options);window.testTerminalRefs.push(this)}}`);
 // The preview now starts folded; reveal the pane before testing terminal geometry.
 await evalJS(`if(document.body.classList.contains('preview-collapsed'))document.querySelector('#btnPreviewToggle').click();`);
@@ -190,4 +205,9 @@ for (let i=0;i<60;i++) {
   await sleep(100);
 }
 console.log('TERMINALS PASS: independent shells, input/output, split, hide/reopen, close isolation');
-} finally { ws.close(); electron.kill(); website.close(); }
+} finally {
+  ws.close(); electron.kill(); website.close();
+  if (electron.exitCode === null) await new Promise(resolve => electron.once('exit', resolve));
+  if (path.dirname(path.resolve(fixture)) !== path.resolve(tmpdir()) || !path.basename(fixture).startsWith('halo-terminal-e2e-')) throw Error('Unsafe terminal fixture cleanup');
+  rmSync(fixture, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}

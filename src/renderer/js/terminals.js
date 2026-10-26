@@ -3,7 +3,7 @@ window.initTerminals = (getCwd, toast, openPreview) => {
   const $ = id => document.getElementById(id);
   const records = new Map(), activeByProject = new Map();
   const host = $("termHost"), pane = $("cpane-preview");
-  let tiled = false, resizeTimer = 0;
+  let tiled = false, resizeTimer = 0, creating = null;
   const key = () => getCwd().replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
   const current = () => [...records.values()].filter(r => r.project === key());
   const active = () => records.get(activeByProject.get(key()));
@@ -60,11 +60,19 @@ window.initTerminals = (getCwd, toast, openPreview) => {
     $("termSplit").setAttribute("aria-pressed", String(tiled));
     fit();
   }
-  async function create() {
+  function create() {
+    creating ||= createTerminal().finally(() => { creating = null; });
+    return creating;
+  }
+  async function createTerminal() {
     if (current().length >= 8) return toast("每个项目最多开启 8 个终端", "err");
+    const requestedProject = key();
+    const { loadTerminalRuntime } = await import('./terminal-runtime.mjs');
+    await loadTerminalRuntime();
     const { createTerminalLinkProvider } = await import('./terminal-links.mjs');
     const { createTerminalKeyHandler } = await import('./terminal-keys.mjs');
     const { preserveTerminalHistory } = await import('./terminal-history.mjs');
+    if (key() !== requestedProject || !pane.classList.contains('term-open')) return;
     const openLink = (event, url) => {
       event.preventDefault();
       void Promise.resolve().then(() => openPreview(url)).catch(() => toast("无法打开预览", "err"));

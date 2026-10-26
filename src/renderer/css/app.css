@@ -493,7 +493,7 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
 .side-files .ws-tree { flex: 1; min-height: 0; padding: 0 14px 0 2px; }
 @keyframes paneIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
-/* agent state card removed — status is surfaced by the send button & stall hint */
+/* Agent status is surfaced by the send button and turn status. */
 @keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -621,28 +621,7 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
   background: var(--err);
 }
 
-/* skills / prompts / extensions */
-.res-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
-.res-chip {
-  font-size: 11px; color: var(--txt-dim);
-  padding: 4px 10px;
-  border: 1px solid var(--hair); border-radius: 999px;
-  background: var(--panel);
-  transition: border-color 0.2s, color 0.2s;
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.res-chip:hover { border-color: var(--hair-2); color: var(--txt); }
 .res-empty { font-size: 11px; color: var(--txt-faint); padding: 2px 2px 0; }
-.ext-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 4px 8px; border-radius: 8px; min-width: 0;
-}
-.ext-row:hover { background: rgba(var(--ink-rgb), 0.05); }
-.ext-name {
-  font-size: 12px; color: var(--txt-dim); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; min-width: 0;
-}
-.ext-row:hover .ext-name { color: var(--txt); }
 .ext-switch {
   width: 28px; height: 16px; border-radius: 999px; flex: none;
   border: 1px solid var(--hair-2); background: transparent;
@@ -986,12 +965,12 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
 }
 .pv-body.dev-tablet { padding: 26px 24px 30px; }
 .pv-body.dev-tablet .dev-shell {
-  flex: 0 1 768px; max-width: 100%; padding: 16px; border-radius: 29px;
+  flex: 0 1 768px; max-width: 100%; padding: 8px; border-radius: 22px;
 }
-.pv-body.dev-tablet .dev-shell::before { inset: 3px; border-radius: 25px; }
+.pv-body.dev-tablet .dev-shell::before { inset: 3px; border-radius: 18px; }
 .pv-body.dev-tablet .dev-shell :is(iframe, webview) { border-radius: 13px; }
 .pv-body.dev-tablet .dev-shell::after {
-  left: 6px; top: calc(50% - 3px); width: 5px; height: 5px; border-radius: 50%;
+  left: 4px; top: calc(50% - 1.5px); width: 3px; height: 3px; border-radius: 50%;
   background: radial-gradient(circle at 35% 35%, #426481, #050609 65%);
   box-shadow: 0 0 0 1px #ffffff14;
 }
@@ -1582,19 +1561,6 @@ details.process-group[open]::details-content { height: auto; opacity: 1; }
 }
 .notice.err { color: var(--err); border-color: rgba(224, 96, 92, 0.35); }
 .notice.warn { color: var(--warn); border-color: rgba(207, 165, 82, 0.35); }
-
-/* stall hint — silent gateway while streaming */
-.stall-hint {
-  align-self: flex-start;
-  display: flex; align-items: center; gap: 7px;
-  font-size: 10.5px; color: var(--txt-faint);
-  animation: msgIn 0.3s var(--ease) both;
-}
-.stall-hint .s-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--warn);
-  animation: breathe 1.2s ease-in-out infinite;
-}
 
 /* error card */
 .error-card {

@@ -26,11 +26,14 @@ try {
   await bridge.switchProject(b);
   assert.equal(bridge.session.sessionFile, empty, 'Reuse project draft');
   assert.equal(bridge.cwd, b.replaceAll('\\', '/'));
-  // A more recent local draft wins over a stale lastSession pointer.
+  // A more recent persisted local conversation wins over a stale server pointer.
   await bridge.openSession(local);
   bridge.session.agent.state.messages = [{ role: 'user', content: [{ type: 'text', text: 'old' }] }];
   await bridge.switchProject(a);
   await bridge.newSession();
+  const message = { role: 'user', content: [{ type: 'text', text: 'new local conversation' }], timestamp: Date.now() };
+  bridge.session.sessionManager.appendMessage(message);
+  bridge.session.agent.state.messages.push(message);
   const latest = bridge.session.sessionFile;
   store.data.projects.find(p => p.cwd === a.replaceAll('\\', '/')).lastSession = remote;
   await bridge.switchProject(b);

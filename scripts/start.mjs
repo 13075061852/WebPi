@@ -1,7 +1,7 @@
 /**
  * Halo 启动器。
  *
- * 代理由主进程 env-proxy.mjs 统一初始化，开发版与安装版使用相同逻辑。
+ * 代理由主进程 global-proxy.mjs 按保存的直连/代理模式初始化。
  */
 import { spawn } from "node:child_process";
 import path from "node:path";

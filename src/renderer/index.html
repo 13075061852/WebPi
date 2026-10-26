@@ -7,9 +7,6 @@
 <script src="js/theme-catalog.js"></script>
 <script src="js/theme.js"></script>
 <link rel="stylesheet" href="css/app.css" />
-<link rel="stylesheet" href="vendor/xterm.css" />
-<script src="vendor/xterm.js"></script>
-<script src="vendor/addon-fit.js"></script>
 <script src="js/markdown.js"></script>
 <link rel="stylesheet" href="css/theme-collection.css">
 </head>
@@ -77,12 +74,7 @@
 
       <!-- tab: skills -->
       <div class="side-section" data-pane="skills">
-        <div class="side-label row"><span>服务器</span><button id="serverAdd" class="mini-btn">＋ 添加</button></div><div id="serverList"></div><div class="server-legacy" hidden><div class="side-label">技能 · Skills</div>
-        <div id="skillList" class="res-list"></div>
-        <div class="side-label">模板 · Prompts</div>
-        <div id="promptList" class="res-list"></div>
-        <div class="side-label">扩展 · Extensions</div>
-        <div id="extList" class="res-list"></div></div>
+        <div class="side-label row"><span>服务器</span><button id="serverAdd" class="mini-btn">＋ 添加</button></div><div id="serverList"></div>
       </div>
 
       <!-- tab: local Git projects -->
@@ -296,7 +288,7 @@
 </div>
 
 <!-- ======================= settings modal ======================= -->
-<div id="settingsModal" class="modal" hidden>
+<div id="settingsModal" class="modal" hidden role="dialog" aria-modal="true" aria-label="设置">
   <div class="modal-panel settings-panel">
     <button class="modal-x set-close" data-close>&times;</button>
     <div class="set-side">

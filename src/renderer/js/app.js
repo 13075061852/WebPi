@@ -1000,13 +1000,13 @@ function ensureTurn() {
 // Keep the latest step visible; archive it only when a newer step arrives.
 // Move the original nodes so live output, detail toggles and confirmations survive.
 function compactToolTimeline(turn) {
-  const latest = [...turn.children].findLast(node => node.matches('.tool, .think, .stall-hint'));
+  const latest = [...turn.children].findLast(node => node.matches('.tool, .think'));
   let archive = null;
   for (const node of Array.from(turn.children)) {
     if (node === latest) continue;
     if (node.matches('.md, .error-card') || node.querySelector('.video-confirmation')) { archive = null; continue; }
     if (node.matches('.tool-history')) { archive = node; continue; }
-    if (!node.matches('.tool, .think, .stall-hint')) continue;
+    if (!node.matches('.tool, .think')) continue;
     if (!archive) {
       archive = document.createElement('details');
       archive.className = 'process-group tool-history';
@@ -1272,7 +1272,7 @@ function finalizeTurn() {
   }
   // 只把最后一段正文视为最终回答；此前的阶段性说明与思考、工具一起收进过程。
   const finalAnswer = $$(".md", turn).at(-1) || null;
-  const processNodes = $$(".think, .tool, .stall-hint, .md", turn).filter((node) => node !== finalAnswer);
+  const processNodes = $$(".think, .tool, .md", turn).filter((node) => node !== finalAnswer);
   if (processNodes.length || turn.__outputRate?.average() || turn.__turnCost) {
     const elapsed = turn.__history
       ? (turn.__startedAt > 0 && turn.__endedAt > turn.__startedAt ? Math.max(1, Math.round((turn.__endedAt - turn.__startedAt) / 1000)) : null)
@@ -1302,7 +1302,7 @@ function finalizeTurn() {
   showTurnArtifacts(turn);
   // Errors belong below the completed turn's timing, answer and delivered files.
   for (const error of $$(':scope > .error-card', turn)) turn.appendChild(error);
-  if (!$(".md, .think, .tool, .error-card, .stall-hint", turn)) turn.remove();
+  if (!$(".md, .think, .tool, .error-card", turn)) turn.remove();
 }
 
 /* 回合内等待状态：π 动画图标 + 当前动作 + Esc 提示（行首，替代文末光标） */
@@ -2395,45 +2395,6 @@ function clearChat(preserveMessages = false) {
 async function loadResources() {
   const r = await window.halo.listResources();
   S.resources = r?.data || { skills: [], prompts: [], extensions: [] };
-  renderResources();
-}
-
-function renderResources() {
-  const fill = (sel, arr, fmt) => {
-    const el = $(sel);
-    if (!arr.length) { el.innerHTML = `<div class="res-empty">—</div>`; return; }
-    el.innerHTML = arr.map(fmt).join("");
-  };
-  fill("#skillList", S.resources.skills, (s) => `<button class="res-chip" title="${esc(s.description || s.name)}" data-skill="${esc(s.name)}">✦ ${esc(s.name)}</button>`);
-  fill("#promptList", S.resources.prompts, (p) => `<button class="res-chip" data-prompt="${esc(p.name)}" title="${esc(p.description || "")}">◈ ${esc(p.name)}</button>`);
-  const extEl = $("#extList");
-  const exts = S.resources.extensions || [];
-  if (!exts.length) { extEl.innerHTML = `<div class="res-empty">—</div>`; }
-  else {
-    extEl.innerHTML = exts.map((x) => `
-      <div class="ext-row" title="${esc(x.path)}">
-        <span class="ext-name">⬡ ${esc(x.name)}</span>
-        <button class="ext-switch${x.disabled ? "" : " on"}" data-ext-toggle="${esc(x.path)}" aria-label="扩展开关"></button>
-      </div>`).join("");
-  }
-  extEl.querySelectorAll("[data-ext-toggle]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      const p = b.dataset.extToggle;
-      const on = !b.classList.contains("on");
-      b.disabled = true;
-      const r = await window.halo.extToggle(p, on).catch((e) => ({ error: String(e) }));
-      if (r?.error) { toast(`切换失败：${r.error}`, "err"); b.disabled = false; return; }
-      S.resources = r?.data || S.resources;
-      renderResources();
-      clearChat();
-      await restoreHistory();
-      toast(on ? "扩展已开启（会话已重载）" : "扩展已关闭（会话已重载）", "ok");
-    }));
-
-  $("#skillList").querySelectorAll("[data-skill]").forEach((b) =>
-    b.addEventListener("click", () => { $("#input").value = `/skill:${b.dataset.skill} `; autoGrow(); $("#input").focus(); }));
-  $("#promptList").querySelectorAll("[data-prompt]").forEach((b) =>
-    b.addEventListener("click", () => { $("#input").value = `/${b.dataset.prompt} `; autoGrow(); $("#input").focus(); }));
 }
 
 /* ---- models ---- */
@@ -3109,6 +3070,8 @@ function renderTree() {
         ? `<span class="arrow">▶</span><span class="fic">${FOLDER_IC}</span><span class="fname">${esc(n.name)}</span><button class="trow-del" title="删除">${TRASH_IC}</button>`
         : `<span class="arrow"></span><span class="fic">${fileIconFor(n.name)}</span><span class="fname">${esc(n.name)}</span><span class="fsize">${fmtSize(n.size || 0)}</span><button class="trow-del" title="删除">${TRASH_IC}</button>`;
       row.title = n.path;
+      row.dataset.path = n.path;
+      row.tabIndex = S.selectedFile === n.path ? 0 : -1;
       const attach = document.createElement("button");
       attach.type = "button";
       attach.className = "trow-attach";
@@ -3132,7 +3095,9 @@ function renderTree() {
         row.insertBefore(open, row.querySelector('.trow-del'));
       }
       row.addEventListener("click", () => {
-        el.focus({ preventScroll: true });
+        $$('.trow.selected', el).forEach(previous => { previous.classList.remove('selected'); previous.tabIndex = -1; });
+        row.classList.add('selected'); row.tabIndex = 0;
+        row.focus({ preventScroll: true });
         S.selectedFile = n.path;
         if (n.dir) {
           const open = !S.expanded.has(n.path);
@@ -3156,9 +3121,31 @@ function renderTree() {
           ], { duration: 240, easing: "cubic-bezier(.22,1,.36,1)" });
           kid._animation.onfinish = finish;
         } else {
-          renderTree();
           setPreview(n.path);
         }
+      });
+      row.addEventListener('keydown', event => {
+        if (event.target !== row) return;
+        const rows = $$('.trow[data-path]', el).filter(item => !item.closest('.tree-kids[hidden], .tree-kids[inert]'));
+        const index = rows.indexOf(row);
+        let next;
+        if (event.key === 'ArrowDown') next = rows[index + 1];
+        else if (event.key === 'ArrowUp') next = rows[index - 1];
+        else if (event.key === 'Home') next = rows[0];
+        else if (event.key === 'End') next = rows.at(-1);
+        else if (event.key === 'Enter' || event.key === ' ') row.click();
+        else if (event.key === 'ArrowRight') {
+          if (n.dir && !S.expanded.has(n.path)) row.click();
+          else if (n.dir) next = $('.trow[data-path]', kid);
+        } else if (event.key === 'ArrowLeft') {
+          if (n.dir && S.expanded.has(n.path)) row.click();
+          else {
+            const parent = findParentDirPath(S.treeData.tree, n.path);
+            next = rows.find(item => item.dataset.path === parent);
+          }
+        } else return;
+        event.preventDefault();
+        if (next) { rows.forEach(item => { item.tabIndex = -1; }); next.tabIndex = 0; next.focus(); }
       });
       const del = $(".trow-del", row);
       del.addEventListener("click", async (e) => {
@@ -3195,6 +3182,7 @@ function renderTree() {
     }
   };
   build(S.treeData.tree, 0, el, null);
+  if (!$('.trow[tabindex="0"]', el)) { const first = $('.trow[data-path]', el); if (first) first.tabIndex = 0; }
   if (S.treeData.truncated) {
     const tip = document.createElement("div");
     tip.className = "res-empty";
@@ -4670,7 +4658,6 @@ async function preloadMarketPages(query, type, page, total, request) {
 }
 async function loadMarket(page) {
   if (['builtin', 'installed'].includes(S.pkgType)) return;
-  if (S.pkgType === "installed") return; // 已安装 tab 不需要市场数据（切回时 syncPkgTab 会重新加载）
   if (page) S.pkgPage = page;
   S.pkgPage = S.pkgPage || 1;
   const request = ++marketRequest, query = S.pkgQuery, type = S.pkgType, currentPage = S.pkgPage;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import { gzipSync } from 'node:zlib';
 import { getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { GlobalProxy, normalizeProxy } from '../src/main/global-proxy.mjs';
 import { videoDispatcher } from '../src/main/video-http.mjs';
@@ -10,10 +11,10 @@ const savedEnv = { ...process.env }, original = getGlobalDispatcher();
 const oldHttp = http.globalAgent, oldHttps = https.globalAgent;
 const servers = [], sockets = new Set();
 let controller;
-const listen = async server => {
+const listen = async (server, host = '127.0.0.1') => {
   servers.push(server);
   server.on('connection', socket => { sockets.add(socket); socket.on('error', () => {}); socket.on('close', () => sockets.delete(socket)); });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise(resolve => server.listen(0, host, resolve));
   return server.address().port;
 };
 const get = url => new Promise((resolve, reject) => {
@@ -21,7 +22,12 @@ const get = url => new Promise((resolve, reject) => {
   request.on('error', reject); request.setTimeout(3000, () => request.destroy(Error('timeout')));
 });
 try {
-  const originPort = await listen(http.createServer((_req, res) => res.end('origin')));
+  const originPort = await listen(http.createServer((req, res) => {
+    if (req.url === '/oauth-gzip-fixture') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' });
+      res.end(gzipSync(JSON.stringify({ token: 'fixture-only', message: '压缩响应' })));
+    } else res.end('origin');
+  }));
   async function proxy(label) {
     const seen = [];
     const server = http.createServer((req, res) => { seen.push(req.url); res.end(label); });
@@ -56,7 +62,24 @@ try {
     assert.equal(videoDispatcher('direct'), undefined, 'video must obey global routing');
     assert.equal(process.env.HTTPS_PROXY, `http://127.0.0.1:${target.port}`);
   }
+  const compressed = await fetch(`http://fixture.invalid:${originPort}/oauth-gzip-fixture`, { signal:AbortSignal.timeout(3000) });
+  assert.equal(compressed.status, 200);
+  assert.deepEqual(await compressed.json(), { token: 'fixture-only', message: '压缩响应' },
+    'OAuth JSON must be decompressed exactly once through the active saved proxy mode');
+  const unavailable = net.createServer();
+  const unavailablePort = await listen(unavailable);
+  await new Promise(resolve => unavailable.close(resolve));
+  // This loopback address is outside GlobalProxy's 127.0.0.1 bypass. A direct
+  // fallback would reach the controlled sink instead of being masked by DNS failure.
+  let directRequests = 0;
+  const sinkPort = await listen(http.createServer((_req, res) => { directRequests++; res.end('direct sink'); }), '127.0.0.2');
+  const sinkURL = `http://127.0.0.2:${sinkPort}`;
+  await controller.set({ mode:'proxy', port:unavailablePort });
+  await assert.rejects(fetch(sinkURL, { signal:AbortSignal.timeout(3000) }));
+  assert.equal(directRequests, 0, 'An unavailable saved proxy must not silently fall back to direct');
   await controller.set({ mode:'direct', port:b.port });
+  assert.equal(await (await fetch(sinkURL, { signal:AbortSignal.timeout(3000) })).text(), 'direct sink');
+  assert.equal(directRequests, 1, 'The local sink must be reachable when direct mode is explicitly selected');
   assert.equal(await (await fetch(`http://127.0.0.1:${originPort}`)).text(), 'origin');
   assert.equal(await get(`http://127.0.0.1:${originPort}`), 'origin');
   assert.equal(process.env.HTTP_PROXY, undefined);
@@ -69,7 +92,7 @@ try {
   assert.equal(controller.state().mode, 'direct');
   assert.equal(store.data.globalProxy.mode, 'direct');
   assert.equal(process.env.HTTP_PROXY, undefined);
-  console.log('PASS proxy switching: fetch, native HTTP, HTTPS tunnel, two ports, direct reset, inherited env, video, persistence and rollback');
+  console.log('PASS proxy switching: fetch, native HTTP, HTTPS tunnel, gzip OAuth JSON, no direct fallback, two ports, direct reset, inherited env, video, persistence and rollback');
 } finally {
   await controller?.dispatcher.destroy();
   setGlobalDispatcher(original); http.globalAgent = oldHttp; https.globalAgent = oldHttps;

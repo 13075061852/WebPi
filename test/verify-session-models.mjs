@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { PiBridge, HaloStore } from '../src/main/pi-bridge.mjs';
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-session-models-'));
+import { isolatePi } from './helpers/isolated-pi.mjs';
+const fixture = isolatePi('halo-session-models-');
+const { PiBridge, HaloStore } = await import('../src/main/pi-bridge.mjs');
+const dir = fixture.dir;
 const store = new HaloStore(path.join(dir, 'settings.json'));
 const bridge = new PiBridge(store, {}, { sessionDir: path.join(dir, 'sessions') });
 const key = m => `${m.provider}/${m.id}`;
@@ -11,7 +11,7 @@ try {
   store.set('projects', [{ cwd: dir }]);
   await bridge.start(dir);
   const models = (await bridge.listModels()).filter(m => m.id);
-  assert.ok(models.length >= 2, 'Need two configured models for regression');
+  assert.ok(models.length >= 2, 'The offline SDK fixture supplies two models');
   const [a, b] = models;
   // No inference requests: only exercise model selection and session persistence.
   bridge.modelRuntime.checkAuth = async () => true;
@@ -44,7 +44,6 @@ try {
   await bridge.start(dir);
   assert.equal(key(bridge.session.model), key(b), 'Restart must ignore changed default');
   console.log('PASS per-session models, draft reuse, new-session default, switching and disk restoration');
-} finally { await bridge.dispose(); }
-process.exit(0);
+} finally { await bridge.dispose(); fixture.cleanup(); }
 
 

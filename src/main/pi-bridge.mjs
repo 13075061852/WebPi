@@ -15,7 +15,6 @@ import { ProjectRuns } from './project-runs.mjs';
 import { promoteQueuedMessage } from './queue-promotion.mjs';
 import { OutputRate } from '../shared/output-rate.mjs';
 import { refreshBillingFx } from './billing-fx.mjs';
-import { estimateSubscriptionCost, isSubscriptionProvider } from '../shared/subscription-cost.mjs';
 import { presentConversations, renameConversation } from './conversation-meta.mjs';
 import { conversationHistory } from './conversation-history.mjs';
 import { imageTool, resolveImageCredential } from "./image-generation.mjs";
@@ -25,9 +24,11 @@ import { officeSkillsRoot, officeTool } from "./office/tools.mjs";
 import { iconLibraryTool } from './icon-library.mjs';
 import { filterBuiltinSkills, builtinDeliveryPolicy } from './builtin-skills.mjs';
 import { previewControlTool } from './preview-control.mjs';
-import { createInterface } from "node:readline";
+import { UsageSessionReader } from "./usage-session-reader.mjs";
+import { usageSummary } from "./usage-summary.mjs";
 import { resolvePiEntry } from "./pi-runtime.mjs";
 import { quotaAuthError, quotaAuthExpired, quotaFailure, quotaResponseError } from './quota-auth.mjs';
+import { resolveSessionFile } from './session-files.mjs';
 
 /* ------------------------------------------------------------------ */
 /* load the Pi version bundled and tested with this app                */
@@ -95,6 +96,7 @@ export async function scanAgents(cwd) {
 /* ------------------------------------------------------------------ */
 
 export class HaloStore {
+  #saveTimer = null;
   constructor(file) {
     this.file = file;
     this.data = { cwd: null, modelKey: null, thinkingLevel: null, splashed: false };
@@ -103,18 +105,28 @@ export class HaloStore {
     } catch {}
   }
   save() {
+    clearTimeout(this.#saveTimer);
+    this.#saveTimer = null;
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       // 原子写：先写 tmp 再 rename，崩溃/断电不会留下半截文件
       const tmp = `${this.file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
       fs.renameSync(tmp, this.file);
       return true;
     } catch { return false; }
   }
-  set(k, v) {
+  saveSoon() {
+    // Batch assistant/tool metadata during a turn. Critical settings, device
+    // identity and settled turns still use the synchronous durability boundary.
+    this.#saveTimer ||= setTimeout(() => this.save(), 250);
+    this.#saveTimer.unref?.();
+  }
+  flush() { return this.#saveTimer ? this.save() : true; }
+  set(k, v, { defer = false } = {}) {
     this.data[k] = v;
-    this.save();
+    if (defer) this.saveSoon();
+    else this.save();
   }
   getDeviceId() {
     const previous = this.data.deviceId;
@@ -185,7 +197,7 @@ export class HaloAuthVault {
         out.accounts[k] = Array.isArray(arr) ? arr.map((a) => this.#encEntry(a)) : arr;
       }
       const tmp = `${this.file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(out, null, 2));
+      fs.writeFileSync(tmp, JSON.stringify(out, null, 2), { mode: 0o600 });
       fs.renameSync(tmp, this.file);
     } catch {}
   }
@@ -546,7 +558,7 @@ async _doStart() {
   }
 
   /* 会话变化时自动记录到所属项目的 lastSession（未持久化的会话不记，落盘后由 agent_settled 补记） */
-  _noteSession(session = this.session) {
+  _noteSession(session = this.session, { defer = false } = {}) {
     try {
       const sf = session?.sessionFile;
       if (!sf || !this.cwd || !fs.existsSync(sf)) return;
@@ -558,7 +570,8 @@ async _doStart() {
         const first = session.messages?.find(m => m.role === "user");
         const text = typeof first?.content === "string" ? first.content : (first?.content || []).filter(c => c.type === "text").map(c => c.text).join(" ");
         this.store.data.serverSessions[sf] = { serverId: target, file: sf, name: text.replace(/^\[当前会话托管服务器:[\s\S]*?\]\s*/, "").slice(0, 80) || "新会话", modified: Date.now() };
-        this.store.save();
+        if (defer) this.store.saveSoon();
+        else this.store.save();
       }
       if (session !== this.session) return;
       const p = this._findProject(this.cwd);
@@ -650,7 +663,7 @@ async _doStart() {
     const latest = sessions.find(s => !this.serverTargets.get(s.id || this.#pool.get(PiBridge.normPath(s.file))?.runtime.session.sessionId) && !this.store.data.serverSessions?.[s.file]);
     const ctx = latest
       ? await this.#ensureSession(latest.file, { cwdOverride: target })
-      : await this.#ensureFresh({ cwd: target });
+      : this.#idleDraft(target) || await this.#ensureFresh({ cwd: target });
     this.cwd = target;
     this.store.set("cwd", target);
     this.#focus(ctx);
@@ -666,7 +679,21 @@ async _doStart() {
   static POOL_LIMIT = 6;
 
   /* 获取或创建会话 ctx：池中已有则复用（任务不中断）；否则创建独立 runtime 打开该会话文件 */
+  async #resolveSessionFile(file) {
+    const { getAgentDir } = await loadPi();
+    return resolveSessionFile(file, {
+      roots: [path.join(getAgentDir(), 'sessions'), ...(this.sessionDir ? [this.sessionDir] : [])],
+      liveFiles: [...this.#pool.values()].map(ctx => ctx.runtime.session.sessionFile),
+      knownFiles: [
+        ...(this.store.data.projects || []).map(project => project.lastSession),
+        ...Object.keys(this.store.data.serverSessions || {}),
+        ...Object.values(this.store.data.serverLastSessions || {}),
+      ],
+    });
+  }
+
   async #ensureSession(file, opts = {}) {
+    file = await this.#resolveSessionFile(file);
     const target = this.store.data.serverSessions?.[file]?.serverId || this.serverTargets.get(path.basename(file).match(/_([\w-]+)\.jsonl$/)?.[1]);
     if (target) opts = {...opts, cwdOverride:this.serverWorkspace(target)};
     const key = PiBridge.normPath(file);
@@ -709,7 +736,10 @@ async _doStart() {
       sessionManager: SessionManager.create(cwd, this.sessionDir || undefined),
     });
     if (file) {
-      await runtime.switchSession(file, cwdOverride ? { cwdOverride } : undefined);
+      try {
+        file = await this.#resolveSessionFile(file);
+        await runtime.switchSession(file, cwdOverride ? { cwdOverride } : undefined);
+      } catch (error) { await runtime.dispose(); throw error; }
     }
     const ctx = {
       key: PiBridge.normPath(runtime.session.sessionFile || file || cwd),
@@ -777,7 +807,7 @@ async _doStart() {
           const timings = this.store.data.turnTimings || {};
           const turns = timings[session.sessionId] ||= {};
           turns[String(userTimestamp)] = { ...turns[String(userTimestamp)], outputRate: ctx.outputRate.snapshot() };
-          this.store.set('turnTimings', timings);
+          this.store.set('turnTimings', timings, { defer: true });
         }
       }
       if (event.type === "message_start" && event.message?.role === "assistant") ctx.partial = event.message;
@@ -806,13 +836,14 @@ async _doStart() {
           const timings = this.store.data.turnTimings || {};
           const turns = timings[session.sessionId] ||= {};
           turns[String(user.timestamp)] = { ...turns[String(user.timestamp)], start: ctx.startedAt, end: Date.now() };
-          this.store.set('turnTimings', timings);
+          this.store.set('turnTimings', timings, { defer: true });
         }
       }
       this._accountUsage(event, ctx);
       this.emit("pi:event", { sessionId: session.sessionId, cwd: ctx.cwd, serverId: this.serverTargets.get(session.sessionId) || null, seq: ctx.eventSeq, event: forwardedEvent });
       if (event?.type === "message_end" || event?.type === "agent_end" || event?.type === "agent_settled") {
-        this._noteSession(session);
+        this._noteSession(session, { defer: true });
+        if (event.type === 'agent_settled') this.store.flush();
         if (ctx.key === this.#focusedKey) this.pushState();
       }
     });
@@ -1334,7 +1365,8 @@ async _doStart() {
     if (credential) data[providerId] = credential;
     else delete data[providerId];
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 });
+    fs.chmodSync(file, 0o600);
     return credential;
   }
 
@@ -1578,84 +1610,9 @@ async _doStart() {
    * assistant 消息的 usage 字段），无需额外记录。
    */
   async usageSummary(days = 30) {
-    const since = Date.now() - days * 86400000;
     const { getAgentDir } = await loadPi();
-    const root = path.join(getAgentDir(), "sessions");
-    const sessionDetails = [];
-    const localDate = (value) => { const d = new Date(value); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
-    const todayKey = localDate(Date.now());
-    const byModel = new Map();   // provider/model -> 聚合
-    const byDay = new Map();     // YYYY-MM-DD -> 聚合
-    const byProject = new Map(); // cwd -> 聚合
-    let sessions = 0;
-    const emptyAgg = () => ({ calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, unpriced: 0 });
-    const add = (map, key, u, amount) => {
-      const a = map.get(key) || emptyAgg();
-      a.calls++; a.input += u.input || 0; a.output += u.output || 0;
-      a.cacheRead += u.cacheRead || 0; a.cacheWrite += u.cacheWrite || 0;
-      a.totalTokens += u.totalTokens || (u.input || 0) + (u.output || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
-      if (amount == null) a.unpriced++;
-      else a.cost += amount;
-      map.set(key, a);
-    };
-    const scan = async (dir) => {
-      let entries = [];
-      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
-      for (const e of entries) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) { await scan(full); continue; }
-        if (!e.isFile() || !e.name.endsWith(".jsonl")) continue;
-        // 流式逐行处理：会话文件可能很大，整文件读入会撑高内存峰值
-        let cwd = "";
-        let counted = false;
-        let title = "", modified = "";
-        const usageBySession = new Map();
-        const rl = createInterface({ input: fs.createReadStream(full), crlfDelay: Infinity });
-        for await (const line of rl) {
-          if (!line || line[0] !== "{") continue;
-          // 快速预筛：不含 usage 的行直接跳过（session/model_change 等头部行除外）
-          const isSessionHead = line.includes('"type":"session"');
-          if (!isSessionHead && !line.includes('"usage"') && !line.includes('"user"') && !line.includes('"session_info"')) continue;
-          let obj;
-          try { obj = JSON.parse(line); } catch { continue; }
-          if (isSessionHead) { cwd = obj.cwd || cwd; continue; }
-          const m = obj.message;
-          if (obj.type === "session_info" && obj.name) title = obj.name;
-          if (!title && m?.role === "user") title = (typeof m.content === "string" ? m.content : (m.content || []).filter(c => c.type === "text").map(c => c.text).join(" ")).slice(0, 100);
-          if (m?.role !== "assistant" || !m.usage) continue;
-          const ts = Date.parse(obj.timestamp || "");
-          if (!Number.isFinite(ts) || ts < since) continue;
-          if (!counted) { sessions++; counted = true; }
-          const model = isSubscriptionProvider(m.provider) ? this.modelRuntime?.getModel(m.provider, m.model) : null;
-          const amount = isSubscriptionProvider(m.provider)
-            ? estimateSubscriptionCost(model, m.usage)
-            : (m.usage.cost?.total || 0);
-          add(byModel, `${m.provider || "?"}/${m.model || "?"}`, m.usage, amount);
-          add(byDay, localDate(ts), m.usage, amount);
-          add(usageBySession, "total", m.usage, amount);
-          if (localDate(ts) === todayKey) add(usageBySession, "today", m.usage, amount);
-          if (obj.timestamp > modified) modified = obj.timestamp;
-          add(byProject, cwd || "未知项目", m.usage, amount);
-        }
-        if (counted) sessionDetails.push({ file: full, cwd, name: title || "未命名会话", modified, ...usageBySession.get("total"), today: usageBySession.get("today") || emptyAgg() });
-      }
-    };
-    await scan(root);
-    const r4 = (n) => Math.round(n * 10000) / 10000;
-    const models = [...byModel.entries()].map(([key, a]) => ({ key, ...a, cost: r4(a.cost) }))
-      .sort((x, y) => y.totalTokens - x.totalTokens);
-    const daily = [...byDay.entries()].map(([date, a]) => ({ date, ...a, cost: r4(a.cost) }))
-      .sort((x, y) => x.date.localeCompare(y.date));
-    const projects = [...byProject.entries()].map(([cwd, a]) => ({ cwd, ...a, cost: r4(a.cost) }))
-      .sort((x, y) => y.totalTokens - x.totalTokens).slice(0, 8);
-    const totals = [...byModel.values()].reduce((s, a) => ({
-      calls: s.calls + a.calls, input: s.input + a.input, output: s.output + a.output,
-      cacheRead: s.cacheRead + a.cacheRead, cacheWrite: s.cacheWrite + a.cacheWrite,
-      totalTokens: s.totalTokens + a.totalTokens, cost: s.cost + a.cost, unpriced: s.unpriced + a.unpriced,
-    }), emptyAgg());
-    totals.cost = r4(totals.cost);
-    sessionDetails.sort((a, b) => b.modified.localeCompare(a.modified));
-    return { days, sessions, totals, models, daily, projects, sessionDetails, today: { ...(byDay.get(todayKey) || emptyAgg()), date: todayKey } };
+    this.usageReader ||= new UsageSessionReader();
+    return usageSummary(path.join(getAgentDir(), 'sessions'), days, this.modelRuntime, this.usageReader);
   }
 
   /* ---------------- 模型剩余额度（多制度） ----------------
@@ -1682,10 +1639,9 @@ async _doStart() {
     if (account) this.#accountQuotaCache.set(`${provider}:${account.id}`, cached);
   }
 
-  async #quotaCredential(provider) {
+  async #quotaCredential(provider, credential) {
     if (provider === 'autoclaw') return undefined;
-    let credential;
-    try { credential = this.#piCredential(provider); }
+    try { if (credential === undefined) credential = this.#piCredential(provider); }
     catch (error) {
       if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
     }
@@ -1944,7 +1900,7 @@ async _doStart() {
     try { if (provider !== 'autoclaw') credential = this.#piCredential(provider); } catch {}
     let previous = hit?.fingerprint === HaloAuthVault.fingerprint(credential) ? hit?.data : null;
     try {
-      credential = await this.#quotaCredential(provider);
+      credential = await this.#quotaCredential(provider, credential);
       if (hit?.fingerprint !== HaloAuthVault.fingerprint(credential)) previous = null;
       if (!force && previous && Date.now() - hit.ts < 15_000) return previous;
       const data = await this.#quotaFetch(provider, credential);
@@ -1976,6 +1932,14 @@ async _doStart() {
     return this.publicState();
   }
 
+  #idleDraft(cwd, serverId = null) {
+    return [...this.#pool.values()].find(c =>
+      PiBridge.normPath(c.cwd || '') === PiBridge.normPath(cwd) &&
+      (this.serverTargets.get(c.runtime.session.sessionId) || null) === serverId &&
+      ![...this.projectRuns.runs.values()].some(run => run.sessionId === c.runtime.session.sessionId && !['stopped', 'error'].includes(run.status)) &&
+      !c.busy && !c.runtime.session.isStreaming && (c.runtime.session.messages?.length ?? 0) === 0);
+  }
+
   /** 新会话：新建独立 runtime 并聚焦；旧会话（含执行中的任务）保留在池中后台继续 */
   async newSession(serverId = null, { cwd: projectCwd } = {}) {
     // Create directly in the target project; never focus its previous history first.
@@ -1985,12 +1949,7 @@ async _doStart() {
     }
     const cwd = serverId ? this.serverWorkspace(serverId) : target;
     // Reuse one idle draft per project, including a draft left in the background.
-    const draft = [...this.#pool.values()].find((c) =>
-      PiBridge.normPath(c.cwd || "") === PiBridge.normPath(cwd) &&
-      (this.serverTargets.get(c.runtime.session.sessionId) || null) === serverId &&
-      ![...this.projectRuns.runs.values()].some(run=>run.sessionId===c.runtime.session.sessionId && !['stopped','error'].includes(run.status)) &&
-      !c.busy && !c.runtime.session.isStreaming &&
-      (c.runtime.session.messages?.length ?? 0) === 0);
+    const draft = this.#idleDraft(cwd, serverId);
     const ctx = draft || await this.#ensureFresh({cwd});
     if (serverId) {
       this.serverTargets.set(ctx.runtime.session.sessionId, serverId);
@@ -2013,8 +1972,9 @@ async _doStart() {
 
   /** 删除会话记录文件；执行中的会话拒绝删除；若删除的是焦点会话，聚焦到最近使用的其他会话 */
   async deleteSession(file) {
-    const abs = path.resolve(file);
-    if (!/\.jsonl$/i.test(abs)) throw new Error("不是会话记录文件");
+    const abs = await this.#resolveSessionFile(file);
+    let identity;
+    try { identity = fs.statSync(abs, { bigint: true }); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const key = PiBridge.normPath(abs);
     const ctx = this.#pool.get(key);
     if (ctx && (ctx.busy || ctx.runtime.session.isStreaming)) throw new Error("任务进行中，先中止再删除");
@@ -2046,7 +2006,14 @@ async _doStart() {
         switched = true;
       }
     }
-    fs.rmSync(abs, { force: true });
+    // stopSession/dispose may await a process exit. Recheck immediately at the
+    // destructive boundary so a replaced directory cannot redirect deletion.
+    if (identity) {
+      await this.#resolveSessionFile(abs);
+      const current = fs.statSync(abs, { bigint: true });
+      if (current.dev !== identity.dev || current.ino !== identity.ino) throw Error('会话文件已变化，请刷新后重试');
+      fs.rmSync(abs, { force: true });
+    }
     for (const id of this.serverTargets.keys()) {
       if (id === ctx?.runtime.session.sessionId || path.basename(abs).endsWith("_" + id + ".jsonl")) this.serverTargets.delete(id);
     }
@@ -2062,6 +2029,7 @@ async _doStart() {
     for (const project of this.store.data.projects || []) {
       if (PiBridge.normPath(project.lastSession || "") === key) project.lastSession = null;
     }
+    if (ctx?.runtime.session.sessionId && this.store.data.turnTimings) delete this.store.data.turnTimings[ctx.runtime.session.sessionId];
     this.store.set("serverTargets", Object.fromEntries(this.serverTargets));
     this._noteSession();
     this.pushState();
@@ -2181,6 +2149,7 @@ async _doStart() {
   }
 
   async dispose() {
+    this.store.flush();
     this.#disposed = true;
     await this.projectRuns.dispose();
     clearTimeout(this.#modelRefreshTimer);
@@ -2189,5 +2158,6 @@ async _doStart() {
     this.#modelRefreshScheduled = false;
     try { await this.startingPromise; } catch {}
     await this.#resetPool();
+    this.store.flush();
   }
 }
