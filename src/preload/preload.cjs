@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld("halo", {
   steer: (text, attachments) => ipcRenderer.invoke("halo:steer", text, attachments),
   followUp: (text, attachments) => ipcRenderer.invoke("halo:followUp", text, attachments),
   promoteQueued: (request) => ipcRenderer.invoke("halo:queue-promote", request),
+  removeQueued: (request) => ipcRenderer.invoke("halo:queue-remove", request),
   abort: () => ipcRenderer.invoke("halo:abort"),
   compact: (instructions) => ipcRenderer.invoke("halo:compact", instructions),
   listModels: () => ipcRenderer.invoke("halo:list-models"),

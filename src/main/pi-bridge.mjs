@@ -12,7 +12,8 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { serverTools } from './server-tools.mjs';
 import { ProjectRuns } from './project-runs.mjs';
-import { promoteQueuedMessage } from './queue-promotion.mjs';
+import { promoteQueuedMessage, removeQueuedMessage } from './queue-promotion.mjs';
+import { startCompactionQueue } from './compaction-queue.mjs';
 import { OutputRate } from '../shared/output-rate.mjs';
 import { refreshBillingFx } from './billing-fx.mjs';
 import { presentConversations, renameConversation } from './conversation-meta.mjs';
@@ -395,6 +396,7 @@ export class PiBridge {
         : null,
       thinkingLevel: s?.thinkingLevel ?? null,
       isStreaming: !!s?.isStreaming,
+      isCompacting: !!s?.isCompacting || !!this.#focusedCtx()?.compactionEnqueues,
       usage: this.usage,
       contextTokens,
       contextEstimated,
@@ -820,13 +822,14 @@ async _doStart() {
         forwardedEvent = { ...event, outputRate: ctx.outputRate.snapshot() };
       }
       if (event.type === "queue_update") {
+        ctx.queueRevision = (ctx.queueRevision || 0) + 1;
         const queued = (ctx.queueAttachments ||= { steering: [], followUp: [] });
         for (const kind of ['steering', 'followUp']) {
           const names = queued[kind], length = event[kind]?.length || 0;
           while (names.length > length) names.shift();
           while (names.length < length) names.push([]);
         }
-        forwardedEvent = { ...event, steeringAttachments: queued.steering.map((names) => [...names]),
+        forwardedEvent = { ...event, revision: ctx.queueRevision, steeringAttachments: queued.steering.map((names) => [...names]),
           followUpAttachments: queued.followUp.map((names) => [...names]) };
       }
       if (event.type === "agent_settled") {
@@ -882,6 +885,7 @@ async _doStart() {
   }
 
   async #disposeCtx(ctx) {
+    ctx.compactionCancelled = true;
     try { ctx.unsubscribe?.(); } catch {}
     try { await ctx.runtime.dispose(); } catch {}
   }
@@ -1385,6 +1389,7 @@ async _doStart() {
     if (this.startingPromise) await this.startingPromise;
     const ctx = this.#focusedCtx();
     if (!ctx) throw new Error("Session not ready");
+    if (ctx.compactionEnqueues) return this.followUp(text, { images: opts.images });
     ctx.busy = (ctx.busy || 0) + 1;
     try {
       const {preview, ...promptOptions} = opts;
@@ -1448,7 +1453,9 @@ async _doStart() {
     const bucket = (ctx.queueAttachments ||= { steering: [], followUp: [] }).followUp;
     bucket.push(names);
     try {
-      const disposition = await ctx.runtime.session.followUp(text, images);
+      const submission = ctx.runtime.session.followUp(text, images);
+      ctx.compactionEnqueues?.add(submission);
+      const disposition = await submission;
       if (disposition === 'handled') {
         const index = bucket.indexOf(names);
         if (index >= 0) bucket.splice(index, 1);
@@ -1475,9 +1482,32 @@ async _doStart() {
     return this.publicState();
   }
 
+  removeQueued({ sessionId, kind, index, queue, revision, edit = false }) {
+    const ctx = this.#focusedCtx();
+    if (!ctx || ctx.runtime.session.sessionId !== sessionId) throw new Error('会话已切换，请重新确认');
+    if (!Number.isSafeInteger(revision) || revision !== (ctx.queueRevision || 0)) throw new Error('队列已变化，请重新确认');
+    const session = ctx.runtime.session;
+    const attachments = ctx.queueAttachments || { steering: [], followUp: [] };
+    if (attachments.steering.length !== session.getSteeringMessages().length ||
+        attachments.followUp.length !== session.getFollowUpMessages().length) throw new Error('队列正在更新，请稍后重试');
+    const names = [...(attachments[kind]?.[index] || [])];
+    const removed = removeQueuedMessage(session, kind, index, queue, () => {
+      ctx.queueAttachments?.[kind]?.splice(index, 1);
+    });
+    const state = this.publicState();
+    if (!edit) return state;
+    return { ...state, queuedDraft: {
+      text: removed.content.filter(part => part.type === 'text').map(part => part.text).join('\n'),
+      images: removed.content.filter(part => part.type === 'image').map((image, i) => ({
+        name: names[i] || `图片 ${i + 1}`, mediaType: image.mimeType, data: image.data,
+      })),
+    } };
+  }
+
   async abort() {
     const ctx = this.#focusedCtx();
     if (!ctx) return this.publicState();
+    ctx.compactionCancelled = true;
     ctx.busy = 0;
     try {
       await ctx.runtime.session.abort();
@@ -1491,11 +1521,24 @@ async _doStart() {
     const ctx = this.#focusedCtx();
     if (!ctx) throw new Error("Session not ready");
     if (ctx.busy || ctx.runtime.session.isStreaming) throw new Error('任务进行中，请等待完成后再压缩上下文');
+    ctx.compactionEnqueues = new Set();
+    ctx.compactionCancelled = false;
     ctx.busy = (ctx.busy || 0) + 1;
     try {
       const res = await ctx.runtime.session.compact(customInstructions);
       return { ok: true, summary: String(res?.summary || "").slice(0, 1200), tokensBefore: res?.tokensBefore, estimatedTokensAfter: res?.estimatedTokensAfter };
     } finally {
+      // Input handlers can still be accepting a message as compaction finishes.
+      // Keep this context captured even if the user focuses another session.
+      while (ctx.compactionEnqueues.size) {
+        const submissions = [...ctx.compactionEnqueues];
+        ctx.compactionEnqueues.clear();
+        await Promise.allSettled(submissions);
+      }
+      ctx.compactionEnqueues = null;
+      const running = ctx.compactionCancelled ? Promise.resolve() : startCompactionQueue(ctx.runtime.session);
+      void running.catch(error => this.emit('halo:error', { message: `队列执行失败：${error?.message || error}` }))
+        .finally(() => this.pushState());
       ctx.busy = Math.max(0, (ctx.busy || 0) - 1);
       this.pushState();
     }
@@ -2044,8 +2087,11 @@ async _doStart() {
 
   snapshotView() {
     const ctx = this.#pool.get(this.#focusedKey);
+    const queue = ctx?.queueAttachments || { steering: [], followUp: [] };
     return {
       state: this.publicState(), messages: this.snapshotMessages(), seq: ctx?.eventSeq || 0,
+      queued: { steering: [...(this.session?.getSteeringMessages?.() || [])], followUp: [...(this.session?.getFollowUpMessages?.() || [])],
+        steeringAttachments: queue.steering.map(names => [...names]), followUpAttachments: queue.followUp.map(names => [...names]), revision: ctx?.queueRevision || 0 },
       turnTimings: this.store.data.turnTimings?.[this.session?.sessionId] || {},
       partial: ctx?.partial ? structuredClone(ctx.partial) : null,
       startedAt: ctx?.startedAt || null, activeTools: { ...ctx?.activeTools },
@@ -2143,6 +2189,7 @@ async _doStart() {
 
   async stopForUpdate() {
     await Promise.all([...this.#pool.values()].map(async ctx => {
+      ctx.compactionCancelled = true;
       ctx.runtime.session.clearQueue();
       await ctx.runtime.session.abort();
     }));

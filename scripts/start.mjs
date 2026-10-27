@@ -6,6 +6,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { devElectronExecutable } from './dev-electron-icon.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -13,7 +14,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.setMaxListeners?.(0);
 
 const electron = process.platform === "win32"
-  ? path.join(root, "node_modules", "electron", "dist", "electron.exe")
+  ? await devElectronExecutable(root)
   : path.join(root, "node_modules", ".bin", "electron");
 
 const child = spawn(electron, ["."], { stdio: "inherit", cwd: root, env: process.env });

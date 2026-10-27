@@ -8,6 +8,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from 'node:net';
+import { devElectronExecutable } from '../../scripts/dev-electron-icon.mjs';
 
 const probe = net.createServer();
 await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
@@ -20,7 +21,7 @@ writeFileSync(path.join(profile, 'halo-settings.json'), JSON.stringify({ cwd:wor
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL|ELECTRON_RUN_AS_NODE)/i.test(key)));
 Object.assign(env, { USERPROFILE:fixture, HOME:fixture, APPDATA:path.join(fixture,'roaming'), LOCALAPPDATA:path.join(fixture,'local'), PI_CODING_AGENT_DIR:agent, PI_OFFLINE:'1', GH_CONFIG_DIR:path.join(fixture,'gh'), GCM_CREDENTIAL_STORE:'plaintext', GCM_PLAINTEXT_STORE_PATH:path.join(fixture,'empty-gcm-store') });
 const electron = spawn(
-  process.platform === "win32" ? "node_modules/electron/dist/electron.exe" : "node_modules/.bin/electron",
+  process.platform === "win32" ? await devElectronExecutable(path.resolve('.')) : "node_modules/.bin/electron",
   [".", `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`],
   { env, windowsHide:true, stdio: ["ignore", "pipe", "pipe"] }
 );
@@ -70,8 +71,9 @@ async function evalJS(expression) {
 }
 async function screenshot(file) {
   const r = await send("Page.captureScreenshot", { format: "png" });
-  writeFileSync(file, Buffer.from(r.result.data, "base64"));
-  console.log("saved", file);
+  const output = path.join(fixture, path.basename(file));
+  writeFileSync(output, Buffer.from(r.result.data, "base64"));
+  console.log("saved", output);
 }
 
 await send("Runtime.enable");
@@ -143,8 +145,8 @@ const domCheck = await evalJS(`({
   toolCards: document.querySelectorAll("#messages .tool").length,
   toolDone: !!document.querySelector("#messages .tool.done"),
   queueChips: document.querySelectorAll("#queueRow .queue-chip").length,
-  queueImages: document.querySelector("#queueRow")?.textContent.includes("参考图.png") &&
-    document.querySelector("#queueRow")?.textContent.includes("截图.png"),
+  queueImages: [...document.querySelectorAll('#queueRow .queue-summary')].map(row => row.title).join('|').includes('参考图.png') &&
+    [...document.querySelectorAll('#queueRow .queue-summary')].map(row => row.title).join('|').includes('截图.png'),
   stats: document.querySelector("#chatStats")?.textContent || "",
 })`);
 console.log("dom check:", JSON.stringify(domCheck));
@@ -154,15 +156,118 @@ if (!domCheck.turns || !domCheck.mdText.includes("项目结构") || !domCheck.ha
   process.exit(1);
 }
 console.log("DOM VERIFY OK");
-const queueConfirm = await evalJS(`(() => {
+await evalJS("document.querySelector('#queueRow').style.width = '400px'");
+const queueVisible = await evalJS(`(() => {
   const button = document.querySelector('.queue-promote');
-  button.closest('details').open = true;
-  button.click();
-  const asks = button.textContent === '确认介入' && !button.parentElement.querySelector('.queue-confirm-hint').hidden && !button.disabled;
-  button.parentElement.querySelector('.queue-promote-cancel').click();
-  return asks && button.textContent === '介入当前任务' && !button.dataset.confirmed && document.querySelectorAll('.queue-chip').length === 2;
+  if (button.closest('details') || document.querySelector('#queueRow summary, #queueRow .queue-expand')) return false;
+  if (!button.getBoundingClientRect().width || !document.querySelector('.queue-remove').getBoundingClientRect().width) return false;
+  const row = button.closest('.queue-chip');
+  if (row.scrollWidth > row.clientWidth || row.parentElement.scrollWidth > row.parentElement.clientWidth) return false;
+  return button.textContent === '介入当前任务' && !!document.querySelector('.queue-edit') && !document.querySelector('.queue-promote-cancel, .queue-confirm-hint') && ![...document.querySelectorAll('#queueRow small')].some(n => n.textContent.includes('等待执行'));
 })()`);
-if (!queueConfirm) { electron.kill(); throw new Error('Queued intervention requires a second confirmation and supports cancellation'); }
+if (!queueVisible) { electron.kill(); throw new Error('Queue actions must be directly visible without confirmation controls'); }
+await screenshot('test/shot-queue-compact.png');
+await evalJS("document.querySelector('#queueRow').style.width = ''");
+
+// Exercise the real preload/IPC/SDK queue, not just a synthetic queue event.
+let sessionReady = false;
+for (let i = 0; i < 60; i++) {
+  sessionReady = await evalJS('(async () => !!(await window.halo.getState()).data?.ready)()');
+  if (sessionReady) break;
+  await sleep(250);
+}
+if (!sessionReady) { electron.kill(); throw new Error('Queue removal test requires an initialized session'); }
+const queueSetup = await evalJS(`(async () => {
+  const first = await window.halo.followUp('等待撤回');
+  const second = await window.halo.followUp('继续等待');
+  const third = await window.halo.followUp('直接介入');
+  return first.ok && second.ok && third.ok;
+})()`);
+if (!queueSetup) { electron.kill(); throw new Error('Could not create real queued messages'); }
+const queuePromote = await evalJS(`(async () => {
+  const target = [...document.querySelectorAll('#queueRow .queue-chip')].find(row => row.querySelector('.queue-text')?.textContent === '直接介入');
+  target.querySelector('.queue-promote').click();
+  for (let i = 0; i < 30; i++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const row = [...document.querySelectorAll('#queueRow .queue-chip')].find(row => row.querySelector('.queue-text')?.textContent === '直接介入');
+    if (row?.textContent.includes('调整方向') && !row.querySelector('.queue-promote')) return true;
+  }
+  return false;
+})()`);
+if (!queuePromote) { electron.kill(); throw new Error('One click must promote the real queued message immediately'); }
+console.log('QUEUE DIRECT PROMOTE UI OK');
+await screenshot('test/shot-queue-remove.png');
+const queueRemove = await evalJS(`(async () => {
+  const rows = [...document.querySelectorAll('#queueRow .queue-chip')];
+  const target = rows.find(row => row.querySelector('.queue-text')?.textContent === '等待撤回');
+  if (!target) return false;
+  const button = target.querySelector('.queue-remove');
+  if (!button || button.textContent !== '撤回') return false;
+  button.click();
+  for (let i = 0; i < 30; i++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const text = document.querySelector('#queueRow').textContent;
+    if (!text.includes('等待撤回') && text.includes('继续等待')) return true;
+  }
+  return false;
+})()`);
+if (!queueRemove) { electron.kill(); throw new Error('Removing one real queued message must preserve the other'); }
+console.log('QUEUE REMOVE UI OK');
+
+const queueEdit = await evalJS(`(async () => {
+  const text = '重新编辑内容 @"C:/report.pdf"';
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aG1kAAAAASUVORK5CYII=';
+  const added = await window.halo.followUp(text, { images: [{ type:'image', mimeType:'image/png', data:png }], names:['编辑.png'] });
+  if (!added.ok) return false;
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const input = document.querySelector('#input');
+  input.value = '已有草稿'; input.dispatchEvent(new Event('input', { bubbles:true }));
+  const target = [...document.querySelectorAll('#queueRow .queue-chip')].find(row => row.querySelector('.queue-text')?.textContent === text);
+  target.querySelector('.queue-edit').click();
+  for (let i = 0; i < 30; i++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    if (input.value === '已有草稿\\n' + text && document.querySelector('#attachRow')?.textContent.includes('编辑.png') && ![...document.querySelectorAll('#queueRow .queue-text')].some(n => n.textContent === text)) {
+      return document.querySelector('#queueRow').textContent.includes('继续等待') && document.activeElement === input;
+    }
+  }
+  return false;
+})()`);
+if (!queueEdit) { electron.kill(); throw new Error('Editing must restore text, file references and images, preserving the existing draft and other queued messages'); }
+await screenshot('test/shot-queue-edit.png');
+await evalJS(`document.querySelector('#input').value = ''; document.querySelector('#input').dispatchEvent(new Event('input', { bubbles:true })); document.querySelector('#attachRow .attach-remove').click()`);
+console.log('QUEUE EDIT UI OK (text, file reference, image and existing draft)');
+
+// Exercise the production compaction renderer with a controlled pending API.
+// This keeps the waiting state observable without making a model request.
+const rendererSource = readFileSync('src/renderer/js/app.js', 'utf8');
+const compactSource = rendererSource.slice(rendererSource.indexOf('async function compactConversation('), rendererSource.indexOf('\nasync function send()', rendererSource.indexOf('async function compactConversation(')));
+await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+for (const outcome of ['success', 'failure']) {
+  await evalJS(`(() => {
+    const state = { state: { sessionId: 'compact-test' } };
+    let resolve;
+    const pending = new Promise(done => { resolve = done; });
+    const run = new Function('S', 'compactingSessions', '$', 'scrollDown', 'window', 'toast', 'applyState', ${JSON.stringify(compactSource + '; return compactConversation;')});
+    const compact = run(state, new Set(), selector => document.querySelector(selector), () => {}, { halo: { compact: () => pending, getState: async () => ({ ok: false }) } }, () => {}, () => {});
+    window.__compactTest = { resolve, done: compact() };
+  })()`);
+  const waiting = await evalJS(`(() => {
+    const note = document.querySelector('.extension-notice.is-compacting');
+    const style = getComputedStyle(note.querySelector('pre'), '::before');
+    return note.getAttribute('aria-busy') === 'true' && style.animationName === 'spin' && style.animationPlayState === 'running' && style.content !== 'none';
+  })()`);
+  if (!waiting) { electron.kill(); throw new Error('Compaction must show a running waiting animation'); }
+  if (outcome === 'success') await screenshot('test/shot-compaction-waiting.png');
+  const finished = await evalJS(`(async () => {
+    const note = document.querySelector('.extension-notice.is-compacting');
+    window.__compactTest.resolve(${outcome === 'success' ? "{ ok: true, data: { summary: '测试摘要', tokensBefore: 1000, estimatedTokensAfter: 200 } }" : "{ ok: false, error: '测试失败' }"});
+    await window.__compactTest.done;
+    delete window.__compactTest;
+    return !note.classList.contains('is-compacting') && !note.hasAttribute('aria-busy') && note.textContent.includes('${outcome === 'success' ? '上下文压缩完成' : '压缩失败'}');
+  })()`);
+  if (!finished) { electron.kill(); throw new Error('Compaction animation must stop on ' + outcome); }
+}
+console.log('COMPACTION WAITING ANIMATION OK (success and failure cleanup)');
 
 // Long tool errors in a narrow chat must never overlap the live status row.
 await evalJS(`

@@ -949,7 +949,7 @@ function handlePiEvent(event, sessionId, seq) {
       case "queue_update": {
         const had = S.queued.steering.length + S.queued.followUp.length;
         S.queued = { steering: event.steering || [], followUp: event.followUp || [],
-          steeringAttachments: event.steeringAttachments || [], followUpAttachments: event.followUpAttachments || [] };
+          steeringAttachments: event.steeringAttachments || [], followUpAttachments: event.followUpAttachments || [], revision: event.revision };
         renderQueue();
         if (S.queued.steering.length > had) toast("已入队引导消息", "ok");
         break;
@@ -1706,33 +1706,50 @@ function onToolEnd(ev) {
 function renderQueue() {
   const row = $("#queueRow");
   const items = [
-    ...S.queued.steering.map((t, index) => ({ t, k: "引导", names: S.queued.steeringAttachments?.[index] || [] })),
-    ...S.queued.followUp.map((t, index) => ({ t, k: "追加", index, names: S.queued.followUpAttachments?.[index] || [] })),
+    ...S.queued.steering.map((t, index) => ({ t, k: "引导", kind: 'steering', index, names: S.queued.steeringAttachments?.[index] || [] })),
+    ...S.queued.followUp.map((t, index) => ({ t, k: "追加", kind: 'followUp', index, names: S.queued.followUpAttachments?.[index] || [] })),
   ];
   row.hidden = items.length === 0;
   row.setAttribute("aria-label", `等待消息，共 ${items.length} 条`);
   row.innerHTML = items.map((i) =>
-    `<details class="queue-chip">
-      <summary title="点击展开完整消息">
+    `<div class="queue-chip">
+      <div class="queue-summary" title="${esc([i.t, ...i.names.map((name) => `图片：${name}`)].filter(Boolean).join('\n'))}">
         <svg class="queue-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 4v8a2 2 0 0 0 2 2h8m-3-3 3 3-3 3M9 5h6M9 8h4"/></svg>
-        <span class="queue-text">${esc(i.t || (i.names.length ? `图片 ${i.names.length} 张` : "等待执行"))}</span>
-        <small>${i.names.length ? `图片 ${i.names.length} 张 · ` : ""}${i.k === "引导" ? "调整方向" : "等待执行"}</small>
-        <svg class="queue-expand" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>
-      </summary>
-      <div class="queue-detail">${esc(i.t)}${i.names.length ? `${i.t ? "\n" : ""}${esc(i.names.map((name) => `图片：${name}`).join("\n"))}` : ""}${i.k === '追加' ? `<div class="queue-actions"><button class="queue-promote" data-index="${i.index}">介入当前任务</button><button class="queue-promote-cancel" hidden>取消</button><span class="queue-confirm-hint" hidden>这会调整当前任务的执行方向</span></div>` : ''}</div>
-    </details>`).join("");
+        <span class="queue-text">${esc(i.t || (i.names.length ? `图片 ${i.names.length} 张` : "消息"))}</span>
+        ${i.names.length || i.k === '引导' ? `<small>${[i.names.length ? `图片 ${i.names.length} 张` : '', i.k === '引导' ? '调整方向' : ''].filter(Boolean).join(' · ')}</small>` : ''}
+      </div>
+      <div class="queue-actions"><button class="queue-edit" data-kind="${i.kind}" data-index="${i.index}">重新编辑</button>${i.k === '追加' ? `<button class="queue-promote" data-index="${i.index}">介入当前任务</button>` : ''}<button class="queue-remove" data-kind="${i.kind}" data-index="${i.index}">撤回</button></div>
+    </div>`).join("");
   const sessionId = S.state?.sessionId, queue = [...S.queued.followUp];
   for (const button of $$('.queue-promote', row)) button.addEventListener('click', async () => {
-    const hint = button.parentElement.querySelector('.queue-confirm-hint');
-    const cancel = button.parentElement.querySelector('.queue-promote-cancel');
-    if (!button.dataset.confirmed) {
-      button.dataset.confirmed = 'true'; button.textContent = '确认介入'; hint.hidden = false; cancel.hidden = false;
-      cancel.onclick = () => { delete button.dataset.confirmed; button.textContent = '介入当前任务'; hint.hidden = true; cancel.hidden = true; };
-      return;
-    }
     button.disabled = true;
-    try { await window.halo.promoteQueued({ sessionId, index: Number(button.dataset.index), queue }); }
+    try {
+      const result = await window.halo.promoteQueued({ sessionId, index: Number(button.dataset.index), queue });
+      if (!result?.ok) throw new Error(result?.error || '无法移动队列消息');
+    }
     catch (error) { toast(error.message || '无法移动队列消息', 'err'); button.disabled = false; }
+  });
+  const revision = S.queued.revision;
+  const queues = { steering: [...S.queued.steering], followUp: [...S.queued.followUp] };
+  for (const button of $$('.queue-remove, .queue-edit', row)) button.addEventListener('click', async () => {
+    const actions = $$('button', button.parentElement);
+    actions.forEach(action => { action.disabled = true; });
+    const edit = button.classList.contains('queue-edit');
+    const kind = button.dataset.kind;
+    try {
+      const result = await window.halo.removeQueued({ sessionId, kind, index: Number(button.dataset.index), queue: queues[kind], revision, edit });
+      if (!result?.ok) throw new Error(result?.error || '无法撤回等待消息');
+      if (edit && result.data?.queuedDraft) {
+        const draft = result.data.queuedDraft, input = $('#input');
+        input.value = [input.value, draft.text].filter(Boolean).join('\n');
+        S.images.push(...draft.images);
+        renderAttachments(); autoGrow(); input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    } catch (error) {
+      toast(error.message || '无法撤回等待消息', 'err');
+      actions.forEach(action => { action.disabled = false; });
+    }
   });
 }
 
@@ -1849,6 +1866,8 @@ async function compactConversation(instructions) {
   compactingSessions.add(sessionId);
   const note = document.createElement('div'); note.className = 'extension-notice';
   note.setAttribute('role', 'status');
+  note.setAttribute('aria-busy', 'true');
+  note.classList.add('is-compacting');
   const label = document.createElement('div'); label.className = 'extension-notice-label'; label.textContent = '压缩上下文';
   const status = document.createElement('pre'); status.textContent = '正在生成上下文摘要，请稍候…';
   note.append(label, status); $('#messages').append(note); scrollDown();
@@ -1867,6 +1886,8 @@ async function compactConversation(instructions) {
       : '压缩失败：' + message;
     if (note.isConnected) toast(status.textContent, 'err');
   } finally {
+    note.classList.remove('is-compacting');
+    note.removeAttribute('aria-busy');
     compactingSessions.delete(sessionId);
     // Also refresh when the SDK reports "Already compacted" (e.g. after auto compaction).
     if (S.state?.sessionId === sessionId) {
@@ -1882,9 +1903,7 @@ async function send() {
   const text = input.value.trim();
   if (!text && S.images.length === 0 && S.files.length === 0) return;
   if (S.switchingSession) return toast("正在切换会话，请稍候再发送", "");
-  if (compactingSessions.has(S.state?.sessionId)) return toast('上下文正在压缩，请完成后再发送', '');
-
-  const queued = S.streaming;
+  const queued = S.streaming || compactingSessions.has(S.state?.sessionId) || S.state?.isCompacting;
   if (queued) {
     if (text.startsWith("/")) return toast("任务进行中，命令暂不可用", "err");
   }
@@ -1980,6 +1999,10 @@ async function restoreHistory(viewOverride) {
   historyHost.className = "restoring";
   S.historyHost = historyHost;
   applyState(view.state);
+  if (view.queued) {
+    S.queued = view.queued;
+    renderQueue();
+  }
   restoredEventSeq = view.seq;
   const msgs = [...(view.messages || [])];
   if (view.partial) msgs.push({ ...view.partial, __partial: true });

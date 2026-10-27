@@ -51,6 +51,18 @@ function harness() {
   return { context, input, S, calls, rows, order, notices, draft };
 }
 const image = { name: 'A.png', mediaType: 'image/png', data: 'AAAA' };
+// Both the immediate local flag and restored backend state queue during compaction.
+for (const local of [true, false]) {
+  const h = harness(); h.draft('压缩后继续', [image], [{ name: '报告.pdf', path: 'C:/report.pdf' }]);
+  if (local) vm.runInContext("compactingSessions.add('A')", h.context);
+  else h.S.state.isCompacting = true;
+  const pending = h.context.send();
+  assert.equal(h.calls[0].method, 'followUp');
+  assert.equal(h.calls[0].args[0], '压缩后继续\n@"C:/report.pdf"');
+  assert.equal(h.calls[0].args[1].names[0], 'A.png');
+  assert.equal(h.input.value, '');
+  h.calls[0].resolve({ ok: true }); await pending;
+}
 {
   const h = harness();
   h.context.addFileAttachment({name:'report.pdf',path:'C:\\work\\report.pdf'});

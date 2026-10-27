@@ -6,7 +6,7 @@ import { OutputRate } from '../src/renderer/js/output-rate.mjs';
 const source = fs.readFileSync('src/main/pi-bridge.mjs', 'utf8');
 const method = source.match(/^  publicState\(\) \{[\s\S]*?^  \}/m)?.[0];
 assert.ok(method, 'publicState method must exist');
-const state = vm.runInNewContext(`({${method}})`, { pi: { estimateTokens: m => m.estimate } });
+const state = vm.runInNewContext(`new (class { #focusedCtx() { return null; } ${method} })()`, { pi: { estimateTokens: m => m.estimate } });
 state.session = { messages: [{ role: 'assistant', usage: { input: 223500 }, estimate: 2000 }],
   getContextUsage: () => ({ tokens: null }) };
 assert.equal(state.publicState().contextTokens, 2000, 'old usage must not survive compaction');

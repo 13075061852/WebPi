@@ -84,7 +84,8 @@ const context = vm.createContext({
   LIMITS: { EARLY_EVENTS: 2 },
 });
 const start = source.indexOf('  const pendingEvents = []');
-const end = source.indexOf('  bridge.onEvent(emit);', start);
+const end = source.indexOf('  const completionNotifications =', start);
+assert.ok(start >= 0 && end > start, 'Startup fixture must end before notification wiring');
 vm.runInContext(source.slice(start, end) + '\nglobalThis.send = emit; globalThis.listen = () => { rendererReady = true; flushPendingEvents(); };', context);
 context.send('halo:state', { ready: false });
 context.send('halo:error', { message: 'Initialization failed' });

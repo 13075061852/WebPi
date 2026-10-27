@@ -13,12 +13,18 @@ for (const [response, expected] of [
   [{ok:true,data:{summary:'Fixture summary',tokensBefore:1000,estimatedTokensAfter:100}},'Fixture summary'],
 ]) {
   const nodes=[]; let resolve, calls=0;
-  const context=vm.createContext({S:{state:{sessionId:'one'}}, document:{createElement:()=>{const n={isConnected:true,setAttribute(){},append(){}};nodes.push(n);return n;}},
+  const context=vm.createContext({S:{state:{sessionId:'one'}}, document:{createElement:()=>{const classes=new Set(), attributes=new Map();const n={isConnected:true,
+    classList:{add:value=>classes.add(value),remove:value=>classes.delete(value),contains:value=>classes.has(value)},
+    setAttribute:(key,value)=>attributes.set(key,value),removeAttribute:key=>attributes.delete(key),getAttribute:key=>attributes.get(key),append(){}};nodes.push(n);return n;}},
     $:()=>({append(){}}),scrollDown(){},toast(){},applyState(){},
     window:{halo:{compact:()=>{calls++;return new Promise(r=>{resolve=r;});},getState:async()=>({ok:true,data:{sessionId:'one'}})}}});
   vm.runInContext(code,context);
   const running=context.compactConversation(); await context.compactConversation(); assert.equal(calls,1);
+  assert.ok(nodes[0].classList.contains('is-compacting'));
+  assert.equal(nodes[0].getAttribute('aria-busy'),'true');
   assert.match(nodes[2].textContent,/正在/); resolve(response); await running;
   assert.ok(nodes[2].textContent.includes(expected),nodes[2].textContent);
+  assert.equal(nodes[0].classList.contains('is-compacting'),false);
+  assert.equal(nodes[0].getAttribute('aria-busy'),undefined);
 }
 console.log('PASS compaction progress, duplicate suppression, actual success, small session, cancellation, provider error');

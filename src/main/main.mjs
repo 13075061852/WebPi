@@ -17,13 +17,15 @@ import { restoreWindowState } from './window-state.mjs';
 import { inspectPreview } from "./preview-inspection.mjs";
 import { createPreviewControl } from './preview-control.mjs';
 import { createArtifactFileInspector } from './artifact-files.mjs';
+import { createCompletionNotifications } from './completion-notifications.mjs';
+import { windowsAppUserModelId } from './app-identity.mjs';
 import { previewDocument } from "./document-preview.mjs";
 /**
  * Pi Halo — Electron main process
  * splash (launch animation) -> main window (three-panel celestial console)
  */
 
-import { app, BrowserWindow, screen, session, ipcMain, dialog, shell, protocol, safeStorage, clipboard, nativeImage, ClipboardItem } from "electron";
+import { app, BrowserWindow, Notification, screen, session, ipcMain, dialog, shell, protocol, safeStorage, clipboard, nativeImage, ClipboardItem } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { X509Certificate } from "node:crypto";
@@ -106,6 +108,8 @@ protocol.registerSchemesAsPrivileged([
 
 const testBuild = JSON.parse(fs.readFileSync(path.join(DIST, "package.json"), "utf8")).haloTestBuild === true;
 app.setName(testBuild ? "Pi Halo Test" : "Pi Halo");
+const windowsAppId = windowsAppUserModelId({ platform: process.platform, isPackaged: app.isPackaged, testBuild });
+if (windowsAppId) app.setAppUserModelId(windowsAppId);
 if (testBuild && !app.commandLine.hasSwitch("user-data-dir")) {
   app.setPath("userData", path.join(app.getPath("appData"), "Pi Halo Test"));
 }
@@ -182,7 +186,17 @@ function bootstrap() {
       mainWin?.webContents.send(channel, payload);
     }
   };
-  bridge.onEvent(emit);
+  const completionNotifications = createCompletionNotifications({ Notification, enabled: () => !quitting && !updateClosing,
+    focusWindow: () => {
+      if (!mainWin || mainWin.isDestroyed()) return;
+      if (mainWin.isMinimized()) mainWin.restore();
+      mainWin.show();
+      mainWin.focus();
+    } });
+  bridge.onEvent((channel, payload) => {
+    completionNotifications.observe(channel, payload);
+    emit(channel, payload);
+  });
   const environment = new EnvironmentManager({
     fetcher: (...args) => session.defaultSession.fetch(...args),
     onChange: state => emit('halo:environment-progress', state),
@@ -760,6 +774,7 @@ function bootstrap() {
   handle("halo:steer", (text, attachments) => bridge.steer(text, attachments));
   handle("halo:followUp", (text, attachments) => bridge.followUp(text, attachments));
   handle("halo:queue-promote", (request) => bridge.promoteQueued(request));
+  handle("halo:queue-remove", (request) => bridge.removeQueued(request));
   handle("halo:abort", () => bridge.abort());
   handle("halo:compact", (instructions) => bridge.compact(instructions));
   handle("halo:list-models", () => bridge.listModels());
