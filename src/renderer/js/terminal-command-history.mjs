@@ -4,19 +4,28 @@
 export function createTerminalCommandHistory(term, { commands = [], remember, write, replaying = false, migrate = false }) {
   const history = commands.filter(command => typeof command === 'string' && command.trim());
   const directories = new Set();
+  // ConPTY keeps physical wrapped rows during resize. Newly exposed cells are
+  // empty padding, not typed spaces; translateToString(false) invents spaces
+  // there and can corrupt a recalled draft or prevent an echo acknowledgement.
+  const rowText = (row, start = 0) => {
+    let text = '';
+    for (let cell = start; row && cell < row.length; cell++) text += row.getCell(cell)?.getChars() || '';
+    return text;
+  };
   let marker, column = 0, ready = false, submitted = false, pendingPrompt = false, index = history.length, draft = '', replacing = null, queuedInput = '';
-  let needsAnchor = false;
   const add = command => {
     command = command.trim();
     if (command && command !== history.at(-1)) { history.push(command); remember(command); }
   };
   function line() {
     const buffer = term.buffer.normal;
-    if (needsAnchor && (ready || replacing)) {
+    // A ConPTY resize repaint may move the prompt after xterm's resize event.
+    // Re-find it while editing/recalling instead of trusting the old marker.
+    if (ready || replacing) {
       const end = buffer.baseY + buffer.cursorY, rows = [];
       let text = '';
       for (let y = Math.max(0, end - 512); y <= end; y++) {
-        const row = buffer.getLine(y), value = row?.translateToString(false) || '';
+        const row = buffer.getLine(y), value = rowText(row);
         rows.push({ y, row, start: text.length, length: value.length }); text += value;
       }
       let found = -1;
@@ -25,13 +34,13 @@ export function createTerminalCommandHistory(term, { commands = [], remember, wr
       if (row) {
         let chars = 0, cell = 0;
         while (cell < term.cols && chars < found - row.start) { chars += row.row.getCell(cell)?.getChars().length || 0; cell++; }
-        marker?.dispose(); marker = term.registerMarker(row.y - end); column = cell; needsAnchor = false;
+        marker?.dispose(); marker = term.registerMarker(row.y - end); column = cell;
       }
     }
     if (!marker || marker.isDisposed || marker.line < 0) return { text: '', end: -1 };
     let end = marker.line;
-    let text = buffer.getLine(end)?.translateToString(false, column) || '';
-    while (buffer.getLine(end + 1)?.isWrapped) text += buffer.getLine(++end).translateToString(false);
+    let text = rowText(buffer.getLine(end), column);
+    while (buffer.getLine(end + 1)?.isWrapped) text += rowText(buffer.getLine(++end));
     return { text: text.trimEnd(), end };
   }
   function commit() {
@@ -44,7 +53,7 @@ export function createTerminalCommandHistory(term, { commands = [], remember, wr
   function input(data) {
     if (replacing) { queuedInput += data; return false; }
     if (ready && !replaying) {
-      if (needsAnchor) line();
+      line();
       if (/[\r\n]/.test(data)) { submitted = true; ready = false; }
       else if (data.includes('\x03')) { ready = false; submitted = false; }
     }
@@ -82,10 +91,9 @@ export function createTerminalCommandHistory(term, { commands = [], remember, wr
     // the printable prompt is painted, rather than at the OSC's stream offset.
     if (pendingPrompt && buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true, 0, buffer.cursorX).endsWith('>')) {
       clear(); marker = term.registerMarker(0); column = buffer.cursorX;
-      ready = true; pendingPrompt = false; needsAnchor = false; index = history.length;
+      ready = true; pendingPrompt = false; index = history.length;
     }
   });
-  const resized = term.onResize(() => { needsAnchor = true; });
   return {
     input,
     key(event) {
@@ -101,8 +109,8 @@ export function createTerminalCommandHistory(term, { commands = [], remember, wr
       if (replaying && migrate) {
         const prompts = [], buffer = term.buffer.normal;
         for (let y = 0; y < buffer.length; y++) {
-          let text = buffer.getLine(y)?.translateToString(false) || '';
-          while (buffer.getLine(y + 1)?.isWrapped) text += buffer.getLine(++y).translateToString(false);
+          let text = rowText(buffer.getLine(y));
+          while (buffer.getLine(y + 1)?.isWrapped) text += rowText(buffer.getLine(++y));
           for (const cwd of directories) if (text.startsWith(cwd + '>')) { prompts.push(text.slice(cwd.length + 1).trim()); break; }
         }
         // The last prompt may contain an unsubmitted draft.
@@ -110,6 +118,6 @@ export function createTerminalCommandHistory(term, { commands = [], remember, wr
       }
       replaying = false; pendingPrompt = false; clear();
     },
-    dispose() { clear(); prompt.dispose(); parsed.dispose(); resized.dispose(); },
+    dispose() { clear(); prompt.dispose(); parsed.dispose(); },
   };
 }
