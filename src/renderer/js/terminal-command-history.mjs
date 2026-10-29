@@ -13,6 +13,8 @@ export function createTerminalCommandHistory(term, { commands = [], remember, wr
     return text;
   };
   let marker, column = 0, ready = false, submitted = false, pendingPrompt = false, index = history.length, draft = '', replacing = null, queuedInput = '';
+  let awaitingInitialPrompt = true;
+  let submittedCommand = '';
   const add = command => {
     command = command.trim();
     if (command && command !== history.at(-1)) { history.push(command); remember(command); }
@@ -45,16 +47,19 @@ export function createTerminalCommandHistory(term, { commands = [], remember, wr
   }
   function commit() {
     if (!marker || (replaying && !migrate)) return;
-    const command = line().text.trim();
+    const command = submittedCommand || line().text.trim();
     add(command);
-    submitted = false;
+    submitted = false; submittedCommand = '';
   }
-  function clear() { marker?.dispose(); marker = null; ready = false; submitted = false; index = history.length; }
+  function clear() { marker?.dispose(); marker = null; ready = false; submitted = false; submittedCommand = ''; index = history.length; }
   function input(data) {
     if (replacing) { queuedInput += data; return false; }
+    // Preserve fast typing/Enter until the initial ConPTY prompt has painted;
+    // otherwise a combined first repaint can bypass submission tracking.
+    if (awaitingInitialPrompt || (!ready && pendingPrompt)) { queuedInput += data; return false; }
     if (ready && !replaying) {
       line();
-      if (/[\r\n]/.test(data)) { submitted = true; ready = false; }
+      if (/[\r\n]/.test(data)) { submittedCommand = line().text.trim(); submitted = true; ready = false; }
       else if (data.includes('\x03')) { ready = false; submitted = false; }
     }
     return true;
@@ -89,9 +94,27 @@ export function createTerminalCommandHistory(term, { commands = [], remember, wr
     if (submitted && marker && buffer.baseY + buffer.cursorY > command.end) commit();
     // ConPTY can forward OSC before flushing its screen diff. Anchor only after
     // the printable prompt is painted, rather than at the OSC's stream offset.
-    if (pendingPrompt && buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true, 0, buffer.cursorX).endsWith('>')) {
-      clear(); marker = term.registerMarker(0); column = buffer.cursorX;
-      ready = true; pendingPrompt = false; index = history.length;
+    if (pendingPrompt) {
+      const end = buffer.baseY + buffer.cursorY, rows = [];
+      let start = end;
+      while (start > buffer.baseY && buffer.getLine(start)?.isWrapped) start--;
+      for (let y = start; y <= end; y++) rows.push({ y, row: buffer.getLine(y), text: rowText(buffer.getLine(y)) });
+      const text = rows.map(row => row.text).join('');
+      const cwd = [...directories].find(cwd => text.startsWith(cwd + '>'));
+      // Input may already be echoed by the first prompt repaint. Locate the
+      // prompt prefix, rather than waiting for the cursor to end in '>'.
+      if (cwd) {
+        let remaining = cwd.length + 1;
+        for (const row of rows) {
+          if (remaining >= row.text.length && row.y < end) { remaining -= row.text.length; continue; }
+          let chars = 0, cell = 0;
+          while (cell < term.cols && chars < remaining) { chars += row.row.getCell(cell)?.getChars().length || 0; cell++; }
+          clear(); marker = term.registerMarker(row.y - end); column = cell;
+          ready = true; awaitingInitialPrompt = false; pendingPrompt = false; index = history.length;
+          if (queuedInput) { const data = queuedInput; queuedInput = ''; input(data); write(data); }
+          break;
+        }
+      }
     }
   });
   return {

@@ -32,4 +32,20 @@ lines = [row(''), row('C:\\p>'), row('', true)]; cursorY = 1; cursorX = 5; subsc
 assert.equal(writes.at(-1), 'unfinished draft');
 assert.deepEqual(commands, []);
 history.dispose();
+const early = createTerminalCommandHistory(term, { commands: ['echo remembered'], remember: text => commands.push(text), write: text => writes.push(text) });
+// ConPTY may combine its first prompt repaint with input already typed by the
+// user. The cursor no longer ends at '>', but history must already be active.
+lines = [row('C:\\p>draft')]; cursorY = 0; cursorX = 10;
+subscriptions.osc('9;C:\\p'); subscriptions.parsed();
+early.key({ type: 'keydown', key: 'ArrowUp', preventDefault() {} });
+assert.equal(writes.at(-1), '\x1b');
+lines = [row('C:\\p>')]; cursorX = 5; subscriptions.parsed();
+assert.equal(writes.at(-1), 'echo remembered');
+lines = [row('C:\\p>echo reme'), row('mbered', true)]; cursorY = 1; cursorX = 6; subscriptions.parsed();
+early.input('\r');
+// A repaint can overwrite the old physical input row after Enter. Preserve the
+// submitted text instead of reading the new prompt as the previous command.
+lines = [row(''), row(''), row('C:\\p>')]; cursorY = 2; cursorX = 5; subscriptions.parsed();
+assert.deepEqual(commands, []); // Consecutive duplicate remains deduplicated.
+early.dispose();
 console.log('PASS resized ConPTY wrapped padding, echo acknowledgement, history recall and unfinished draft spaces');

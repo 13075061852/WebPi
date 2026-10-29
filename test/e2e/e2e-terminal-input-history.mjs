@@ -23,7 +23,9 @@ const key = async (name, code) => {
 const saved = () => app.evaluate('window.halo.ptyList().then(r=>r.data.terminals[0])');
 const screen = () => app.evaluate("[...document.querySelectorAll('.xterm-rows > div')].map(n=>n.textContent).join('').trimEnd()");
 const command = async text => {
-  await app.send('Input.insertText', { text }); await key('Enter', 13);
+  await app.send('Input.insertText', { text });
+  await waitUntil(async () => (await screen()).endsWith(text), 'Typed command was not echoed: ' + text);
+  await key('Enter', 13);
   await waitUntil(async () => (await saved()).commands?.includes(text), 'Command was not remembered: ' + text);
 };
 try {
