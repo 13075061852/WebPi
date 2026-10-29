@@ -183,6 +183,11 @@ try {
     assert.equal(await guestURL(),origin+'/destination?from=blank');
   }
   assert.deepEqual(errors,[],'No renderer exceptions after toolbar interactions');
+  await evaluate("document.querySelector('#btnBrowser').click()");
+  assert.equal(await evaluate("!!document.querySelector('#pvBody webview')"), false, 'Exit removes browser preview');
+  await evaluate("document.querySelector('#btnBrowser').click()");
+  await guestReady(origin+'/destination?from=blank');
+  assert.equal(await evaluate("document.querySelector('.website-toolbar input').value"), origin+'/destination?from=blank', 'Reenter restores the actual last navigated URL');
   console.log(JSON.stringify({ok:true,fixture,checks:['compact toolbar alignment','light/dark screenshots','zoom controls','initial back disabled','back navigation/address sync','first page disabled again','SPA history back','normal link','target=_blank','window.open','redirect','target blank GET form','address/session sync','non-web denied','no extra windows','no renderer exceptions']}));
   await evaluate('setTimeout(()=>window.halo.close(),30);true');await waitFor(()=>exitCode!==undefined,'App did not close');
 } finally {

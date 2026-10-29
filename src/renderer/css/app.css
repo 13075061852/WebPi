@@ -1222,7 +1222,11 @@ body.focus-mode #btnFocus .ic-collapse { display: block; }
 #cpane-preview.term-open #pvBody { visibility: hidden; }
 #termHost { flex: 1; min-height: 0; padding: 10px 12px 12px; }
 #termHost .xterm { height: 100%; }
-#termHost .xterm-viewport::-webkit-scrollbar-thumb { background: rgba(var(--ink-rgb), 0.18); }
+#termHost .xterm .xterm-scrollable-element > .scrollbar.vertical,
+#termHost .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider { width: 8px !important; }
+#termHost .xterm .xterm-scrollable-element > .scrollbar > .slider { background: rgba(var(--ink-rgb), .12); border-radius: 8px; }
+#termHost .xterm .xterm-scrollable-element > .scrollbar > .slider:hover,
+#termHost .xterm .xterm-scrollable-element > .scrollbar > .slider.active { background: rgba(var(--ink-rgb), .24); }
 
 /* messages */
 #messages {

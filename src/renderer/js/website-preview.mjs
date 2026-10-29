@@ -67,7 +67,7 @@ export function mountWebsiteBrowser(body, url, onChange, createDeviceShell) {
       </span>
       <button type="button" data-nav="external" title="外部打开" aria-label="外部打开"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7M21 3 11 13M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg></button>
     </form>
-    <webview aria-label="网站预览" partition="website-preview" allowpopups></webview>
+    <webview aria-label="网站预览" partition="persist:website-preview" allowpopups></webview>
   </div>`;
   const guest = body.querySelector('webview'), input = body.querySelector('input');
   if (createDeviceShell) {

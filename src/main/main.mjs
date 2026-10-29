@@ -32,6 +32,7 @@ import { X509Certificate } from "node:crypto";
 import { spawnPi as runPiCommand } from "./pi-command.mjs";
 import { ServerManager, parseListeningPorts } from "./servers.mjs";
 import { TerminalPool } from "./terminal-pool.mjs";
+import { TerminalMemory } from './terminal-memory.mjs';
 import { isInsideWorkspace } from "./workspace-path.mjs";
 import { readPreviewFile } from "./read-preview-file.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -383,7 +384,7 @@ function bootstrap() {
     mainWin.webContents.on("will-attach-webview", (event, preferences, params) => {
       // Isolate public websites from the app and from SSH preview sessions.
       let website = false;
-      try { const url = new URL(params.src); website = params.partition === 'website-preview' && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password; } catch {}
+      try { const url = new URL(params.src); website = params.partition === 'persist:website-preview' && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password; } catch {}
       if (!website && ![...servers.previews.values()].some(p => p.url === params.src)) { event.preventDefault(); return; }
       delete preferences.preload;
       delete preferences.preloadURL;
@@ -396,9 +397,9 @@ function bootstrap() {
     mainWin.webContents.on("did-attach-webview", (_event, guest) => {
       previewGuests.add(guest);
       // Manual mode reports a zoom factor without applying it to the page.
-      if (guest.session === session.fromPartition('website-preview')) guest.setZoomMode('isolated');
+      if (guest.session === session.fromPartition('persist:website-preview')) guest.setZoomMode('isolated');
       guest.on('zoom-changed', (_event, direction) => {
-        if (guest.session === session.fromPartition('website-preview') && mainWin && !mainWin.isDestroyed()) {
+        if (guest.session === session.fromPartition('persist:website-preview') && mainWin && !mainWin.isDestroyed()) {
           mainWin.webContents.send('halo:website-zoom', {guestId:guest.id, direction});
         }
       });
@@ -984,11 +985,15 @@ function bootstrap() {
   });
 
   /* 原生终端池：独立进程、批量输出和背压控制。 */
+  const terminalMemory = new TerminalMemory(path.join(app.getPath('userData'), 'terminal-memory'));
   const terminals = new TerminalPool((ch, payload) => {
     if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(ch, payload);
-  });
+  }, terminalMemory);
   app.on("before-quit", () => terminals.dispose());
-  handle("halo:pty-start", (opts = {}) => terminals.start({ ...opts, cwd: bridge.cwd || process.cwd() }));
+  handle("halo:pty-start", (opts = {}) => terminals.start({ ...opts, project: bridge.cwd || process.cwd(), cwd: bridge.cwd || process.cwd() }));
+  handle('halo:pty-list', () => terminalMemory.list(bridge.cwd || process.cwd()));
+  handle('halo:pty-view', data => terminalMemory.view(data));
+  handle('halo:pty-command', data => terminalMemory.command(data));
   handle("halo:pty-write", (data) => terminals.write(data));
   handle("halo:pty-resize", (data) => terminals.resize(data));
   handle("halo:pty-ack", (data) => terminals.ack(data));
@@ -1239,7 +1244,8 @@ function bootstrap() {
   });
 
   app.whenReady().then(async () => {
-    await Promise.all([globalProxy.addSession(session.defaultSession), globalProxy.addSession(session.fromPartition('website-preview'))]);
+    // Keep website cookies/local storage across restarts, separate from app and SSH sessions.
+    await Promise.all([globalProxy.addSession(session.defaultSession), globalProxy.addSession(session.fromPartition('persist:website-preview'))]);
     protocol.handle('halo-theme', createThemeImages({
       manifest: JSON.parse(fs.readFileSync(path.join(DIST, 'assets/theme-images.json'), 'utf8')),
       cacheDir: path.join(app.getPath('userData'), 'theme-images'),

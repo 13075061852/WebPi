@@ -7,6 +7,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { TerminalPool } from '../../src/main/terminal-pool.mjs';
+import { TerminalMemory } from '../../src/main/terminal-memory.mjs';
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-terminal-history-'));
 app.setPath('userData', path.join(directory, 'profile'));
@@ -17,22 +18,25 @@ app.whenReady().then(async () => {
   const preload = path.join(directory, 'preload.cjs');
   fs.writeFileSync(preload, `const {contextBridge,ipcRenderer}=require('electron');
     contextBridge.exposeInMainWorld('halo',{
-      ...Object.fromEntries(['ptyStart','ptyWrite','ptyAck','ptyResize','ptyKill'].map(n=>[n,d=>ipcRenderer.invoke(n,d)])),
+      ...Object.fromEntries(['ptyStart','ptyWrite','ptyAck','ptyResize','ptyKill','ptyList','ptyView'].map(n=>[n,d=>ipcRenderer.invoke(n,d)])),
       onPtyOut:f=>ipcRenderer.on('halo:pty-out',(_,d)=>f(d)),onPtyExit:f=>ipcRenderer.on('halo:pty-exit',(_,d)=>f(d))
     });`);
   const win = new BrowserWindow({ show: true, width: 760, height: 600,
-    webPreferences: { preload, sandbox: false } });
+    webPreferences: { preload, sandbox: false, backgroundThrottling: false } });
   const exceptions = [], raw = [];
   win.webContents.on('console-message', event => { if (event.level === 'error') { exceptions.push(event.message); console.error(event.message); } });
-  const pool = new TerminalPool((channel, data) => { if (data.data) raw.push(data.data); if (!win.isDestroyed()) win.webContents.send(channel, data); });
+  const publish = (channel, data) => { if (data.data) raw.push(data.data); if (!win.isDestroyed()) win.webContents.send(channel, data); };
+  let memory = new TerminalMemory(path.join(directory, 'memory'));
+  let pool = new TerminalPool(publish, memory);
   for (const [name, action] of Object.entries({
     ptyStart: data => pool.start({ ...data, cwd: directory }), ptyWrite: data => pool.write(data),
     ptyAck: data => pool.ack(data), ptyResize: data => pool.resize(data), ptyKill: id => pool.kill(id),
+    ptyList: () => memory.list(directory), ptyView: data => memory.view(data),
   })) ipcMain.handle(name, async (_event, data) => ({ ok: true, data: await action(data) }));
   const evaluate = expression => win.webContents.executeJavaScript(expression, true);
   async function until(expression, label) {
     for (let i = 0; i < 160; i++) { if (await evaluate(expression)) return; await sleep(50); }
-    throw Error(`Timed out: ${label}\n${JSON.stringify(raw.join('').slice(-3000))}`);
+    throw Error(`Timed out: ${label}\n${JSON.stringify(raw.join('').slice(-3000))}\n${await evaluate("JSON.stringify({panels:document.querySelectorAll('.terminal-panel').length,open:document.querySelector('#cpane-preview').className,fonts:document.fonts.status,hidden:document.hidden})")}`);
   }
   try {
     const fixture = path.join(directory, 'index.html');
@@ -95,6 +99,19 @@ app.whenReady().then(async () => {
     const shot = path.join(directory, 'history.png');
     fs.writeFileSync(shot, (await win.webContents.capturePage()).toPNG());
     console.log(`PASS split reset/scrollback erase, alternate screen, 6000 lines, hide/reopen; ${shot}`);
+    await pool.dispose();
+    memory = new TerminalMemory(path.join(directory, 'memory'));
+    pool = new TerminalPool(publish, memory);
+    await win.reload();
+    await until("typeof initTerminals==='function'", 'reloaded renderer');
+    await evaluate(String.raw`window.terms=[];const Base=window.Terminal;window.Terminal=class extends Base{constructor(o){super(o);terms.push(this)}};
+      window.lines=t=>Array.from({length:t.buffer.normal.length},(_,i)=>t.buffer.normal.getLine(i).translateToString(true)).join('\n');
+      initTerminals(()=>${JSON.stringify(directory)},message=>console.error(message),()=>{});`);
+    await until(`!!document.querySelector('.terminal-panel')?.dataset.pid`, 'restored native terminal');
+    assert.equal(await evaluate(`lines(terms[0]).includes('HISTORY_BEFORE_RESTART') && lines(terms[0]).includes('HISTORY_AFTER_RESTART')`), true,
+      'Old commands/output must survive new ConPTY initial repaint in the actual xterm scrollback');
+    assert.equal(await evaluate(`document.querySelector('.terminal-panel').dataset.terminalId`), id);
+    console.log('PASS durable transcript restores to actual xterm scrollback across renderer and native shell replacement');
   } finally {
     await pool.dispose(); win.destroy(); app.quit();
   }

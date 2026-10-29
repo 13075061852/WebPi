@@ -28,6 +28,7 @@ import { initProjectRuns } from './project-runs.mjs';
 import { initSidebarHeight } from './sidebar-height.mjs';
 import { initResponsiveLayout } from './responsive-layout.mjs';
 import { initGitRepositories } from './git-repositories.mjs';
+import { createWorkspaceMemory } from './workspace-memory.mjs';
 import { OutputRate } from './output-rate.mjs';
 import { createQuotaRefreshQueue } from './quota-refresh.mjs';
 import { toolIcon, thinkingIcon } from './tool-icons.mjs';
@@ -181,6 +182,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 
+const workspaceMemory = createWorkspaceMemory(localStorage);
 let initialWorkspacePromise;
 function reportWorkspaceFailure(error) {
   const message = String(error?.message || error);
@@ -261,6 +263,7 @@ async function openWebsite(value, projectRun = null, { reveal = true } = {}) {
   mountWebsiteBrowser($('#pvBody'), url, state => {
     if (request !== portPreviewRequest) return;
     Object.assign(previewService, state, {status:'loaded'});
+    if (websiteURL(state.url)) sessionPreviewState.rememberTarget({ kind: 'website', url: state.url });
     $('#pvName').textContent = state.title || new URL(state.url).hostname;
   }, mediaPreviewShell);
 }
@@ -604,7 +607,7 @@ function applyState(st) {
   }
   syncConversationSelection(st.sessionFile);
   document.dispatchEvent(new Event("projectstatechange"));
-  if (st.sessionFile) saveWorkspace();
+  if (st.ready) saveWorkspace();
   if (st.cwd) {
     const name = st.cwd.split(/[\\/]/).filter(Boolean).pop() || st.cwd;
     $("#sessionProjectName").textContent = name;
@@ -2289,35 +2292,39 @@ const normPath = (p) => String(p || "").replace(/\\/g, "/").replace(/\/$/, "").t
 
 /* ---- 工作区记忆：关闭时记住项目 + 当前会话，下次启动恢复到关闭时状态 ---- */
 function saveWorkspace() {
-  try {
-    localStorage.setItem("halo-workspace", JSON.stringify({
-      cwd: S.state?.cwd || "",
-      session: S.state?.sessionFile || "",
-    }));
-  } catch {}
+  workspaceMemory.remember(S.state, document.querySelector('.nav-item.active')?.dataset.tab);
 }
 async function restoreWorkspace() {
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem("halo-workspace") || "null"); } catch {}
-  if (!saved || !saved.cwd) { await restoreHistory(); return; }
+  const saved = workspaceMemory.initial();
+  if (!saved || !saved.cwd) { await restoreHistory(); workspaceMemory.finish(); saveWorkspace(); return; }
   // 恢复项目目录
   if (normPath(saved.cwd) !== normPath(S.state?.cwd || "")) {
     const r = await window.halo.useProject(saved.cwd);
-    if (!r?.ok) return;
-    await applyProjectReset();
-    await loadTree(true);
-    await loadSessions();
-    await loadResources();
+    if (r?.ok) {
+      const state = await window.halo.getState();
+      if (state?.ok && state.data) applyState(state.data);
+      await applyProjectReset();
+      await loadTree(true);
+      await loadSessions();
+      await loadResources();
+    }
   }
   // 恢复上次会话
-  if (saved.session && normPath(saved.session) !== normPath(S.state?.sessionFile || "")) {
-    const hit = S.sessions.find((s) => normPath(s.file) === normPath(saved.session));
-    if (hit) {
-      await window.halo.openSession(hit.file);
-      toast("已恢复上次的会话", "ok");
+  if (normPath(saved.cwd) === normPath(S.state?.cwd)) {
+    if (saved.draft && (S.state?.messageCount || (S.state?.serverId || null) !== (saved.serverId || null))) {
+      const reply = saved.serverId ? await window.halo.serverNewSession(saved.serverId) : await window.halo.newSession(saved.cwd);
+      if (reply?.ok && reply.data) applyState(reply.data);
+    } else if (!saved.draft && saved.session && normPath(saved.session) !== normPath(S.state?.sessionFile)) {
+      // Main validates file ownership/existence; deleted conversations fall back
+      // to the project's available session instead of blocking startup.
+      const reply = await window.halo.openSession(saved.session);
+      if (reply?.ok && reply.data) applyState(reply.data);
     }
   }
   await restoreHistory();
+  if (['chat', 'skills', 'git'].includes(saved.tab)) document.querySelector(`.nav-item[data-tab="${saved.tab}"]`)?.click();
+  workspaceMemory.finish();
+  saveWorkspace();
 }
 
 function setConversationWaiting(waiting) {
@@ -2529,7 +2536,9 @@ function wireUI() {
     $$(".nav-item").forEach((b) => b.classList.toggle("active", b === btn));
     const tab = btn.dataset.tab;
     $$(".side-section").forEach((p) => p.classList.toggle("active", p.dataset.pane === tab));
+    saveWorkspace();
   }));
+  window.addEventListener('pagehide', saveWorkspace);
 
   // quick actions（快捷操作已移除，功能入口：新会话在会话页 / 模型在输入框旁 / compact、help 走斜杠命令）
   $("#btnNewSession").addEventListener("click", newSession);
@@ -2852,6 +2861,11 @@ function wireCenter() {
       return;
     }
     if (!addressForm.hidden) { closeAddress(); return; }
+    const remembered = websiteURL(sessionPreviewState.website()?.url);
+    if (remembered) {
+      void openWebsite(remembered).catch(error => toast(error.message, 'err'));
+      return;
+    }
     addressForm.hidden = false;
     $('#btnBrowser').setAttribute('aria-expanded', 'true');
     address.focus(); address.select();
@@ -2960,10 +2974,6 @@ function setPreviewCollapsed(collapsed, { remember = true } = {}) {
     button.setAttribute('aria-label', button.title);
     button.setAttribute('aria-expanded', String(!collapsed));
     $('#btnFocus').title = '专注模式 · 对话全屏（隐藏侧栏与工作区）';
-    if (!collapsed) {
-      document.querySelector('.term-open')?.classList.remove('term-open');
-      $('#btnTerm')?.classList.remove('active');
-    }
   };
   if (!layoutMotionPaused && !document.body.classList.contains('focus-mode') &&
       document.body.classList.contains('preview-collapsed') === collapsed) {
