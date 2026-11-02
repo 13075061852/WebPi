@@ -24,7 +24,6 @@ import { mountVideoConfirmation } from "./video-confirmation.mjs";
 import { videoBalanceText } from "./video-balance.mjs";
 import { initVideoHistory } from './video-history.mjs';
 import { initDigitalHuman } from './digital-human.mjs';
-import { initProjectRuns } from './project-runs.mjs';
 import { initSidebarHeight } from './sidebar-height.mjs';
 import { initResponsiveLayout } from './responsive-layout.mjs';
 import { initGitRepositories } from './git-repositories.mjs';
@@ -152,9 +151,9 @@ document.addEventListener("DOMContentLoaded", () => {
     onOpenProject: openGitProject,
     renderLocalProjects: (container, repositories, onManage) => {
       const projects = repositories.map(repository => ({
-        name: repository.name || repository.fullName.split('/').at(-1),
         cwd: repository.localPath, sessions: [],
         ...projectRows.find(project => normPath(project.cwd) === normPath(repository.localPath)),
+        name: repository.displayName || repository.name || repository.fullName.split('/').at(-1),
         active: !S.state?.serverId && normPath(S.state?.cwd) === normPath(repository.localPath),
         repository,
       }));
@@ -233,17 +232,7 @@ let browsingServerId = null, portServerId = null, portRequest = 0, portPreviewRe
 const portCache = new Map();
 let selectedPortKey = null;
 let previewService = null;
-const projectRunnerUI = initProjectRuns({api:window.halo, context:()=>S.state, switchProject,
-  capturePreviewIntent: () => {
-    const request = previewVisibilityRequest;
-    return () => request === previewVisibilityRequest;
-  },
-  openPreview:openWebsite, toast, showLogs:(message, log)=>{
-    $('#projectRunLogTitle').textContent=message;
-    $('#projectRunLogBody').textContent=log;
-    openModal('projectRunLogModal');
-  }});
-async function openWebsite(value, projectRun = null, { reveal = true } = {}) {
+async function openWebsite(value, { reveal = true } = {}) {
   const url = websiteURL(value); if (!url) return;
   if (reveal && window.innerWidth < 1120 && !await ensurePreviewWidth()) return;
   document.querySelector('.term-open')?.classList.remove('term-open');
@@ -253,8 +242,7 @@ async function openWebsite(value, projectRun = null, { reveal = true } = {}) {
   sessionPreviewState.rememberTarget({ kind: "website", url });
   const request = ++portPreviewRequest;
   S.previewFile = null; selectedPortKey = null; updatePortSelection();
-  previewService = {kind:'website', url, status:'loading',
-    ...(projectRun?.cwd ? { projectCwd: projectRun.cwd, projectOrigin: new URL(url).origin } : {})};
+  previewService = {kind:'website', url, status:'loading'};
   fileEditor.detach(); $('#btnOpenFile').hidden = true; $('#pvMode').hidden = true;
   $('#btnBrowser').classList.add('active');
   $('#btnBrowser').title = '退出浏览器预览';
@@ -312,18 +300,14 @@ window.__haloPreviewActivity = value => {
   document.body.append(pointer);
 };
 // Run once after the retry loop settles, including background sessions on this server.
-function refreshCompletedPreview({event, sessionId, serverId, cwd}) {
+function refreshCompletedPreview({event, sessionId, serverId}) {
   if (event?.type !== "agent_settled") return;
   if (previewService) {
-    const localProject = !serverId && previewService.projectCwd && cwd
-      && normPath(cwd) === normPath(previewService.projectCwd);
     const remoteServer = serverId && serverId === previewService.serverId;
-    if ((!localProject && !remoteServer) || S.switchingSession) return;
+    if (!remoteServer || S.switchingSession) return;
     const guest = document.querySelector('#pvBody webview');
     if (!guest) return;
     try {
-      // A user may have navigated this browser away from the project's service.
-      if (localProject && new URL(guest.getURL()).origin !== previewService.projectOrigin) return;
       guest.reloadIgnoringCache();
       previewService.status = 'loading';
     } catch { /* The preview may have been detached during navigation. */ }
@@ -602,7 +586,7 @@ function applyState(st) {
       S.previewMode = target.mode === 'source' ? 'source' : 'render';
       void setPreview(target.file, true, { reveal: false }).catch(() => {});
     } else if (target?.kind === 'website' && typeof target.url === 'string') {
-      void openWebsite(target.url, null, { reveal: false }).catch(() => {});
+      void openWebsite(target.url, { reveal: false }).catch(() => {});
     }
   }
   syncConversationSelection(st.sessionFile);
@@ -3708,12 +3692,12 @@ async function loadProjects() {
   const request = ++projectListRequest;
   const box = $("#projList");
   if (!box) return;
-  const r = await window.halo.projectsList();
+  const r = await window.halo.projectsList({ includeRepositories: true });
   if (request !== projectListRequest) return;
   if (!r?.ok) { toast(r?.error || "项目列表读取失败", "err"); return; }
   const list = (r?.data || []).map(project => ({ ...project, sessions: (project.sessions || []).filter(sessionNotDeleted) }));
   projectRows = list;
-  renderProjectGroups(box, list);
+  renderProjectGroups(box, list.filter(project => project.kind !== 'repository'));
   gitRepositoriesUI?.updateProjects();
 }
 function renderProjectGroups(box, list, { onManage } = {}) {
@@ -3742,6 +3726,16 @@ function renderProjectGroups(box, list, { onManage } = {}) {
       manage.addEventListener('click', () => { closeServerMenus(); onManage?.(p.repository); });
       $('summary', group).title = '仓库操作';
     } else $(".project-remove", group).addEventListener("click", () => removeWorkspaceItem(() => window.halo.projectRemove(p.cwd)));
+    const rename = document.createElement('button');
+    rename.className = 'project-rename'; rename.textContent = '重命名';
+    rename.addEventListener('click', () => {
+      closeServerMenus(); projectRenameTarget = { cwd: p.cwd, repository: p.repository };
+      $('#projectRenameTitle').textContent = p.repository ? '重命名本地显示名称' : '重命名项目';
+      $('#projectName').parentElement.firstChild.textContent = p.repository ? '显示名称' : '项目名称';
+      $('#projectName').value = p.name; $('#projectRenameError').textContent = '';
+      openModal('projectRenameModal'); $('#projectName').focus(); $('#projectName').select();
+    });
+    $('.server-group-menu > div', group).prepend(rename);
     $(".project-new", group).addEventListener("click", async () => {
       collapsedProjects.delete(normPath(p.cwd)); saveProjectFolds(); await newSession(p.cwd); await loadProjects(); $("#input").focus();
     });
@@ -3765,7 +3759,6 @@ function renderProjectGroups(box, list, { onManage } = {}) {
       row.append(button, conversationActions(session, remove));
       syncSessionDeleteControls(session, row, remove); children.appendChild(row);
     }
-    projectRunnerUI.mount(group, p);
     box.appendChild(group);
   }
 }
@@ -3820,6 +3813,24 @@ async function switchProject(cwd) {
    ============================================================ */
 const modalMotion = createModalMotion({ syncPreview: syncPreviewMotion });
 let renameTarget = null;
+let projectRenameTarget = null;
+$('#projectRenameForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const save = $('#projectRenameSave'), target = projectRenameTarget;
+  if (save.disabled) return;
+  save.disabled = true;
+  try {
+    const name = $('#projectName').value;
+    const result = target.repository
+      ? await window.halo.gitRepositoryRenameLocal({ account: target.repository.account, fullName: target.repository.fullName, name })
+      : await window.halo.projectRename(target.cwd, name);
+    if (!result?.ok) throw Error(result?.error || '重命名失败');
+    closeModal($('#projectRenameModal'));
+    await loadProjects();
+    if (target.repository) await gitRepositoriesUI.refresh();
+  } catch (error) { $('#projectRenameError').textContent = error.message; }
+  finally { save.disabled = false; }
+});
 function conversationActions(conversation, remove) {
   const group = document.createElement('div');
   group.className = 'conversation-actions';

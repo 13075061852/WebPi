@@ -21,5 +21,5 @@ for (const svg of Object.values(data.icons)) {
   assert.doesNotMatch(svg, /<script|<foreignObject|\son\w+\s*=|(?:href|src)\s*=/i);
 }
 const bridge = fs.readFileSync(new URL('../src/main/pi-bridge.mjs', import.meta.url), 'utf8');
-assert.match(bridge, /customTools: \[\.\.\.extraTools, iconLibraryTool\(\)/);
+assert.match(bridge, /customTools:\s*\[\s*iconLibraryTool\(\)/);
 console.log(`PASS offline icon search, SVG retrieval, license, validation, cancellation, ${Object.keys(data.icons).length} static icons, shared runtime registration`);

@@ -37,7 +37,7 @@ app.whenReady().then(async()=>{
   const gate=new Promise(resolve=>{release=resolve});
   const context={updateClosing:false,quitting:false,mainWin:win,splashWin:null,store:{set:()=>{saved++}},
    startup:{dispose(){}},clearTimeout,startupWatchdog:null,disarmTreeWatcher(){},terminals:{dispose(){}},environmentRepairCancelled:false,
-   bridge:{stopForUpdate:()=>gate,dispose:async()=>{disposed++}},environmentRepairBridge:null,environment:{job:null},projectShutdownDone:false};
+   bridge:{stopForUpdate:()=>gate,dispose:async()=>{disposed++}},environmentRepairBridge:null,environment:{job:null}};
   const beforeInstall=vm.runInNewContext('('+source.slice(start,end)+')',context);
   const updater=new EventEmitter();
   updater.checkForUpdates=async()=>{updater.emit('update-available',{version:'99.0.0'})};
@@ -49,7 +49,7 @@ app.whenReady().then(async()=>{
   const install=service.install();await new Promise(resolve=>setImmediate(resolve));
   assert.ok(win.isDestroyed(),'Main window closes before waiting for task cleanup');
   assert.equal(installed,0);assert.equal(saved,1);assert.equal(context.updateClosing,true);
-  release();await install;assert.equal(installed,1);assert.equal(disposed,1);assert.equal(context.projectShutdownDone,true);
+  release();await install;assert.equal(installed,1);assert.equal(disposed,1);
   console.log('PASS real window closes before blocked cleanup; geometry saved, task cleanup completes, visible installer requested once; no real install');
  }finally{if(!win.isDestroyed())win.destroy();app.quit();}
 }).catch(error=>{console.error(error);app.exit(1)});

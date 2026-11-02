@@ -107,7 +107,7 @@ export function initGitRepositories({ root = document, api = window.halo, onOpen
       const open = button('', repo.name || repo.fullName, async () => {
         try { await onOpenProject?.(repo.localPath); }
         catch (error) { elements.message.textContent = error.message; elements.message.classList.add('error'); }
-      }, 'git-local-open'); open.removeAttribute('id'); open.title = repo.localPath;
+      }, 'git-local-open'); open.textContent = repo.displayName || repo.name || repo.fullName; open.removeAttribute('id'); open.title = repo.localPath;
       const manage = button('', '⋯', () => void openRepository(repo, { from: 'local' }), 'mini-btn'); manage.removeAttribute('id'); manage.setAttribute('aria-label', `管理 ${repo.fullName}`);
       row.append(open, manage); elements.list.append(row);
     }

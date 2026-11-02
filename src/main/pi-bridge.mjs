@@ -11,7 +11,6 @@ import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
 import { serverTools } from './server-tools.mjs';
-import { ProjectRuns } from './project-runs.mjs';
 import { promoteQueuedMessage, removeQueuedMessage } from './queue-promotion.mjs';
 import { startCompactionQueue } from './compaction-queue.mjs';
 import { OutputRate } from '../shared/output-rate.mjs';
@@ -328,15 +327,6 @@ export class PiBridge {
 
   constructor(store, crypto = {}, opts = {}) {
     this.store = store;
-    this.projectRuns = new ProjectRuns({analyze:(run,tools)=>this.analyzeProject(run,tools),emit:run=>this.emit('halo:project-run',run),
-      readRecipe:cwd=>{
-        const value=store.data.projectLaunchRecipes?.[cwd];
-        return value && crypto.unseal ? JSON.parse(crypto.unseal(value)) : null;
-      },
-      saveRecipe:(cwd,recipe)=>{
-        const value=crypto.seal?.(JSON.stringify(recipe));
-        if(value)store.set('projectLaunchRecipes',{...store.data.projectLaunchRecipes,[cwd]:value});
-      }});
     this.serverTargets = new Map(Object.entries(store.data.serverTargets || {}));
     this.sessionDir = opts.sessionDir || null; // 会话目录覆盖（测试隔离用）
     this.runtime = null;      // 焦点会话的 AgentSessionRuntime（兼容旧引用）
@@ -584,12 +574,20 @@ async _doStart() {
     } catch {}
   }
 
-  async projectsList() {
-    return Promise.all((this.store.data.projects || []).map(async (p) => ({
-      cwd: p.cwd, name: path.basename(p.cwd), lastSession: p.lastSession || null,
-      active: PiBridge.normPath(p.cwd) === PiBridge.normPath(this.cwd || ""),
-      sessions: (await this.listSessions(p.cwd)).filter(s => !this.serverTargets.get(s.id || this.#pool.get(PiBridge.normPath(s.file))?.runtime.session.sessionId)),
-    })));
+  async projectsList({ includeRepositories = false } = {}) {
+    // Old versions registered opened repositories as projects. Classify at read
+    // time so existing conversations/lastSession survive without duplicating rows.
+    const repositories = new Set(Object.values(this.store.data.githubRepositories || {})
+      .filter(record => record && typeof record.localPath === 'string' && record.localPath)
+      .map(record => PiBridge.normPath(record.localPath)));
+    return Promise.all((this.store.data.projects || [])
+      .filter(p => includeRepositories || !repositories.has(PiBridge.normPath(p.cwd)))
+      .map(async (p) => ({
+        cwd: p.cwd, name: p.name || path.basename(p.cwd), lastSession: p.lastSession || null,
+        kind: repositories.has(PiBridge.normPath(p.cwd)) ? 'repository' : 'project',
+        active: PiBridge.normPath(p.cwd) === PiBridge.normPath(this.cwd || ""),
+        sessions: (await this.listSessions(p.cwd)).filter(s => !this.serverTargets.get(s.id || this.#pool.get(PiBridge.normPath(s.file))?.runtime.session.sessionId)),
+      })));
   }
 
   async addProject(dir) {
@@ -602,8 +600,16 @@ async _doStart() {
     return this.switchProject(dir);
   }
 
+  renameProject(cwd, name) {
+    const project = this._findProject(cwd);
+    if (!project) throw Error('项目不存在');
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 120 || /[\u0000-\u001f\u007f]/.test(name)) throw Error('请输入 1–120 个字符的项目名称');
+    project.name = name.trim();
+    this.store.save();
+    return { name: project.name };
+  }
+
   async removeProject(cwd) {
-    await this.projectRuns.stopProject(cwd);
     const key = PiBridge.normPath(cwd);
     const switched = key === PiBridge.normPath(this.cwd || "");
     if (switched) {
@@ -784,7 +790,6 @@ async _doStart() {
       // 否则列表的 running 匹配（按文件路径）会失配，徽标永远不亮
       try {
         const sf = session.sessionFile;
-        for (const run of this.projectRuns.runs.values()) if (run.sessionId === session.sessionId && sf) run.sessionFile = sf;
         if (sf && ctx.key !== PiBridge.normPath(sf)) {
           this.#pool.delete(ctx.key);
           ctx.key = PiBridge.normPath(sf);
@@ -900,7 +905,7 @@ async _doStart() {
   }
 
   /* runtime 工厂：每会话独立 services（cwd、扩展开关、默认智能体注入） */
-  #createRuntimeFactory({extraTools = [], background = false} = {}) {
+  #createRuntimeFactory() {
     return async ({ cwd, sessionManager, sessionStartEvent }) => {
       const { createAgentSessionServices, createAgentSessionFromServices } = await loadPi();
       const services = await createAgentSessionServices({
@@ -910,7 +915,7 @@ async _doStart() {
           skillsOverride: result => filterBuiltinSkills(result, this.store.data),
           extensionsOverride: (base) => {
             // 缓存全部已发现的扩展（含即将被禁用的），供能力页展示与开关
-            if (!background) this._allExtensions = (base.extensions || []).map((x) => ({
+            this._allExtensions = (base.extensions || []).map((x) => ({
               name: path.basename(x.path || "") || "extension",
               path: x.path || "",
             }));
@@ -967,10 +972,10 @@ async _doStart() {
       if (process.platform === 'win32' && services.settingsManager.getDefaultTools() === undefined) {
         services.settingsManager.applyOverrides({ defaultTools: ['read', 'powershell', 'edit', 'write'] });
       }
-      if (!background) this.services = services;
+      this.services = services;
       return {
         ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
-          customTools: [...extraTools, iconLibraryTool(), previewControlTool((args, signal) => {
+          customTools: [ iconLibraryTool(), previewControlTool((args, signal) => {
             if (!this.controlPreview) throw Error("预览操作接口不可用");
             return this.controlPreview(sessionManager.getSessionId(), args, signal);
           }), {name:'preview_inspect',label:'查看实时预览',description:'读取此会话服务器当前已登录预览的正文、视口和滚动区域。需要视觉验证时 screenshot=true 返回当前页面截图；不导出登录凭据。',parameters:{type:'object',properties:{screenshot:{type:'boolean'}}},execute:async (_id,args,signal)=>{
@@ -1546,46 +1551,6 @@ async _doStart() {
 
   /* ---------------- sessions ---------------- */
 
-  startProject() {
-    const session = this.session;
-    if (!session || !this.cwd || !this._findProject(this.cwd)) throw Error('请先选择本地项目');
-    if (this.serverTargets.get(session.sessionId)) throw Error('项目启动仅适用于本地项目');
-    return this.projectRuns.start({cwd:this.cwd, sessionId:session.sessionId, sessionFile:session.sessionFile, model:session.model});
-  }
-
-  async analyzeProject(run, tools) {
-    if (!run.model) throw Error('首次启动或快速启动修复需要先选择可用模型');
-    const {createAgentSessionRuntime, SessionManager, getAgentDir} = await loadPi();
-    if (run.controller.signal.aborted) return;
-    const runtime = await createAgentSessionRuntime(this.#createRuntimeFactory({extraTools:tools,background:true}), {
-      cwd:run.cwd, agentDir:getAgentDir(), sessionManager:SessionManager.inMemory(run.cwd),
-    });
-    const abort = () => { void runtime.session.abort().catch(()=>{}); };
-    let unsubscribe, modelError;
-    try {
-      if (run.controller.signal.aborted) return;
-      run.controller.signal.addEventListener('abort',abort,{once:true});
-      await runtime.session.setModel(run.model);
-      runtime.session.setActiveToolsByName(['read','powershell','bash',...tools.map(t=>t.name)]);
-      unsubscribe = runtime.session.subscribe(event=>{
-        if (event.type==='tool_execution_start' && !run.controller.signal.aborted && run.status!=='running') {
-          const stages={read:'正在读取项目文件…',powershell:'正在执行环境准备命令…',bash:'正在执行环境准备命令…',project_service_start:'正在启动开发服务…',project_service_status:'正在检查服务启动日志…',project_preview_ready:'正在验证预览地址…'};
-          this.projectRuns.update(run,{message:stages[event.toolName]||'后台 AI 正在分析项目…'});
-        }
-        if (event.type==='message_end' && event.message?.role==='assistant') {
-          const reply=(event.message.content||[]).filter(p=>p.type==='text').map(p=>p.text).join('\n');
-          run.log=(run.log+'\n'+reply).slice(-24000);
-          if(event.message.stopReason==='error')modelError=event.message.errorMessage||'模型请求失败';
-        }
-      });
-      await runtime.session.prompt(`你是独立的项目启动助手。当前项目目录：${run.cwd}。${run.fastError ? "上次成功方案快速启动失败，已清理本次启动的进程。失败信息：" + run.fastError + "。启动日志：" + run.log.slice(-6000) : ""}任务只是在本机启动该项目并提供可访问的前端预览，不修改业务源代码，不部署，不推送 Git，不删除用户文件或停止其他进程。\n先读取 AGENTS.md、README、package.json、锁文件和启动配置，判断 React/Vue/Vite/Next 或其他框架及前后端依赖。尊重项目自身启动流程，不猜测数据库密码。可以安装缺失的项目依赖；需要缺失凭据时明确报错，不能伪造成功。\n所有常驻进程必须用 project_service_start 工具启动，不能使用 Start-Process、nohup、后台 & 或其他脱离托管的方式。Windows 的 command 是 PowerShell 命令；必要时 npm 使用 npm.cmd。安装等短任务可以用普通命令工具。尽量监听 127.0.0.1；如端口被占用，验证是否是本项目服务，否则选其他空闲端口，绝不杀占用进程。\n用 project_service_status 查看日志，确定真正的前端监听端口和 base 路径；后端健康检查不能当作前端地址。若已有本项目的服务可访问，可以复用该地址，不要重复启动。最后调用 project_preview_ready 验证完整前端 URL（含子路径）。该工具成功后立即结束，服务会由应用持续托管。若工具失败，结合日志修正启动方式或地址再试，不能只在文字里声称启动成功。`);
-      if(modelError)throw Error(modelError);
-    } finally {
-      unsubscribe?.();run.controller.signal.removeEventListener('abort',abort);
-      await runtime.dispose();
-    }
-  }
-
   async listSessions(cwd = this.cwd) {
     const { SessionManager } = await loadPi();
     const out = [];
@@ -1979,7 +1944,6 @@ async _doStart() {
     return [...this.#pool.values()].find(c =>
       PiBridge.normPath(c.cwd || '') === PiBridge.normPath(cwd) &&
       (this.serverTargets.get(c.runtime.session.sessionId) || null) === serverId &&
-      ![...this.projectRuns.runs.values()].some(run => run.sessionId === c.runtime.session.sessionId && !['stopped', 'error'].includes(run.status)) &&
       !c.busy && !c.runtime.session.isStreaming && (c.runtime.session.messages?.length ?? 0) === 0);
   }
 
@@ -2021,7 +1985,6 @@ async _doStart() {
     const key = PiBridge.normPath(abs);
     const ctx = this.#pool.get(key);
     if (ctx && (ctx.busy || ctx.runtime.session.isStreaming)) throw new Error("任务进行中，先中止再删除");
-    await this.projectRuns.stopSession(abs);
     let switched = false;
     if (ctx) {
       if (ctx.busy || ctx.runtime.session.isStreaming) throw new Error("任务进行中，先中止再删除");
@@ -2049,7 +2012,7 @@ async _doStart() {
         switched = true;
       }
     }
-    // stopSession/dispose may await a process exit. Recheck immediately at the
+    // Runtime disposal may await a process exit. Recheck immediately at the
     // destructive boundary so a replaced directory cannot redirect deletion.
     if (identity) {
       await this.#resolveSessionFile(abs);
@@ -2198,7 +2161,6 @@ async _doStart() {
   async dispose() {
     this.store.flush();
     this.#disposed = true;
-    await this.projectRuns.dispose();
     clearTimeout(this.#modelRefreshTimer);
     this.#modelRefreshTimer = null;
     this.#modelRefreshController?.abort();

@@ -289,15 +289,7 @@ function bootstrap() {
     if (response === 0) app.relaunch();
     app.quit();
   }
-  let projectShutdown = null, projectShutdownDone = false;
-  function finishProjectServices(event, resume) {
-    if (projectShutdownDone || !bridge.projectRuns.runs.size) return false;
-    event.preventDefault();
-    projectShutdown ||= bridge.projectRuns.dispose().finally(() => { projectShutdownDone = true; resume(); });
-    return true;
-  }
-  app.on('before-quit', event => {
-    if (finishProjectServices(event, () => app.quit())) return;
+  app.on('before-quit', () => {
     if (!quitting) {
       quitting = true;
       disarmTreeWatcher();
@@ -359,7 +351,7 @@ function bootstrap() {
       icon: ICON,
       frame: false,
       show: false,
-      backgroundColor: "#0b0b0c",
+      backgroundColor: "#202020",
       titleBarStyle: "hidden",
       webPreferences: {
         preload: PRELOAD,
@@ -432,8 +424,7 @@ function bootstrap() {
       if (splashWin && !splashWin.isDestroyed()) splashWin.close();
       splashWin = null;
     });
-    mainWin.on("close", event => {
-      if (finishProjectServices(event, () => { if (mainWin && !mainWin.isDestroyed()) mainWin.close(); })) return;
+    mainWin.on("close", () => {
       store.set('windowState', { bounds: mainWin.getNormalBounds(), maximized: mainWin.isMinimized() ? wasMaximized : mainWin.isMaximized() });
       if (!quitting) {
         quitting = true;
@@ -540,8 +531,6 @@ function bootstrap() {
       const terminalTasks = await terminalUpdateTasks(terminals.sessions);
       return [
       ...bridge.updateTasks(),
-      ...[...bridge.projectRuns.runs.values()].filter(run => !['error','stopped'].includes(run.status))
-        .map(run => ({kind:'service',name:`项目服务 · ${run.cwd}`})),
       ...terminalTasks,
       ...(environmentRepairBusy ? [{kind:'environment',name:'AI 环境修复'}] : []),
       ...(environment.job ? [{kind:'environment',name:'环境安装（需完成当前安装步骤）'}] : []),
@@ -568,7 +557,6 @@ function bootstrap() {
       const terminalCleanup = terminals.dispose(); environmentRepairCancelled = true;
       await Promise.all([terminalCleanup, bridge.stopForUpdate(), environmentRepairBridge?.stopForUpdate()]);
       await Promise.all([bridge.dispose(), environmentRepairBridge?.dispose(), environment.job]);
-      projectShutdownDone = true;
     },
     onInstallError: error => {
       dialog.showErrorBox('更新未能开始', String(error?.message || error) + '\n将重新打开应用，下载的安装包会保留。');
@@ -611,6 +599,7 @@ function bootstrap() {
   handle('halo:github-select', account => githubAuth.select(account));
   handle('halo:git-repositories', input => gitRepositories.list(input));
   handle('halo:git-local-repositories', input => gitRepositories.local(input));
+  handle('halo:git-repository-rename-local', input => gitRepositories.renameLocal(input));
   handle('halo:git-file-preview', input => gitRepositories.filePreview(input));
   handle('halo:git-repository-open-folder', async input => {
     const local = await gitRepositories.local({ account: input?.account });
@@ -787,9 +776,6 @@ function bootstrap() {
   handle("halo:set-model", (provider, id) => bridge.setModel(provider, id));
   handle("halo:set-thinking", (level) => bridge.setThinkingLevel(level));
   handle("halo:list-sessions", () => bridge.listSessions());
-  handle('halo:project-run-start', () => bridge.startProject());
-  handle('halo:project-run-list', () => bridge.projectRuns.list());
-  handle('halo:project-run-stop', id => bridge.projectRuns.stop(id));
   handle("halo:rename-session", (file, name) => bridge.renameSession(file, name));
   handle("halo:usage-summary", (args) => bridge.usageSummary(args?.days || 30));
   handle("halo:model-quota", (provider, force) => bridge.modelQuota(provider, force));
@@ -1166,10 +1152,11 @@ function bootstrap() {
     writePiSettings(st);
     return true;
   });
-  handle("halo:projects-list", async () => bridge.projectsList());
+  handle("halo:projects-list", async options => bridge.projectsList(options));
   handle("halo:project-switch", ({ cwd }) => switchSession(() => bridge.switchProject(cwd)));
   handle("halo:project-add", ({ dir }) => switchSession(() => bridge.addProject(dir)));
   handle("halo:project-remove", ({ cwd }) => switchSession(() => bridge.removeProject(cwd)));
+  handle("halo:project-rename", ({ cwd, name }) => bridge.renameProject(cwd, name));
   handle("halo:agent-list", async () => scanAgents(bridge.cwd));
   handle("halo:agent-default-get", async () => store.data.defaultAgent || "");
   handle("halo:agent-default-set", async ({ name }) => {

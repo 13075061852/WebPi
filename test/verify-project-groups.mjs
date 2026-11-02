@@ -26,5 +26,21 @@ try {
   assert.equal(projects.find(p => p.cwd === b).sessions.length, 0);
   await bridge.newSession('server-only');
   assert.equal((await bridge.projectsList()).find(p => p.cwd === a).sessions.length, 1);
+  const before = structuredClone(store.data.projects);
+  assert.throws(() => bridge.renameProject(b, '   '), /项目名称/);
+  assert.throws(() => bridge.renameProject(b, 'x'.repeat(121)), /项目名称/);
+  assert.throws(() => bridge.renameProject(path.join(fixture.dir, 'missing'), 'name'), /不存在/);
+  assert.deepEqual(bridge.renameProject(b, '  我的项目  '), { name: '我的项目' });
+  before.find(p => p.cwd === b).name = '我的项目';
+  assert.equal((await bridge.projectsList()).find(p => p.cwd === b).name, '我的项目');
+  assert.equal(new HaloStore(store.file).data.projects.find(p => p.cwd === b).name, '我的项目', 'Project name persists');
+  store.set('githubRepositories', { 'owner:a': { localPath: a.replaceAll('\\', '/') + '/' } });
+  assert.deepEqual((await bridge.projectsList()).map(p => p.cwd), [b], 'Previously opened repository is excluded from projects');
+  const repository = (await bridge.projectsList({ includeRepositories: true })).find(p => p.cwd === a);
+  assert.equal(repository.kind, 'repository');
+  assert.equal(repository.sessions[0].file, draft.sessionFile, 'Repository keeps its conversations');
+  assert.deepEqual(store.data.projects, before, 'Classification must not delete saved conversation bindings');
+  await bridge.switchProject(a);
+  assert.deepEqual((await bridge.projectsList()).map(p => p.cwd), [b], 'Opening a repository does not add it back to the project list');
   console.log('PASS project groups: hidden empty drafts, draft reuse, first message visibility and server isolation');
 } finally { await bridge.dispose(); fixture.cleanup(); }

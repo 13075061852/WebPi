@@ -53,14 +53,16 @@ try {
   assert.equal(fs.existsSync(external), true);
   const child = path.join(root, 'child'); fs.mkdirSync(child);
   const candidate = path.join(child, 'external.jsonl'); fs.copyFileSync(external, candidate);
-  const stop = bridge.projectRuns.stopSession.bind(bridge.projectRuns);
-  bridge.projectRuns.stopSession = async () => {
+  await bridge.openSession(candidate);
+  const runtime = bridge.runtime, dispose = runtime.dispose.bind(runtime);
+  runtime.dispose = async () => {
+    await dispose();
     fs.renameSync(child, child + '-original');
     fs.symlinkSync(outside, child, process.platform === 'win32' ? 'junction' : 'dir');
   };
   await assert.rejects(bridge.deleteSession(candidate), /目录之外/);
-  assert.equal(fs.existsSync(external), true, 'A directory replacement during stop cannot redirect deletion');
+  assert.equal(fs.existsSync(external), true, 'A directory replacement during runtime disposal cannot redirect deletion');
   assert.equal(fs.existsSync(path.join(child + '-original', 'external.jsonl')), true);
-  bridge.projectRuns.stopSession = stop;
+  runtime.dispose = dispose;
   console.log('PASS external/empty/traversal/junction rejection; live draft, legacy index, alias identity and busy-session protection');
 } finally { await bridge.dispose(); fixture.cleanup(); }

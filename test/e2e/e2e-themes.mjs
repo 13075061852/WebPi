@@ -178,6 +178,9 @@ try {
   // alone cannot detect a stalled sweep that suddenly fills the final corner.
   await choose('light');
   await send('Emulation.setDeviceMetricsOverride',{width:1600,height:1000,deviceScaleFactor:1,mobile:false});
+  // Let the resize observer finish cancelling the previous viewport's transition
+  // before measuring a new sweep; otherwise it can cancel the first live click.
+  await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const liveMotion=[];
   for(let index=0;index<4;index++) {
     const frames=await evaluate('(async()=>{const samples=[];let seen=false;return await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error("Theme playback did not finish")),2500);function tick(t){const a=document.getAnimations().find(a=>a.id==="theme-reveal");if(a&&a.playState==="running"&&!a.pending){seen=true;samples.push({t,progress:a.effect.getComputedTiming().progress})}else if(seen&&!document.documentElement.classList.contains("theme-x")){clearTimeout(timer);resolve(samples);return}requestAnimationFrame(tick)}requestAnimationFrame(tick);document.querySelector("#themeToggle").click()})})()');

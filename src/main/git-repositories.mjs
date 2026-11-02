@@ -121,6 +121,16 @@ export class GitRepositories {
   mappings() { return this.store?.data?.githubRepositories || {}; }
   mappingKey(account, fullName) { return `${account.toLowerCase()}:${fullName.toLowerCase()}`; }
   localPath(account, fullName) { return this.mappings()[this.mappingKey(account, fullName)]?.localPath || ''; }
+  renameLocal({ account, fullName, name } = {}) {
+    if (typeof account !== 'string' || !ACCOUNT.test(account)) throw Error('请选择有效的 GitHub 账户');
+    fullName = githubRepositoryName(fullName);
+    const key = this.mappingKey(account, fullName), saved = this.mappings()[key];
+    if (!saved?.localPath) throw Error('本地仓库不存在');
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 120 || /[\u0000-\u001f\u007f]/.test(name)) throw Error('请输入 1–120 个字符的显示名称');
+    const displayName = name.trim();
+    this.store.set('githubRepositories', { ...this.mappings(), [key]: { ...saved, displayName } });
+    return { displayName };
+  }
   savePath(account, fullName, localPath, repository = {}) {
     const key = this.mappingKey(account, fullName), previous = this.mappings()[key] || {};
     const metadata = {};
@@ -145,7 +155,7 @@ export class GitRepositories {
       } catch { return null; }
       const cached = this.cache.get(owner)?.repositories.find(row => row.fullName.toLowerCase() === fullName.toLowerCase());
       const metadata = { ...cached, ...saved };
-      return { account: owner, id: metadata.id, name: fullName.split('/')[1], fullName, localPath,
+      return { account: owner, id: metadata.id, name: fullName.split('/')[1], displayName: saved.displayName || '', fullName, localPath,
         description: String(metadata.description || ''), private: metadata.private !== false, url: `https://github.com/${fullName}`,
         defaultBranch: String(metadata.defaultBranch || 'main'), canPush: typeof metadata.canPush === 'boolean' ? metadata.canPush : undefined, archived: metadata.archived === true };
     }))).filter(Boolean);

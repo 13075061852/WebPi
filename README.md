@@ -101,7 +101,6 @@ flowchart LR
 | 想了解什么 | 文档 |
 | --- | --- |
 | 对话、附件、预览、终端和快捷键 | [使用指南](docs/USAGE.md) |
-| 启动已有网页项目 | [本地项目启动与预览](docs/PROJECT-START.md) |
 | 配置视频模型与恢复生成任务 | [视频模型](docs/video-providers.md) |
 | 数字人与声音样本 | [数字人方案](docs/DIGITAL-HUMAN.md) |
 | 修改代码、运行检查与测试 | [开发指南](docs/DEVELOPMENT.md) |

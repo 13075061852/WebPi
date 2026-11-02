@@ -1,85 +1,48 @@
 # Repository guidance
 
-Daily fixes, UI changes, and dependency or Pi kernel upgrades are source-only
-work: do not increment the application version, build an installer, push changes,
-create a release tag, or publish a Release. Start the packaging and publication
-flow only when the user explicitly asks to push or publish the latest version.
-If the user explicitly requests a test installer, build only that requested test
-package without changing the formal application version or publishing it.
+## 工作范围
 
-For packaging, GitHub Releases, updater publication, or release retries, read
-`docs/RELEASING.md` before acting. Use the checked-in release workflow and preflight
-script, not version-specific scripts in ignored `tmp/` directories. Keep offline
-regressions isolated from personal accounts. Never move an existing release tag
-or rerun a successful build merely because verification or upload failed.
-Reuse retained candidate artifacts for verification retries. For an explicitly
-requested cloud fallback, use reuse_run after test-only fixes and shipped-input
-validation. Run the
-Windows proxy and motion preflight before tagging. Record stage timings and
-prefer removing duplicate work over weakening release gates.
+- 日常修复只改源码和验证，不升版本、不打包、不推送。用户明确要求发布最新版时才执行下列流程；测试安装包不升正式版本、不发布。
+- 默认本机 Windows 打包后上传 GitHub。只有用户明确要求云构建才使用手动云端后备；推标签不触发云构建。
+- 发布或恢复前读 `docs/RELEASING.md`；只用仓库内脚本，不另写版本专用发布脚本，不移动已有标签，不覆盖正式资产。
 
-Default release delivery is local Windows packaging followed by GitHub upload.
-Keep only the latest verified EXE, its blockmap and latest.yml in local dist after
-publication and public-updater verification succeed. Keep the previous installer
-until that update probe completes, then remove older versioned installers and
-their blockmaps from local dist only. Failed publication or verification must
-retain the candidate for retries; GitHub release history stays available.
-Do not trigger a
-cloud build when pushing a release tag; the cloud release workflow is manual
-fallback only, used when the user explicitly asks for a cloud build. Reuse the
-same local artifacts when upload or verification needs a retry.
+## 快速发布（新窗口也按此顺序执行）
 
-## Prevent recurring CI failures during daily work
+1. **先检查现场和网络**：查看 `git status`、`package.json`、远端最新正式版及 `test/results/release-{preflight,candidate,local,publication}.json`，优先续跑已有阶段，不丢弃未提交改动。
+   用 `scripts/Invoke-GitHub.ps1 -GhArguments @('api','repos/13075061852/WebPi','--jq','.full_name')` 验证 CLI、认证和仓库访问，并验证 `gh run list --repo 13075061852/WebPi --workflow ci.yml --limit 1`（同一包装入口）。
+   若 EOF/TLS 失败，先验证已有本地代理，仅为发布子进程设置 `HTTPS_PROXY`；不要改系统代理或打印凭据。端口必须实查，不能盲用 7890。
+2. **先测新增功能，再做安装包**：源码阶段完成受影响的真实交互、重启和迁移测试，失败先修，不要留到打包后才首次验证。
+   浏览器记忆用 `npm run test:website-storage`；终端记忆用 `npm run test:terminal-memory`、`npm run test:terminal-input-history`；项目/对话恢复用 `npm run test:workspace-memory`。
+   只跑受影响项，GUI 串行；源码测试前清除残留 `HALO_PACKAGED_EXE`。键盘测试等待真实回显，明确窗口可见和焦点，不能拿调试状态偶然通过当结论。
+3. **定稿后一次预检**：按远端正式版确定新版本，`npm version <新版本> --no-git-tag-version`，补齐 `src/renderer/js/release-history-data.mjs` 已发布记录，并准备更新说明。
+   执行一次 `npm run release:preflight`，不要再单独重复它包含的语法、lint、全量回归、代理/直连、动效检查。通过后提交并推送 main；此后不顺手改无关文件。
+4. **统一入口准备安装包**：执行 `npm run release:local`。它并行核对当前完整 SHA 的 CI 与本地准备，复用输入未变且不足 24 小时的预检，自动构建、解包核对和运行 6 项打包版检查。
+   不要另起 `dist` 或手动重复构建。确认 `test/results/release-local.json` 的 `passed: true`、`commit` 等于 HEAD。用报告的 `artifacts.stagedExe` 设置 `HALO_PACKAGED_EXE`，串行补测本次受影响的功能；结束后清除该变量。
+5. **一次上传并发布**：通过全部检查才创建并推送新标签。设置 `RELEASE_TAG=v<新版本>`、`GITHUB_REPOSITORY=13075061852/WebPi`，运行 `scripts/Invoke-GitHub.ps1 -ScriptPath scripts/upload-release.ps1`。
+   三个远端资产的 SHA-256、大小和 uploaded 状态核对成功后，用同一包装入口执行 `gh release edit <标签> --repo 13075061852/WebPi --notes-file <说明文件> --draft=false --latest`。只更新说明或网络失败不能重跑打包。
+6. **公开验证后收尾**：匿名下载 `releases/latest/download/latest.yml` 与本地哈希比较；运行：
+   `node scripts/verify-public-update.mjs --installer dist/Pi-Halo-Setup-<旧版本>.exe --from <旧版本> --to <新版本> --manifest dist/latest.yml`
+   网络已确认需代理时追加 `--proxy http://127.0.0.1:<实查端口>`，不再重复尝试已知失败的直连。探针禁止下载或安装更新。
+   全部成功后，才删除本地 dist 顶层旧 EXE 和对应 blockmap，保留最新版三件套、其它构建目录和 GitHub 历史。记录版本、提交、下载地址及阶段耗时到 `test/results/release-publication.json`。
 
-- Test fixtures must follow the injected platform and architecture, not the
-  developer machine. A `platform: 'win32'` case needs explicit Windows paths and
-  expected results on both Linux and Windows; cover x64, arm64 and unsupported
-  cases. Gate only actual Windows integration operations on the host platform.
-  The 1.0.13 Linux CI failure came from asserting the host platform after
-  injecting win32 (`test/verify-environment-fallback.mjs`, fix `50230e9`).
-- When a dependency or Pi kernel changes, check fixtures against the installed
-  lockfile version and current runtime exports, model metadata and behavior.
-  Update stale mocks with the feature change and run the affected regression;
-  do not defer these checks until a release request.
-- Proxy regressions must configure the application's saved proxy/direct mode;
-  inherited proxy environment variables alone do not establish that mode. Keep
-  the offline fixture isolated from personal HOME, authentication and Git state.
-- UI motion checks must explicitly enable animations and make their window
-  visible. Provide the required Chinese font and PowerShell environment for
-  each runner. Run foreground GUI checks sequentially so they cannot steal
-  focus from each other. Source checks supplement real packaged checks.
-- Run the checked-in syntax, lint and affected regression commands while making
-  the change. A Windows-only local pass is not evidence of Linux CI success;
-  inspect the CI result for the exact commit before publishing.
+## 失败只恢复必要阶段
 
-## Release preparation, reuse and timing
+| 失败原因 | 最小恢复动作 |
+|---|---|
+| CI 查询、上传、公开验证网络失败 | 先读远端状态；重试对应查询、上传入口或更新探针，不重建、不重打标签 |
+| 草稿创建成功但列表暂未出现 | 查已知草稿/标签，重试原上传入口；哈希相同的资产自动跳过 |
+| 只改测试或测试环境 | 重跑受影响验证及必要门禁；应用指纹和产物哈希未变就复用候选安装包 |
+| 应用或构建输入改变 | 先完成源码功能测试，再更新提交并执行预检和 `release:local`，此时才需要重建 |
 
-- Before the expensive release stages, verify the actual GitHub CLI executable,
-  authentication and target repository access. Git push credentials do not
-  prove that `gh` is available or authenticated. Never print or record tokens.
-- Use the checked-in local release runner described in `docs/RELEASING.md`.
-  Resume its completed stages rather than assembling a new version-specific
-  script or repeating manual build, verify and upload commands.
-- Match reused evidence to current inputs and artifact hashes, not just the
-  version in a filename. Record the commit, source/build/test input fingerprints,
-  runtime versions and artifact digests. A stale report for the same version is
-  not a successful check of the current installer.
-- Reuse a successful local check only when its complete inputs are unchanged.
-  A test-only fix invalidates the affected verification, not an identical
-  installer. Changed application/build inputs invalidate the build and its
-  downstream verification. Never rebuild solely for a network, upload, test
-  fixture or test-environment failure.
-- Overlap independent CI waiting and local preparation where the release runner
-  supports it. Keep tag/publication gated on all required checks. Retain the
-  same EXE, blockmap and latest.yml for retries; skip a remote asset only after
-  its size and digest match. Verify the public updater after publication.
-- Record real child-process start/end times, exit codes, cache/reuse decisions
-  and retry causes per stage. Report CI queue/polling, manual gaps and network
-  transfer separately where evidence permits. Do not present tool-observed
-  elapsed time as pure test/build time or promise a speedup without a timed run.
+报告以当前输入指纹、完整提交 SHA、真实子进程时间和文件哈希为准，不以同版本文件名为准。CI 等待、人工调试、网络耗时分开记录；不靠跳过门禁提速。
 
-Known release lessons and the detailed recovery procedure are maintained in
-`docs/RELEASING.md`. In 1.0.10, stale proxy fixtures and cloud motion assumptions
-caused two failed verification rounds and three builds of unchanged application
-inputs. In 1.0.13, the platform-fixture error was fixed before building, so the
-installer was built once. Preserve that separation between build and recovery.
+## 日常回归约束
+
+- 平台夹具跟随注入的平台和架构，Windows 路径显式给出；实际 Windows 集成才按宿主平台跳过。保留 x64、arm64、unsupported 覆盖和最终提交的 Linux CI。
+- 依赖/Pi 内核升级同步检查 lockfile、真实导出和模型行为，及时更新旧 mock；不要到发布时才补。
+- 离线测试隔离个人 HOME、认证和 Git 状态；代理测试配置应用保存的代理/直连模式，不靠继承环境变量冒充。
+- 动效测试显式开动画、显示窗口，并提供中文字体和 PowerShell；前台 GUI 不并行。
+
+## 1.0.23 的直接教训
+
+最终构建 107 秒、包校验 23 秒、打包版检查 67 秒、上传核对 164 秒；主要拖延是打包后才发现终端问题，造成三轮构建/预检和多次手工调试。以后先完成新增功能的真实测试，再定稿走统一发布入口；网络失败只恢复网络阶段。

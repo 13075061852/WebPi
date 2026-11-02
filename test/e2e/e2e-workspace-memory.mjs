@@ -25,12 +25,44 @@ function conversation(cwd, text) {
 const fileA = conversation(a, '项目 A 的对话'), fileB = conversation(b, '项目 B 先前选择的对话');
 conversation(b, '项目 B 更新的另一个对话');
 const settingsFile = path.join(profile, 'halo-settings.json');
-fs.writeFileSync(settingsFile, JSON.stringify({ cwd: a, projects: [{ cwd: a, lastSession: fileA }, { cwd: b, lastSession: fileB }], globalProxy: { mode: 'direct' } }));
+fs.writeFileSync(settingsFile, JSON.stringify({ cwd: a, projects: [{ cwd: a, lastSession: fileA }, { cwd: b, lastSession: fileB }],
+  githubRepositories: { 'fixture:fixture/project-b': { account: 'fixture', fullName: 'fixture/project-b', localPath: b } },
+  globalProxy: { mode: 'direct' } }));
 const norm = s => String(s || '').replaceAll('\\', '/').toLowerCase();
 let app;
+let projectName = 'project-a';
+let repositoryName = 'project-b';
 try {
   app = await launchElectronApp({ fixture, profile, env });
+  await app.evaluate("document.querySelector('.nav-item[data-tab=git]').click()");
   await waitUntil(() => app.evaluate(`!![...document.querySelectorAll('.project-conversation-name')].find(n=>n.dataset.conversationFile===${JSON.stringify(fileB)})`), 'Conversation list incomplete');
+  async function assertSeparated() {
+    await waitUntil(() => app.evaluate("document.querySelectorAll('#projList .project-group').length === 1 && document.querySelectorAll('#gitRepositoryList .project-group').length === 1"), 'Project and repository lists incomplete');
+    assert.deepEqual(await app.evaluate("[...document.querySelectorAll('#projList .project-toggle span')].map(n=>n.textContent)"), [projectName]);
+    assert.deepEqual(await app.evaluate("[...document.querySelectorAll('#gitRepositoryList .project-toggle span')].map(n=>n.textContent)"), [repositoryName]);
+    assert.deepEqual((await app.evaluate('window.halo.projectsList()')).data.map(p => norm(p.cwd)), [norm(a)]);
+    assert.equal(await app.evaluate("document.querySelectorAll('#projList .project-start, #gitRepositoryList .project-start, .project-runs').length"), 0, 'Project and repository launch controls are removed');
+    assert.equal(await app.evaluate("['projectRunStart','projectRunList','projectRunStop','onProjectRun'].some(key=>key in window.halo)"), false, 'Removed launch APIs must not remain exposed');
+  }
+  await assertSeparated();
+  await app.evaluate("document.querySelector('#projList details').open=true;document.querySelector('#projList .project-rename').click()");
+  assert.equal(await app.evaluate("document.querySelector('#projectName').value"), projectName);
+  await app.evaluate("document.querySelector('#projectName').value='取消的名称';document.querySelector('#projectRenameModal [data-close]').click()");
+  await assertSeparated();
+  await app.evaluate("document.querySelector('#projList details').open=true;document.querySelector('#projList .project-rename').click();document.querySelector('#projectName').value='材料分析';document.querySelector('#projectRenameForm').requestSubmit()");
+  projectName = '材料分析';
+  await waitUntil(() => app.evaluate("document.querySelector('#projList .project-toggle span').textContent==='材料分析'"), 'Renamed project did not render');
+  assert.ok(fs.existsSync(a), 'Rename preserves project directory');
+  await app.evaluate("document.querySelector('#gitRepositoryList details').open=true;document.querySelector('#gitRepositoryList .project-rename').click();document.querySelector('#projectName').value='本地材料仓库';document.querySelector('#projectRenameForm').requestSubmit()");
+  repositoryName = '本地材料仓库';
+  await waitUntil(() => app.evaluate("document.querySelector('#gitRepositoryList .project-toggle span').textContent==='本地材料仓库'"), 'Repository alias did not render');
+  const localRepository = (await app.evaluate('window.halo.gitLocalRepositories()')).data.repositories[0];
+  assert.equal(localRepository.fullName, 'fixture/project-b');
+  assert.equal(localRepository.name, 'project-b');
+  assert.equal(norm(localRepository.localPath), norm(b));
+  await app.evaluate("document.querySelector('#gitRepositoryList .project-toggle').click()");
+  await waitUntil(() => app.evaluate(`window.halo.getState().then(r=>r.data.cwd.replaceAll('\\\\','/').toLowerCase()===${JSON.stringify(norm(b))})`), 'Repository did not open');
+  await assertSeparated();
   await app.evaluate(`[...document.querySelectorAll('.project-conversation-name')].find(n=>n.dataset.conversationFile===${JSON.stringify(fileB)}).click()`);
   await waitUntil(() => app.evaluate(`document.querySelector('#messages').textContent.includes('项目 B 先前选择的对话')`), 'Selected conversation did not render');
   await app.evaluate("document.querySelector('.nav-item[data-tab=git]').click()");
@@ -42,6 +74,7 @@ try {
   const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
   settings.cwd = a; fs.writeFileSync(settingsFile, JSON.stringify(settings));
   app = await launchElectronApp({ fixture, profile, env });
+  await assertSeparated();
   const restored = await app.evaluate('window.halo.getState().then(r=>r.data)');
   assert.equal(norm(restored.cwd), norm(b)); assert.equal(norm(restored.sessionFile), norm(fileB));
   assert.equal(await app.evaluate("document.querySelector('.nav-item.active').dataset.tab"), 'git');

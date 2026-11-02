@@ -4,19 +4,20 @@
    ============================================================ */
 
 :root {
-  /* dark — 墨 */
-  --bg0: #0b0b0c;
-  --bg1: #101012;
-  --panel: #141416;
-  --panel-2: #1a1a1d;
+  /* dark — neutral gray chrome around a deeper reading surface */
+  --bg0: #202020;
+  --bg1: #292929;
+  --reading-bg: #171717;
+  --panel: #292929;
+  --panel-2: #303030;
   --hair: rgba(255, 255, 255, 0.08);
   --hair-2: rgba(255, 255, 255, 0.16);
   --ink-rgb: 255, 255, 255;
-  --txt: #f4f4f3;
-  --txt-dim: #9d9da3;
-  --txt-faint: #5e5e66;
-  --acc: #ffffff;          /* 主题色：白 */
-  --acc-ink: #0b0b0c;      /* 主题色上的文字/图标：黑 */
+  --txt: #d4d4d4;
+  --txt-dim: #ababab;
+  --txt-faint: #949494;
+  --acc: #e5e5e5;          /* 主题色：柔白 */
+  --acc-ink: #202020;      /* 主题色上的文字/图标：深灰 */
   --orb-hi: #ffffff;
   --orb-lo: #6b6b74;
   --ok: #63b57f;
@@ -34,26 +35,27 @@
 }
 
 :root[data-theme="light"] {
-  /* light — 纸 */
-  --bg0: #f6f6f4;
-  --bg1: #eeeeec;
+  /* light — neutral chrome, soft workspace, white reading surfaces */
+  --bg0: #f8f9fb;
+  --bg1: #f0f2f5;
+  --reading-bg: #ffffff;
   --panel: #ffffff;
-  --panel-2: #fafaf8;
-  --hair: rgba(0, 0, 0, 0.09);
-  --hair-2: rgba(0, 0, 0, 0.18);
-  --ink-rgb: 24, 24, 27;
-  --txt: #17171a;
-  --txt-dim: #5f5f66;
-  --txt-faint: #a2a2a8;
+  --panel-2: #f5f6f8;
+  --hair: rgba(32, 40, 52, 0.09);
+  --hair-2: rgba(32, 40, 52, 0.16);
+  --ink-rgb: 32, 40, 52;
+  --txt: #202834;
+  --txt-dim: #4b5563;
+  --txt-faint: #626d7b;
   --acc: #111113;          /* 主题色：黑 */
   --acc-ink: #ffffff;      /* 主题色上的文字/图标：白 */
   --orb-hi: #52525b;
   --orb-lo: #101013;
-  --ok: #1f8a4c;
-  --err: #cf4440;
-  --warn: #97731c;
-  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.16);
-  --shadow-sm: 0 8px 28px rgba(0, 0, 0, 0.1);
+  --ok: #237447;
+  --err: #bb3939;
+  --warn: #896412;
+  --shadow-lg: 0 20px 56px rgba(32, 40, 52, 0.12);
+  --shadow-sm: 0 6px 24px rgba(32, 40, 52, 0.08);
   color-scheme: light;
 }
 
@@ -300,15 +302,15 @@ body.sb-collapsed:not(.focus-mode) #layout { --sidebar-size: 0px; }
 body.sb-collapsed #sidebar { border-right-color: transparent; }
 
 
-/* Keep the three workspace headers on one continuous theme surface. */
-#sideNav, .pv-head, #chatHead { background: var(--bg0); }
+/* Each header follows the surface of its own column. */
+.pv-head { background: var(--bg1); }
 
 #sideNav {
   display: flex; align-items: center; gap: 4px;
   height: 48px; flex: none;
   padding: 0 12px;
   margin: 0;
-  background: var(--bg0);
+  background: inherit;
   border-bottom: 1px solid var(--hair);
   min-width: 0;
 }
@@ -1185,7 +1187,11 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
   min-width: 0; /* 关键：作为 grid item 取消 auto 最小尺寸，防止 nowrap 长内容把 1fr 轨道撑破视口 */
 }
 
+/* Separate the reading surface; scenic themes keep their translucent backdrop. */
+:root:not([data-wallpaper]:not([data-wallpaper=""])) #chat { background: var(--reading-bg); }
+
 #chatHead {
+  background: inherit;
   flex: none;
   height: 48px;
   display: flex; align-items: center; gap: 8px;
@@ -2434,7 +2440,7 @@ details.process-group[open]::details-content { height: auto; opacity: 1; }
 .theme-choice > span:last-child { display: block; padding: 10px 4px 2px; font-size: 13px; }
 .theme-sample { width: 100%; aspect-ratio: 16 / 9; display: grid; grid-template-columns: 26% 1fr; grid-template-rows: 18px 1fr; gap: 5px; padding: 8px; border-radius: 8px; border: 1px solid #8883; }
 .theme-sample.light { background: #efefed; }
-.theme-sample.dark { background: #151517; }
+.theme-sample.dark { background: #292929; }
 .theme-sample i { border-radius: 3px; background: #ffffff; }
 .theme-sample.dark i { background: #2a2a2d; }
 .theme-sample i:first-child { grid-column: 1 / -1; }
@@ -2930,31 +2936,6 @@ body.sidebar-height-dragging, body.sidebar-height-dragging * { cursor: row-resiz
 .conversation-actions .server-conversation-delete:hover, .server-conversation-row.confirm .server-conversation-delete { color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent); }
 .server-conversation-rename:hover { color: var(--txt); background: var(--panel-2); }
 #conversationRenameError { color: var(--err); }
-.project-start { flex: none; font-size: 11px; color: var(--txt-dim); padding: 4px 6px; border-radius: 6px; white-space: nowrap; }
-.project-start:hover { color: var(--txt); background: var(--panel-2); }
-.project-start:disabled { opacity: .5; }
-.project-start { display: inline-flex; align-items: center; gap: 4px; }
-.project-start .ic { width: 12px; height: 12px; flex: none; }
-.project-start[data-state=running] { color: var(--ok); background: color-mix(in srgb, var(--ok) 9%, transparent); }
-.project-start[data-state=busy] { color: var(--txt); opacity: 1; }
-.project-start[data-state=busy] .ic { animation: project-start-spin 1s linear infinite; }
-.project-start[data-state=error] { color: var(--err); }
-.project-run-progress { padding: 0 10px 8px; color: var(--txt-faint); font-size: 10px; line-height: 1.6; }
-.project-run-stage { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-run-elapsed { font-variant-numeric: tabular-nums; }
-.project-run[data-status=analyzing] .server-conversation-delete, .project-run[data-status=starting] .server-conversation-delete { opacity: 1; }
-@keyframes project-start-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .project-start[data-state=busy] .ic { animation: none; } }
-.project-runs:empty { display: none; }
-.project-run { min-width: 0; }
-.project-run .project-run-status { color: var(--ok); }
-.project-run[data-status=analyzing] .project-run-status, .project-run[data-status=starting] .project-run-status { color: var(--txt-dim); }
-.project-run[data-status=error] .project-run-status { color: var(--err); }
-.project-run-actions { display: flex; flex: none; align-items: center; }
-.project-run-log:hover { background: var(--panel-2); color: var(--txt); }
-.project-run-actions .project-run-port { color: var(--ok); padding: 3px; font-size: 11px; font-variant-numeric: tabular-nums; }
-#projectRunLogBody { margin: 0; padding: 18px 20px; min-height: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
-
 .port-row[role="button"] { cursor: pointer; }
 .port-row[role="button"]:hover, .port-row.active { background: var(--bg1); box-shadow: inset 0 0 0 1px var(--hair); }
 
