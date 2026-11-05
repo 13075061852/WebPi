@@ -33,6 +33,7 @@ import { createQuotaRefreshQueue } from './quota-refresh.mjs';
 import { toolIcon, thinkingIcon } from './tool-icons.mjs';
 import { wireToolDetails, setToolDetailsOpen } from './tool-details.mjs';
 import { TurnCost } from './turn-cost.mjs';
+import { mountImageProgress } from './image-progress.mjs';
 import { starterPrompts } from './starter-prompts.mjs';
 /* ============================================================
    Pi Halo — app orchestration (v2, hardened)
@@ -1180,7 +1181,7 @@ async function showTurnArtifacts(turn) {
     let entry = button;
     {
       const image = /\.(png|jpe?g|webp|gif|bmp)$/i.test(file);
-      const label = image ? '图片' : '文件';
+      const label = /\.gif$/i.test(file) ? '动图' : image ? '图片' : '文件';
       const row=document.createElement('div');row.className='artifact-image-row';
       const copy=document.createElement('button');copy.className='artifact-copy-button';copy.type='button';
       copy.title='复制'+label;copy.setAttribute('aria-label','复制'+label);
@@ -1249,6 +1250,7 @@ function finalizeTurn() {
   const turn = S.turn;
   S.turn = null;
   if (!turn) return;
+  for (const rec of S.toolCards.values()) if (rec.card.classList.contains('running') && turn.contains(rec.card)) rec.imageProgress?.finish('ended');
   collapseThink();
   $$(".think[open]", turn).forEach((d) => { d.open = false; });
   $(".turn-status", turn)?.remove();
@@ -1296,6 +1298,10 @@ function finalizeTurn() {
 let _statusTimer = null;
 function turnStatusText() {
   if (S.retrying) return `自动重试中 (${S.retrying.attempt}/${S.retrying.maxAttempts})`;
+  if (S.streamingTool === 'image_generate') {
+    const rec = [...S.toolCards.values()].reverse().find(item => item.toolName === 'image_generate' && item.card.classList.contains('running'));
+    return `${rec?.imageProgress?.statusText || '正在生成'}图片…`;
+  }
   if (S.streamingTool === 'video_generate') {
     const rec = [...S.toolCards.values()].reverse().find(item => item.toolName === 'video_generate' && item.card.classList.contains('running'));
     if (rec?.videoProgress) return rec.videoProgress;
@@ -1306,6 +1312,7 @@ function turnStatusText() {
   return "";
 }
 function updateTurnStatus() {
+  for (const rec of S.toolCards.values()) if (rec.card.classList.contains('running')) rec.imageProgress?.tick();
   const turn = S.turn;
   updateProcessActivity(turn);
   const row = turn && $(".turn-status", turn);
@@ -1542,6 +1549,7 @@ function renderFatalError(raw) {
 
 /* ---- tool timeline ---- */
 const TOOL_LABELS = {
+  image_generate: "图片生成",
   read: "读取", write: "写入", edit: "编辑", grep: "搜索", glob: "查找",
   find: "查找", ls: "浏览", bash: "运行", powershell: "运行",
   web_search: "联网搜索", browser: "浏览器", task: "委派",
@@ -1600,6 +1608,10 @@ function onToolStart(ev) {
     toolName,
     startedAt: Date.now(),
   });
+  if (toolName === 'image_generate') {
+    const rec = S.toolCards.get(toolCallId);
+    rec.imageProgress = mountImageProgress(turn, { startedAt: rec.startedAt });
+  }
   scrollDown();
 }
 
@@ -1607,6 +1619,9 @@ function onToolUpdate(ev) {
   const rec = S.toolCards.get(ev.toolCallId);
   if (!rec) return;
   const partialOutput = ev.partialResult || ev.partial || ev.result;
+  if (rec.imageProgress && partialOutput?.details?.imageProgress) {
+    rec.imageProgress.update(partialOutput.details.imageProgress);
+  }
   const outputText = partialOutput?.content?.filter(c => c.type === 'text').map(c => c.text).join('\n');
   if (outputText) rec.out.textContent = trunc(outputText, 4000);
   if (rec.toolName === 'video_generate') {
@@ -1647,6 +1662,10 @@ function onToolEnd(ev) {
   let text = "";
   const contents = result?.content || [];
   for (const c of contents) if (c.type === "text") text += (text ? "\n" : "") + c.text;
+  if (rec.imageProgress) {
+    const cancelled = isError && /abort|cancel|取消/i.test(text);
+    rec.imageProgress.finish(isError ? cancelled ? 'cancelled' : 'failed' : 'succeeded');
+  }
   const turn = rec.card.closest('.turn');
   updateProcessActivity(turn);
   if (!isError) {
@@ -1654,7 +1673,8 @@ function onToolEnd(ev) {
     // The completed file is deliverable now, even if the assistant continues
     // thinking or running unrelated tools before its final response.
     if (turn?.isConnected && ['video_generate','image_generate'].includes(rec.toolName)) {
-      showTurnArtifacts(turn);
+      const artifactsReady = showTurnArtifacts(turn);
+      if (rec.imageProgress) void artifactsReady.then(() => rec.imageProgress.remove(), () => rec.imageProgress.remove());
       if (rec.toolName === 'video_generate') void loadVideoBalance();
       scheduleTreeRefresh();
     }
@@ -1855,9 +1875,8 @@ async function compactConversation(instructions) {
   note.setAttribute('role', 'status');
   note.setAttribute('aria-busy', 'true');
   note.classList.add('is-compacting');
-  const label = document.createElement('div'); label.className = 'extension-notice-label'; label.textContent = '压缩上下文';
   const status = document.createElement('pre'); status.textContent = '正在生成上下文摘要，请稍候…';
-  note.append(label, status); $('#messages').append(note); scrollDown();
+  note.append(status); $('#messages').append(note); scrollDown();
   try {
     const reply = await window.halo.compact(instructions);
     if (!reply?.ok || reply.data?.ok === false) throw Error(reply?.error || reply.data?.error || '压缩失败');
@@ -2111,6 +2130,8 @@ async function restoreHistory(viewOverride) {
   const live = !!view.state?.isStreaming;
   for (const [id, rec] of toolCards) {
     if (rec.card.classList.contains("running") && live) {
+      if (rec.toolName === 'image_generate') rec.imageProgress = mountImageProgress(rec.card.closest('.turn'),
+        { startedAt: rec.startedAt || view.startedAt || Date.now(), stage: 'generating', ...view.imageProgress?.[id] });
       S.toolCards.set(id, rec);
       continue;
     }

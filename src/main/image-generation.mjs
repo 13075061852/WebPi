@@ -17,12 +17,13 @@ export async function resolveImageCredential(runtime) {
 let busy = false;
 const LIMIT = 32 * 1024 * 1024;
 
-export async function readGeneratedImage(response, signal) {
+export async function readGeneratedImage(response, signal, onProgress) {
   if (!response.ok) {
     await response.body?.cancel();
     throw Error(`订阅生图请求失败（HTTP ${response.status}）${response.status === 401 ? '，请重新登录 OpenAI Codex' : response.status === 429 ? '，额度或请求频率受限，请稍后再试' : ''}`);
   }
   const reader = response.body.getReader();
+  onProgress?.('generating');
   const decoder = new TextDecoder();
   let pending = '', bytes = 0, image = null, completed = false;
   const parse = line => {
@@ -68,7 +69,7 @@ export function imageTool(cwd, getCredential) {
     name:'image_generate', label:'图片生成',
     description:'使用 Pi 已登录的 OpenAI Codex 订阅生成图片或按本地参考图编辑，消耗订阅额度，无需 API Key。先读取 halo-imagegen 技能。只返回最终文件路径，不返回 base64。',
     parameters:{type:'object',properties:{prompt:{type:'string',description:'要生成的图片、用途、构图和需要保留的内容'},references:{type:'array',items:{type:'string'},maxItems:3,description:'可选，用户指定的本地参考图片路径，最多3张'}},required:['prompt']},
-    execute:async(_id,args,signal)=>{
+    execute:async(_id,args,signal,onUpdate)=>{
       const startedAt = Date.now();
       signal?.throwIfAborted();
       if (busy) throw Error('已有生图任务进行中，请等待完成');
@@ -76,7 +77,10 @@ export function imageTool(cwd, getCredential) {
       if (args.references && (!Array.isArray(args.references) || args.references.length > 3)) throw Error('参考图最多3张');
       busy = true;
       try {
+        const progress = stage => onUpdate?.({content:[{type:'text',text:{preparing:'正在准备图片生成…',submitting:'正在提交生图请求…',generating:'正在生成图片…',saving:'正在保存图片…'}[stage]}],details:{imageProgress:{stage,startedAt}}});
+        progress('preparing');
         const credential = await getCredential();
+        signal?.throwIfAborted();
         if (!credential?.access || !credential?.accountId) throw Error('请先在模型登录中登录 OpenAI Codex 订阅账户');
         const content = [{type:'input_text',text:args.prompt}];
         for (const file of args.references || []) {
@@ -87,13 +91,15 @@ export function imageTool(cwd, getCredential) {
           content.push({type:'input_image',image_url:`data:${mime};base64,${(await fs.readFile(full)).toString('base64')}`});
         }
         const requestSignal = AbortSignal.any([AbortSignal.timeout(180000), ...(signal ? [signal] : [])]);
+        progress('submitting');
         const response = await fetch('https://chatgpt.com/backend-api/codex/responses', {
           method:'POST', signal:requestSignal,
           headers:{Authorization:`Bearer ${credential.access}`,'chatgpt-account-id':credential.accountId,originator:'pi','OpenAI-Beta':'responses=experimental','content-type':'application/json',accept:'text/event-stream'},
           body:JSON.stringify({model:'gpt-6-astra',store:false,stream:true,instructions:'Generate exactly one image using image_generation. Follow the user prompt. Preserve requested details in reference images.',input:[{role:'user',content}],tools:[{type:'image_generation'}],tool_choice:{type:'image_generation'}})
         });
-        const {buffer,extension} = await readGeneratedImage(response,requestSignal);
+        const {buffer,extension} = await readGeneratedImage(response,requestSignal,progress);
         requestSignal.throwIfAborted();
+        progress('saving');
         const dir = path.join(cwd,'output');
         await fs.mkdir(dir,{recursive:true});
         const file = path.join(dir,`image-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${extension}`);

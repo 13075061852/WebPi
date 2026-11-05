@@ -1555,6 +1555,21 @@ details.process-group[open]::details-content { height: auto; opacity: 1; }
   user-select: text;
   line-height: 1.7;
 }
+.image-generation-progress { position: relative; isolation: isolate; flex: none; width: 160px; height: 144px; max-width: 100%; margin: 10px 0 14px; overflow: hidden; border-radius: 16px; background: var(--panel-2); color: var(--txt-dim); border: 1px solid var(--hair); }
+.image-generation-dots { position: absolute; inset: 12px 14px 42px; opacity: .45; background: radial-gradient(circle, rgba(var(--ink-rgb),.26) 1px, transparent 1.6px) 0 0 / 12px 12px; mask-image: radial-gradient(ellipse, #000, transparent 74%); animation: image-dots-breathe 2.4s ease-in-out infinite; }
+.image-generation-progress::after { content: ''; position: absolute; z-index: -1; inset: -100%; background: linear-gradient(105deg, transparent 40%, rgba(var(--ink-rgb),.06) 50%, transparent 60%); animation: image-progress-sheen 2.8s ease-in-out infinite; }
+.image-generation-icon { position: absolute; width: 32px; height: 32px; left: calc(50% - 16px); top: 33px; stroke: currentColor; stroke-width: 1.5; opacity: .6; animation: image-icon-float 2.4s ease-in-out infinite; }
+.image-generation-meta { position: absolute; inset: auto 11px 16px; display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; }
+.image-generation-elapsed { padding: 4px 7px; border-radius: 20px; background: var(--panel); color: var(--txt); box-shadow: 0 2px 7px rgba(0,0,0,.06); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.image-generation-track { position: absolute; inset: auto 0 0; height: 3px; background: var(--hair); overflow: hidden; }
+.image-generation-track > span { display: block; width: 38%; height: 100%; background: var(--txt-dim); opacity: .6; animation: image-progress-travel 1.8s ease-in-out infinite; }
+.image-generation-progress.is-settled::after, .image-generation-progress.is-settled :is(.image-generation-dots,.image-generation-icon) { animation: none; }
+.image-generation-progress.is-error .image-generation-stage { color: var(--err); }
+@keyframes image-dots-breathe { 50% { opacity: .85; } }
+@keyframes image-progress-sheen { from { transform: translateX(-25%); } to { transform: translateX(25%); } }
+@keyframes image-icon-float { 50% { transform: translateY(-3px); opacity: .85; } }
+@keyframes image-progress-travel { from { transform: translateX(-110%); } to { transform: translateX(370%); } }
+@media (prefers-reduced-motion: reduce) { .image-generation-progress::after, .image-generation-progress :is(.image-generation-dots,.image-generation-icon,.image-generation-track > span) { animation: none; } .image-generation-track > span { width: 100%; opacity: .2; } }
 .tool.error .tool-out { color: var(--txt); }
 .tool-out .diff-add { color: var(--ok); }
 .tool-out .diff-del { color: var(--err); }

@@ -25,7 +25,11 @@ try {
   let now = 1000;
   Date.now = () => now;
   globalThis.fetch = async () => { now = 2500; return stream([output,done]); };
-  const result = await imageTool(directory,async()=>{ now = 1500; return {access:'fixture',accountId:'fixture'}; }).execute('test',{prompt:'fixture'});
+  const updates = [];
+  const result = await imageTool(directory,async()=>{ now = 1500; return {access:'fixture',accountId:'fixture'}; }).execute('test',{prompt:'fixture'},undefined,update=>updates.push(update));
+  assert.deepEqual(updates.map(update=>update.details.imageProgress.stage),['preparing','submitting','generating','saving']);
+  assert.ok(updates.every(update=>update.details.imageProgress.startedAt===1000));
+  assert.ok(updates.every(update=>!JSON.stringify(update).includes('fixture')), 'Progress must not expose credentials, prompt or image bytes');
   file = result.details.file;
   assert.deepEqual(result.details.timing,{startedAt:1000,finishedAt:2500,totalMs:1500});
   assert.equal(result.details.sha256,crypto.createHash('sha256').update(await fs.readFile(file)).digest('hex'));
@@ -37,3 +41,19 @@ try {
   await fs.rmdir(directory);
 }
 console.log('PASS image end-to-end persisted timing includes credential resolution, response and file save; content identity recorded');
+
+{
+  const updates = [], abort = new AbortController();
+  const fetchBefore = globalThis.fetch;
+  try {
+    globalThis.fetch = () => assert.fail('Cancellation during preparation must not submit a paid request');
+    await assert.rejects(imageTool('.',async()=>{abort.abort();return {access:'private',accountId:'private'};})
+      .execute('cancel',{prompt:'fixture'},abort.signal,update=>updates.push(update)));
+    assert.deepEqual(updates.map(update=>update.details.imageProgress.stage),['preparing']);
+  } finally {globalThis.fetch=fetchBefore;}
+  const failedUpdates=[];
+  await assert.rejects(imageTool('.',async()=>{throw Error('fixture login failure');})
+    .execute('failure',{prompt:'fixture'},undefined,update=>failedUpdates.push(update)),/login failure/);
+  assert.deepEqual(failedUpdates.map(update=>update.details.imageProgress.stage),['preparing']);
+}
+console.log('PASS image stage feedback, credential privacy, failure and cancellation before submission');

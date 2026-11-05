@@ -798,7 +798,7 @@ async _doStart() {
         }
       } catch {}
       ctx.eventSeq = (ctx.eventSeq || 0) + 1;
-      if (event.type === "agent_start") { ctx.startedAt = Date.now(); ctx.activeTools = {}; ctx.partial = null; }
+      if (event.type === "agent_start") { ctx.startedAt = Date.now(); ctx.activeTools = {}; ctx.imageProgress = {}; ctx.partial = null; }
       if (event.type === 'message_start' && event.message?.role === 'user') {
         ctx.outputRate = new OutputRate();
         ctx.rateUserTimestamp = event.message.timestamp;
@@ -821,7 +821,14 @@ async _doStart() {
       if (event.type === "message_update" && event.assistantMessageEvent?.partial) ctx.partial = event.assistantMessageEvent.partial;
       if (event.type === "message_end") ctx.partial = null;
       if (event.type === "tool_execution_start") (ctx.activeTools ||= {})[event.toolCallId] = event.toolName;
-      if (event.type === "tool_execution_end") delete (ctx.activeTools ||= {})[event.toolCallId];
+      if (event.type === 'tool_execution_update' && ctx.activeTools?.[event.toolCallId] === 'image_generate') {
+        const progress = (event.partialResult || event.partial || event.result)?.details?.imageProgress;
+        if (progress) (ctx.imageProgress ||= {})[event.toolCallId] = { stage: progress.stage, startedAt: progress.startedAt };
+      }
+      if (event.type === "tool_execution_end") {
+        delete (ctx.activeTools ||= {})[event.toolCallId];
+        delete (ctx.imageProgress ||= {})[event.toolCallId];
+      }
       let forwardedEvent = event;
       if (event.type === 'message_end' && event.message?.role === 'assistant' && ctx.outputRate?.ms > 0) {
         forwardedEvent = { ...event, outputRate: ctx.outputRate.snapshot() };
@@ -838,7 +845,7 @@ async _doStart() {
           followUpAttachments: queued.followUp.map((names) => [...names]) };
       }
       if (event.type === "agent_settled") {
-        ctx.partial = null; ctx.activeTools = {};
+        ctx.partial = null; ctx.activeTools = {}; ctx.imageProgress = {};
         const user = [...(session.messages || [])].reverse().find(m => m.role === 'user');
         if (ctx.startedAt && user?.timestamp) {
           const timings = this.store.data.turnTimings || {};
@@ -2057,7 +2064,7 @@ async _doStart() {
         steeringAttachments: queue.steering.map(names => [...names]), followUpAttachments: queue.followUp.map(names => [...names]), revision: ctx?.queueRevision || 0 },
       turnTimings: this.store.data.turnTimings?.[this.session?.sessionId] || {},
       partial: ctx?.partial ? structuredClone(ctx.partial) : null,
-      startedAt: ctx?.startedAt || null, activeTools: { ...ctx?.activeTools },
+      startedAt: ctx?.startedAt || null, activeTools: { ...ctx?.activeTools }, imageProgress: structuredClone(ctx?.imageProgress || {}),
     };
   }
 

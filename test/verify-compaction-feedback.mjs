@@ -22,8 +22,8 @@ for (const [response, expected] of [
   const running=context.compactConversation(); await context.compactConversation(); assert.equal(calls,1);
   assert.ok(nodes[0].classList.contains('is-compacting'));
   assert.equal(nodes[0].getAttribute('aria-busy'),'true');
-  assert.match(nodes[2].textContent,/正在/); resolve(response); await running;
-  assert.ok(nodes[2].textContent.includes(expected),nodes[2].textContent);
+  assert.match(nodes[1].textContent,/正在/); resolve(response); await running;
+  assert.ok(nodes[1].textContent.includes(expected),nodes[1].textContent);
   assert.equal(nodes[0].classList.contains('is-compacting'),false);
   assert.equal(nodes[0].getAttribute('aria-busy'),undefined);
 }

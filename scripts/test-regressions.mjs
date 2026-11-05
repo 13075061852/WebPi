@@ -10,7 +10,7 @@ const tests = [
   'verify-release-workflow', 'verify-fixture-portability', 'verify-release-preflight', 'verify-release-upload', 'verify-release-inputs', 'verify-release-local',
   'verify-workspace-import', 'verify-workspace-memory', 'verify-installer-native', 'verify-window-state', 'verify-terminal-memory', 'verify-terminal-command-history',
   'verify-release-history', 'verify-release-history-ui', 'verify-release-history-fetch',
-  'verify-app-updates', 'verify-update-tasks', 'verify-image-generation', 'verify-image-card-timing', 'verify-artifact-files',
+  'verify-app-updates', 'verify-update-tasks', 'verify-image-generation', 'verify-image-progress', 'verify-image-card-timing', 'verify-artifact-files',
   'verify-turn-cost', 'verify-subscription-usage', 'verify-quota-refresh', 'verify-quota-auth',
   'verify-context-rate', 'verify-compaction-feedback', 'verify-compaction-queue', 'verify-completion-notifications', 'verify-app-identity',
   'verify-package-search', 'verify-package-updates', 'verify-tree-watch', 'verify-store-batching', 'verify-usage-cache',

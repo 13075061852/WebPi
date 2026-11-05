@@ -928,6 +928,11 @@ function bootstrap() {
     const stat=await fs.promises.stat(abs).catch(()=>null);
     if(!stat?.isFile()) throw Error('图片已移动或删除');
     if(stat.size>32*1024*1024) throw Error('图片超过32 MB，无法复制');
+    // Preserve every GIF frame by copying the original file, not a PNG snapshot.
+    if (/\.gif$/i.test(abs)) {
+      await copyFileToClipboard(abs);
+      return true;
+    }
     const image=nativeImage.createFromBuffer(await fs.promises.readFile(abs));
     if(image.isEmpty()) throw Error('图片无法解码');
     await clipboard.write([new ClipboardItem({ 'image/png': new Blob([image.toPNG()], {type:'image/png'}) })]);
