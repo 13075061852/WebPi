@@ -11,7 +11,7 @@ const body = { innerHTML: '' }, name = {}, mode = {};
 const visibilityChanges = [];
 const context = vm.createContext({
   fileEditor: { select() {}, detach() {}, ready() {}, hasDraft() { return false; }, async open() { return false; }, draftContent() { return undefined; } },
-  sessionPreviewState: { rememberTarget() {} },
+  sessionPreviewState: { target() { return null; }, rememberTarget() {} },
   portPreviewRequest: 0, previewService: null, selectedPortKey: null,
   S: { state: { cwd: 'C:/project' }, previewFile: null, previewMode: 'source' },
   resolvePreviewPath,
@@ -61,6 +61,17 @@ await nested;
 assert.match(body.innerHTML, /src="halo-preview:\/\/local\/C%3A\/project\/docs\/images\/figure.png"/);
 assert.match(body.innerHTML, /href="halo-preview:\/\/local\/C%3A\/project\/guide.md"/);
 assert.doesNotMatch(body.innerHTML, /__chat__/);
+context.window.halo.attachmentPreview = p => new Promise(resolve => pending.set(p, resolve));
+const oldAttachment = context.setPreview('C:/external/report.docx', true, { attachment: true });
+await new Promise(setImmediate);
+const newFile = context.setPreview('new.md', true, { attachment: false });
+await new Promise(setImmediate);
+pending.get('C:/project/new.md')({ data: { content: 'latest after attachment' } });
+await newFile;
+pending.get('C:/external/report.docx')({ ok: false, error: 'stale attachment error' });
+await oldAttachment;
+assert.match(body.innerHTML, /latest after attachment/);
+assert.doesNotMatch(body.innerHTML, /stale attachment error/);
 const widening = [], errors = [];
 const wideningContext = vm.createContext({
   fileEditor: { select() {}, detach() {}, ready() {}, hasDraft() { return false; }, async open() { return false; }, draftContent() { return undefined; } },

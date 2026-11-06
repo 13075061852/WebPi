@@ -89,6 +89,8 @@ export function filterArtifactPlayback(root, cwd, files = []) {
   }
 }
 
+import { formatFileSize } from './file-size.mjs';
+
 const fileDesigns = {
   audio: ['audio','音频','<path d="M9 18V5l12-2v13M9 9l12-2"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'],
   video: ['video','视频','<rect x="3" y="5" width="12" height="14" rx="2"/><path d="m15 10 6-4v12l-6-4"/>'],
@@ -112,7 +114,7 @@ export function decorateArtifactCard(button, file, imageURL, { bytes } = {}) {
   const art = document.createElement('span');art.className='artifact-art';
   art.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true">'+paths+'</svg>';
   const mediaInfo = document.createElement('span'); mediaInfo.className = 'artifact-media-info';
-  const size = Number.isFinite(bytes) && bytes >= 0 ? (bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1048576).toFixed(1)} MB`) : '大小未知';
+  const size = formatFileSize(bytes);
   const showDuration = duration => {
     const seconds = Math.round(duration);
     const time = Number.isFinite(duration) && duration >= 0 ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : '时长未知';
@@ -152,6 +154,10 @@ export function decorateArtifactCard(button, file, imageURL, { bytes } = {}) {
   const badge=document.createElement('span');badge.className='artifact-kind';badge.textContent=ext.toUpperCase();
   const hint=document.createElement('span');hint.textContent=description;
   meta.append(badge,hint);copy.append(label,meta);
+  if (kind !== 'video' && kind !== 'audio') {
+    const sizeLabel = document.createElement('span'); sizeLabel.className = 'artifact-size';
+    sizeLabel.textContent = `· ${size}`; meta.append(sizeLabel);
+  }
   if (kind === 'video' || kind === 'audio') copy.append(mediaInfo);
   const arrow=document.createElement('span');arrow.className='artifact-open';arrow.setAttribute('aria-hidden','true');arrow.innerHTML='<svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>';
   button.append(art,copy,arrow);

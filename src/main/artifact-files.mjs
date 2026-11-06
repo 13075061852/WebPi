@@ -45,7 +45,7 @@ export function createArtifactFileInspector({ statFile = file => fs.promises.sta
     if (!stat?.isFile()) { hashes.delete(absolutePath); return null; }
     const video = /\.(mp4|webm)$/i.test(absolutePath);
     const media = /\.(mp4|webm|mp3|wav|m4a|aac|ogg|flac)$/i.test(absolutePath);
-    const result = (options?.mediaMetadata && media) || (options?.videoHashes && video)
+    const result = options?.fileMetadata || (options?.mediaMetadata && media) || (options?.videoHashes && video)
       ? { file, bytes: stat.size } : null;
     const limit = options?.videoHashes && video ? VIDEO_HASH_LIMIT
       : options?.imageHashes && /\.(png|jpe?g|webp)$/i.test(absolutePath) ? IMAGE_HASH_LIMIT : 0;

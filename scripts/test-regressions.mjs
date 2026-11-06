@@ -30,8 +30,8 @@ const tests = [
   'verify-session-queue', 'verify-preview-races', 'verify-preview-refresh', 'verify-preview-motion',
   'verify-server-preview', 'verify-preview-cleanup', 'verify-preview-performance',
   'verify-preview-file', 'verify-preview-inspection', 'verify-workspace-path', 'verify-website-address',
-  'verify-trusted-ui-url', 'verify-thinking-batch', 'verify-user-message',
-  'verify-office', 'verify-office-failures', 'verify-office-efficiency',
+  'verify-trusted-ui-url', 'verify-thinking-batch', 'verify-user-message', 'verify-attachment-preview',
+  'verify-office', 'verify-office-failures', 'verify-office-efficiency', 'verify-document-resize',
 ].map(name => `test/${name}.mjs`);
 tests.push('test/check-touch-script.mjs', 'test/e2e/verify-stream-render.mjs', 'scripts/verify-theme-cloud.mjs');
 const results = [];

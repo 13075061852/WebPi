@@ -765,9 +765,7 @@ body.sb-collapsed #sidebar { border-right-color: transparent; }
 .trow .trow-del { right: 4px; }
 .trow .trow-external { right: 30px; }
 .trow .trow-attach { right: 56px; }
-.trow.dir .trow-attach { right: 30px; }
 .trow:is(:hover, :focus-within, :has(.trow-del.confirm)) { padding-right: 84px; }
-.trow.dir:is(:hover, :focus-within, :has(.trow-del.confirm)) { padding-right: 58px; }
 .trow :is(.trow-attach, .trow-external, .trow-del) .ic {
   display: block; width: 14px; height: 14px;
   fill: none; stroke: currentColor; stroke-width: 1.5;
@@ -1257,6 +1255,18 @@ body.focus-mode #btnFocus .ic-collapse { display: block; }
 .msg { display: flex; flex-direction: column; gap: 6px; animation: msgIn 0.5s var(--ease) both; }
 @keyframes msgIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 .msg.user { align-items: flex-end; }
+.message-files { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 92%; min-width: 0; }
+.message-file { display: flex; align-items: center; gap: 10px; width: 260px; max-width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--hair-2); border-radius: 10px; background: var(--panel-2); }
+.message-file > .f-ic { width: 28px; height: 28px; flex: none; }
+.message-file { text-align: left; cursor: pointer; transition: border-color .15s, background .15s; }
+.message-file:hover { background: var(--panel); border-color: var(--txt-faint); }
+.message-file:active { transform: none; }
+.message-file:focus-visible { outline: 2px solid var(--txt-dim); outline-offset: 2px; }
+.message-file-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.message-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--txt); }
+.message-file-type { font-size: 10px; color: var(--txt-faint); }
+.attach-file-size { color: var(--txt-faint); font-size: 10px; white-space: nowrap; }
+.attachment-text { margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .msg.user .bubble :is(ul, ol) { margin: .45em 0; padding-left: 1.5em; list-style-position: outside; }
 .msg.user .bubble li { margin: .2em 0; padding-left: .15em; }
 .msg.user .bubble {
@@ -2998,6 +3008,7 @@ body:not(.focus-mode):not(.preview-collapsed):not(.preview-auto-collapsed) #layo
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: contain;
 }
+.pv-body .dev-media-shell .dev-screen > audio { width: calc(100% - 32px); min-width: 0; max-width: 640px; margin: auto 16px; align-self: center; }
 .pv-body.dev-mobile :is(.dev-media-shell, .dev-html-shell) .dev-screen {
   border-radius: 0 0 34px 34px;
   clip-path: inset(0 round 0 0 34px 34px);

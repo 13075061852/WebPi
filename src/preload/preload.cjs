@@ -145,6 +145,8 @@ contextBridge.exposeInMainWorld("halo", {
   importFiles: (files, root, target) => ipcRenderer.invoke("halo:import-files", { sources: files.map(file => webUtils.getPathForFile(file)), root, target }),
   readTree: () => ipcRenderer.invoke("halo:read-tree"),
   documentPreview: (file, page) => ipcRenderer.invoke("halo:document-preview", { file, page }),
+  attachmentPreview: (file, page) => ipcRenderer.invoke('halo:attachment-preview', { file, page }),
+  attachmentFiles: files => ipcRenderer.invoke('halo:attachment-files', files),
   copyFile: (file) => ipcRenderer.invoke("halo:copy-file", file),
   copyImage: (file) => ipcRenderer.invoke("halo:copy-image", file),
   artifactFiles: (files, options) => ipcRenderer.invoke("halo:artifact-files", files, options),

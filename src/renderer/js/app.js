@@ -2,6 +2,7 @@ import { createFileEditor } from './file-editor.mjs';
 import { initTooltips } from './tooltips.mjs';
 import { createThemeMotion } from './theme-motion.mjs';
 import { fileIconFor } from './file-icons.mjs';
+import { formatFileSize } from './file-size.mjs';
 import { createSessionPreviewState } from './session-preview-state.mjs';
 import { syncConversationSelection } from './conversation-selection.mjs';
 import { createConversationMotion } from './conversation-motion.mjs';
@@ -17,7 +18,7 @@ import { initStartupProgress, waitForStartupFrame } from './startup.mjs';
 import { createLayoutMotion } from './layout-motion.mjs';
 import { createModalMotion } from './modal-motion.mjs';
 import { websiteURL, websiteAddress, renderWebsiteCards, mountWebsiteBrowser } from './website-preview.mjs';
-import { userMessageText, userMessageParts } from "./user-message.mjs";
+import { userMessageFiles, userMessageParts } from "./user-message.mjs";
 import { initEnvironmentSettings } from "./environment-settings.mjs";
 import { initVideoSettings } from "./video-settings.mjs";
 import { mountVideoConfirmation } from "./video-confirmation.mjs";
@@ -1121,7 +1122,7 @@ async function showTurnArtifacts(turn) {
     turn.__playbackFiles = []; filterTurnArtifactPlayback(turn); return;
   }
   // Resolve delivery paths after renames; never advertise vanished intermediate files.
-  const checked=await window.halo.artifactFiles(paths.slice(0,100), {imageHashes:!!turn.__imageResults?.size,videoHashes:!!turn.__videoResults?.size,mediaMetadata:true}).catch(()=>null);
+  const checked=await window.halo.artifactFiles(paths.slice(0,100), {imageHashes:!!turn.__imageResults?.size,videoHashes:!!turn.__videoResults?.size,mediaMetadata:true,fileMetadata:true}).catch(()=>null);
   if ((!turn.isConnected && !S.historyHost?.contains(turn)) || request !== turn.__artifactRequest || switchSeq !== S.sessionSwitchSeq ||
       cwd !== (S.state?.cwd || '') || !checked?.ok) return;
   const mediaSizes = new Map(checked.data.filter(item => typeof item === 'object').map(item => [normPath(item.file), item.bytes]));
@@ -1165,6 +1166,8 @@ async function showTurnArtifacts(turn) {
     }
     if (previous) {
       previous.dataset.artifactHash = hash || previous.dataset.artifactHash || '';
+      const sizeLabel = previous.querySelector('.artifact-size');
+      if (sizeLabel) sizeLabel.textContent = `· ${formatFileSize(mediaSizes.get(key))}`;
       updateVideoArtifactCard(previous.querySelector('.artifact-video'), file, turn, cwd, hash);
       updateImageArtifactCard(previous.matches('.artifact-image') ? previous : previous.querySelector('.artifact-image'), file, turn, cwd, hashes.get(key));
       if (box.children[index] !== previous) box.insertBefore(previous, box.children[index] || null);
@@ -1963,8 +1966,30 @@ async function send() {
   }
 }
 
+const pendingAttachmentSizes = new Map();
+let attachmentSizeTimer = null;
+function requestAttachmentSize(file, label, type) {
+  const entries = pendingAttachmentSizes.get(file) || [];
+  entries.push({ label, type }); pendingAttachmentSizes.set(file, entries);
+  if (attachmentSizeTimer !== null) return;
+  attachmentSizeTimer = setTimeout(async () => {
+    attachmentSizeTimer = null;
+    const pending = [...pendingAttachmentSizes]; pendingAttachmentSizes.clear();
+    for (let offset = 0; offset < pending.length; offset += 100) {
+      const batch = pending.slice(offset, offset + 100);
+      const result = await window.halo.attachmentFiles(batch.map(([path]) => path)).catch(() => null);
+      const metadata = new Map((result?.ok ? result.data : []).map(item => [item.file, item]));
+      for (const [path, targets] of batch) {
+        const info = metadata.get(path);
+        for (const { label, type } of targets) label.textContent = `${type} · ${info?.missing ? '文件不可用' : formatFileSize(info?.bytes)}`;
+      }
+    }
+  }, 0);
+}
+
 function renderUserMsg(text, images) {
-  text = userMessageText(text);
+  const display = userMessageFiles(text);
+  text = display.text;
   // 对话开始后清掉遗留的系统提示，保持对话流只包含当前对话内容
   if (!S.historyHost) $$("#messages > .notice").forEach((n) => n.remove());
   const wrap = document.createElement("div");
@@ -1974,6 +1999,24 @@ function renderUserMsg(text, images) {
   wrap.innerHTML = `
     ${imgs ? `<div class="imgs">${imgs}</div>` : ""}
     ${text ? `<div class="bubble">${rich(text)}</div>` : ""}`;
+  if (display.files.length) {
+    const files = document.createElement("div");
+    files.className = "message-files";
+    files.setAttribute("aria-label", "上传的文件");
+    for (const file of display.files) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "message-file";
+      card.innerHTML = `${fileIconFor(file.name)}<span class="message-file-info"><span class="message-file-name">${esc(file.name)}</span><span class="message-file-type">${esc(file.name.includes('.') ? file.name.split('.').pop().toUpperCase() : '文件')}</span></span>`;
+      card.title = `预览 ${file.name}`;
+      card.setAttribute('aria-label', `预览 ${file.name}`);
+      const typeLabel = card.querySelector('.message-file-type');
+      requestAttachmentSize(file.path, typeLabel, typeLabel.textContent);
+      card.addEventListener('click', () => { void setPreview(file.path, true, { attachment: true }).catch(error => toast(`预览失败：${error.message}`, 'err')); });
+      files.appendChild(card);
+    }
+    wrap.appendChild(files);
+  }
   $$(".imgs img", wrap).forEach((img) => {
     img.tabIndex = 0; img.setAttribute("role", "button"); img.setAttribute("aria-label", "放大查看截图");
     img.addEventListener("click", () => openImagePreview(img.src, img.title));
@@ -3123,11 +3166,12 @@ function renderTree() {
         $("#input").focus();
       });
       row.insertBefore(attach, row.querySelector('.trow-del'));
-      if (!n.dir) {
+      {
         const open = document.createElement("button");
+        open.type = "button";
         open.className = "trow-external";
-        open.title = "使用默认应用打开";
-        open.setAttribute("aria-label", "使用默认应用打开 " + n.name);
+        open.title = n.dir ? "在文件管理器中打开" : "使用默认应用打开";
+        open.setAttribute("aria-label", open.title + " " + n.name);
         open.innerHTML = '<svg viewBox="0 0 24 24" class="ic"><path d="M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>';
         open.addEventListener("click", e => { e.stopPropagation(); openFileExternally(n.path); });
         row.insertBefore(open, row.querySelector('.trow-del'));
@@ -3283,9 +3327,31 @@ function documentPreviewShell(content) {
   return shell;
 }
 
-async function setPreview(p, force, { reveal = true } = {}) {
+function mountDocumentResult(body, data, loadPage, request) {
+  if (data.ext === 'pdf') {
+    body.innerHTML = '<div class="document-preview"><div class="document-canvas" aria-label="PDF 连续阅读"></div></div>';
+    body.replaceChildren(documentPreviewShell(body.querySelector('.document-preview')));
+    mountPDFPreview(body.querySelector('.document-canvas'), data, loadPage);
+  } else {
+    const frame = document.createElement('iframe');
+    frame.className = 'office-frame'; frame.sandbox = 'allow-scripts allow-same-origin';
+    frame.src = 'document-viewer.html';
+    const ready = event => {
+      if (event.source !== frame.contentWindow || event.data?.type !== 'office-ready') return;
+      window.removeEventListener('message', ready);
+      if (request === portPreviewRequest) frame.contentWindow.postMessage({ type: 'office-document', ...data }, '*');
+    };
+    window.addEventListener('message', ready);
+    frame.addEventListener('load', () => setTimeout(() => window.removeEventListener('message', ready), 10000), { once: true });
+    body.replaceChildren(documentPreviewShell(frame));
+  }
+}
+
+async function setPreview(p, force, { reveal = true, attachment } = {}) {
   p = resolvePreviewPath(p, S.state?.cwd);
   if (!p) return;
+  const remembered = sessionPreviewState.target();
+  attachment ??= remembered?.attachment === true && normPath(remembered.file || '') === normPath(p);
   if (reveal && window.innerWidth < 1120 && !await ensurePreviewWidth()) return;
   if (reveal) setPreviewCollapsed(false);
   if (!force && S.previewFile === p) return;
@@ -3295,7 +3361,7 @@ async function setPreview(p, force, { reveal = true } = {}) {
   $('#btnBrowser').title = '浏览器预览';
   $('#btnBrowser').setAttribute('aria-label', '浏览器预览');
   S.previewFile = p;
-  sessionPreviewState.rememberTarget({ kind: "file", file: p, mode: S.previewMode });
+  sessionPreviewState.rememberTarget({ kind: "file", file: p, mode: S.previewMode, ...(attachment ? { attachment: true } : {}) });
   $("#btnOpenFile").hidden = !p;
   const ext = p.split(".").pop().toLowerCase();
   fileEditor.select(p, !['pdf', 'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt', 'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac',
@@ -3305,6 +3371,31 @@ async function setPreview(p, force, { reveal = true } = {}) {
   const isHtml = ext === "html" || ext === "htm";
   const isMarkdown = ext === "md" || ext === "markdown";
   const modeCtl = $("#pvMode");
+  if (attachment) {
+    fileEditor.select(p, false);
+    $("#btnOpenFile").hidden = true;
+    if (modeCtl) modeCtl.hidden = true;
+    body.innerHTML = '<div class="fv-note">正在加载附件…</div>';
+    const r = await window.halo.attachmentPreview(p);
+    if (request !== portPreviewRequest) return;
+    if (!r?.ok) { body.innerHTML = `<div class="fv-note">${esc(r?.error || '预览失败')}</div>`; return; }
+    const data = r.data;
+    if (['pdf', 'docx', 'xlsx', 'pptx'].includes(data.ext)) {
+      mountDocumentResult(body, data, page => window.halo.attachmentPreview(p, page), request);
+    } else if (data.mediaType) {
+      const tag = data.mediaType.startsWith('image/') ? 'img' : data.mediaType.startsWith('audio/') ? 'audio' : 'video';
+      const media = document.createElement(tag);
+      media.src = data.url;
+      media.setAttribute('aria-label', '附件预览');
+      if (tag === 'img') { media.className = 'pv-img'; media.alt = p.split(/[\\/]/).pop(); }
+      else { media.controls = true; media.preload = 'metadata'; if (tag === 'video') media.className = 'pv-video'; }
+      body.replaceChildren(mediaPreviewShell(media));
+    } else {
+      body.innerHTML = `<div class="file-view">${data.truncated ? '<div class="fv-note">文件较大，仅显示前 512 KB</div>' : ''}<pre class="attachment-text"></pre></div>`;
+      body.querySelector('pre').textContent = data.content;
+    }
+    return;
+  }
   if (modeCtl) {
     modeCtl.hidden = !isHtml && !isMarkdown;
     modeCtl.textContent = S.previewMode === "source" ? "预览" : "源码";
@@ -3322,24 +3413,7 @@ async function setPreview(p, force, { reveal = true } = {}) {
       const r = await window.halo.documentPreview(p);
       if (request !== portPreviewRequest) return;
       if (!r?.ok) { body.innerHTML = '<div class="fv-note">' + esc(r?.error || '预览失败') + '</div>'; return; }
-      if (ext === 'pdf') {
-        body.innerHTML = '<div class="document-preview"><div class="document-canvas" aria-label="PDF 连续阅读"></div></div>';
-        const documentView = body.querySelector('.document-preview');
-        body.replaceChildren(documentPreviewShell(documentView));
-        mountPDFPreview(body.querySelector('.document-canvas'), r.data, page => window.halo.documentPreview(p, page));
-      } else {
-        const frame = document.createElement('iframe');
-        frame.className = 'office-frame'; frame.sandbox = 'allow-scripts allow-same-origin';
-        frame.src = 'document-viewer.html';
-        const ready = event => {
-          if (event.source !== frame.contentWindow || event.data?.type !== 'office-ready') return;
-          window.removeEventListener('message', ready);
-          if (request === portPreviewRequest) frame.contentWindow.postMessage({ type: 'office-document', ...r.data }, '*');
-        };
-        window.addEventListener('message', ready);
-        frame.addEventListener('load', () => setTimeout(() => window.removeEventListener('message', ready), 10000), { once: true });
-        body.replaceChildren(documentPreviewShell(frame));
-      }
+      mountDocumentResult(body, r.data, page => window.halo.documentPreview(p, page), request);
     };
     await load();
   } else if (["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(ext)) {
@@ -3592,7 +3666,7 @@ function renderAttachments() {
     const chip = document.createElement("div");
     chip.className = "attach-chip";
     chip.title = file.path;
-    chip.innerHTML = `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h6"/></svg><span>${esc(trunc(file.name, 24))}</span><button class="attach-remove" type="button" title="移除文件" aria-label="移除文件">×</button>`;
+    chip.innerHTML = `${fileIconFor(file.name)}<span>${esc(trunc(file.name, 24))}</span><span class="attach-file-size">${formatFileSize(file.size)}</span><button class="attach-remove" type="button" title="移除文件" aria-label="移除文件">×</button>`;
     $(".attach-remove", chip).addEventListener("click", () => { S.files.splice(i, 1); renderAttachments(); });
     row.appendChild(chip);
   });

@@ -17,6 +17,9 @@ try {
   assert.equal(await call('original.mp4'), 'original.mp4');
   assert.deepEqual(await call('audio.mp3', { mediaMetadata: true }), { file: 'audio.mp3', bytes: video.length });
   assert.deepEqual(await call('original.mp4', { mediaMetadata: true }), { file: 'original.mp4', bytes: video.length });
+  assert.deepEqual(await call('image.png', { fileMetadata: true }), { file: 'image.png', bytes: video.length });
+  fs.writeFileSync(path.join(root, 'report.docx'), 'document');
+  assert.deepEqual(await call('report.docx', { fileMetadata: true }), { file: 'report.docx', bytes: 8 });
   assert.equal(reads, 0, 'Metadata-only calls must not read media content');
   const original = await call('original.mp4', { videoHashes: true });
   assert.deepEqual(original, { file: 'original.mp4', bytes: video.length, sha256: digest(video) });

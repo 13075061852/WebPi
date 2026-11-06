@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { userMessageParts, userMessageText } from '../src/renderer/js/user-message.mjs';
+import { fileIconFor } from '../src/renderer/js/file-icons.mjs';
+import { formatFileSize } from '../src/renderer/js/file-size.mjs';
 
 const source = fs.readFileSync('src/renderer/js/app.js', 'utf8').replaceAll('\r\n', '\n');
 function extract(start, end) {
@@ -25,7 +27,7 @@ function harness() {
     $$: () => [], document: { createElement: node },
     window: { __piDebug: { ignored: 0 }, halo: Object.fromEntries(['prompt', 'steer', 'followUp', 'projectAdd'].map(method => [method, (...args) => invoke(method, ...args)])) },
     currentPreviewContext: () => null, toPiImage: img => ({ type: 'image', mimeType: img.mediaType, data: img.data }),
-    esc: x => x, trunc: x => x, openImagePreview() {}, closeMentions() {},
+    esc: x => x, trunc: x => x, fileIconFor, formatFileSize, openImagePreview() {}, closeMentions() {},
     renderUserMsg: (text, images) => { rows.push({ text: userMessageText(text), images }); order.push('user'); },
     finalizeMessage: () => order.push('message-end'), finalizeTurn: () => order.push('turn-end'),
     ensureTurn: () => { order.push('turn-start'); return {}; }, collapseThink() {},

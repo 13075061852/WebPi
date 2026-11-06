@@ -1,11 +1,11 @@
 /* Isolated, read-only Office renderer: no preload, network, forms or navigation. */
 window.addEventListener('click', e => { if (e.target.closest('a')) e.preventDefault(); });
-let stopWordFit = () => {};
+let stopDocumentFit = () => {};
 window.addEventListener('message', async e => {
   if (e.source !== parent || e.data?.type !== 'office-document') return;
   const { ext, bytes } = e.data;
   const content = document.getElementById('content'), status = document.getElementById('status');
-  stopWordFit();
+  stopDocumentFit();
   try {
     if (ext === 'docx') {
       await window.docx.renderAsync(bytes, content, null, { useBase64URL: true, renderAltChunks: false,
@@ -13,16 +13,24 @@ window.addEventListener('message', async e => {
       await document.fonts.ready;
       await Promise.all([...content.querySelectorAll('img')].map(image => image.decode().catch(() => {})));
       paginateWord(content);
-      stopWordFit = fitWordToWidth(content);
+      stopDocumentFit = fitWordToWidth(content);
     } else if (ext === 'pptx') {
-      const viewer = window.pptxPreview.init(content, { width: Math.max(320, document.documentElement.clientWidth - 32), height: Math.max(180, (document.documentElement.clientWidth - 32) * 9 / 16), mode: 'list' });
+      // Render once at a stable size; layout changes only scale the existing deck.
+      const pages = document.createElement('div');
+      pages.className = 'slide-pages';
+      pages.style.width = '1280px';
+      content.replaceChildren(pages);
+      const viewer = window.pptxPreview.init(pages, { width: 1280, height: 720, mode: 'list' });
       await viewer.preview(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-      if (!viewer.slideCount) { viewer.destroy(); await renderSlides(bytes, content); }
+      if (!viewer.slideCount) { viewer.destroy(); await renderSlides(bytes, pages, 1280); }
+      const stopFit = fitDocumentToWidth(content, pages, () => 1280, Infinity);
+      stopDocumentFit = () => { stopFit(); viewer.destroy(); };
     } else {
       const workbook = new window.ExcelJS.Workbook();
       await workbook.xlsx.load(bytes);
       const tabs = document.getElementById('tabs'); tabs.hidden = false;
       const show = sheet => {
+        stopDocumentFit();
         content.replaceChildren();
         for (const button of tabs.children) button.setAttribute('aria-pressed', String(button.textContent === sheet.name));
         const table = document.createElement('table');
@@ -67,6 +75,7 @@ window.addEventListener('message', async e => {
           }
         }
         content.append(table);
+        stopDocumentFit = fitDocumentToWidth(content, table, () => table.offsetWidth);
         status.textContent = `${sheet.name} · ${sheet.rowCount} 行 × ${sheet.columnCount} 列` + (rows < sheet.rowCount || columns < sheet.columnCount ? '（仅预览前 2000 行、100 列）' : '');
       };
       for (const sheet of workbook.worksheets) { const b = document.createElement('button'); b.textContent = sheet.name; b.onclick = () => show(sheet); tabs.append(b); }
@@ -78,6 +87,37 @@ window.addEventListener('message', async e => {
 });
 parent.postMessage({ type: 'office-ready' }, '*');
 
+function fitDocumentToWidth(content, surface, measureWidth, maxZoom = 1) {
+  let frame = 0, zoom = 0;
+  const fit = () => {
+    frame = 0;
+    const style = getComputedStyle(content);
+    const padding = parseFloat(style.paddingTop) || 0;
+    const available = content.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const width = measureWidth();
+    if (available <= 0 || width <= 0 || !surface.isConnected) return;
+    const next = Math.min(maxZoom, available / width);
+    if (Math.abs(next - zoom) < .0001) return;
+    const top = content.scrollTop;
+    surface.style.zoom = next;
+    if (zoom && top > padding) content.scrollTop = padding + (top - padding) * next / zoom;
+    zoom = next;
+  };
+  const schedule = () => { if (!frame) frame = requestAnimationFrame(fit); };
+  const observer = new ResizeObserver(schedule);
+  observer.observe(content);
+  window.addEventListener('resize', schedule);
+  window.addEventListener('focus', schedule);
+  document.addEventListener('visibilitychange', schedule);
+  fit();
+  return () => {
+    observer.disconnect(); cancelAnimationFrame(frame);
+    window.removeEventListener('resize', schedule);
+    window.removeEventListener('focus', schedule);
+    document.removeEventListener('visibilitychange', schedule);
+  };
+}
+
 // Paginate at the original paper size, then scale the whole document. Changing
 // page widths would reflow paragraphs/tables and invalidate the page boundaries.
 function fitWordToWidth(content) {
@@ -85,14 +125,7 @@ function fitWordToWidth(content) {
   const pages = [...content.querySelectorAll('.docx-wrapper > section.docx')];
   if (!wrapper || !pages.length) return () => {};
   const paperWidth = Math.max(...pages.map(page => page.offsetWidth));
-  const fit = () => {
-    const style = getComputedStyle(content);
-    const available = content.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-    if (available > 0 && paperWidth > 0) wrapper.style.zoom = Math.min(1, available / paperWidth);
-  };
-  fit();
-  const observer = new ResizeObserver(fit);
-  observer.observe(content);
+  const stopFit = fitDocumentToWidth(content, wrapper, () => paperWidth);
   // Chromium can route a wheel into a zoomed Word page without scrolling its
   // unzoomed overflow host. Apply the delta to that host once, in CSS pixels.
   const wheel = event => {
@@ -107,7 +140,7 @@ function fitWordToWidth(content) {
     content.scrollTo({ top, left, behavior: 'instant' });
   };
   content.addEventListener('wheel', wheel, { passive: false });
-  return () => { observer.disconnect(); content.removeEventListener('wheel', wheel); };
+  return () => { stopFit(); content.removeEventListener('wheel', wheel); };
 }
 
 // docx-preview honors stored page breaks but does not paginate overflowing text.
@@ -211,7 +244,7 @@ function splitWordParagraph(paragraph, fits) {
 }
 
 // Basic OOXML fallback for decks the primary renderer cannot parse.
-async function renderSlides(bytes, host) {
+async function renderSlides(bytes, host, viewWidth = Math.max(320, document.documentElement.clientWidth - 32)) {
   const zip = await window.JSZip.loadAsync(bytes);
   const xml = async name => new DOMParser().parseFromString(await zip.file(name).async('string'), 'application/xml');
   const nodes = (el, name) => [...el.getElementsByTagNameNS('*', name)];
@@ -220,7 +253,6 @@ async function renderSlides(bytes, host) {
   const width = Number(size?.getAttribute('cx')) || 12192000, height = Number(size?.getAttribute('cy')) || 6858000;
   const files = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a,b) => Number(a.match(/slide(\d+)/)[1]) - Number(b.match(/slide(\d+)/)[1]));
   host.replaceChildren();
-  const viewWidth = Math.max(320, document.documentElement.clientWidth - 32);
   for (const name of files) {
     const doc = await xml(name), slide = document.createElement('section');
     slide.style = `position:relative;width:${viewWidth}px;height:${viewWidth*height/width}px;background:white;margin:0 auto 20px;overflow:hidden;color:#222;box-shadow:0 2px 8px #0003`;
@@ -290,4 +322,4 @@ function syncViewerTheme() {
 syncViewerTheme();
 const themeObserver = new MutationObserver(syncViewerTheme);
 themeObserver.observe(parent.document.documentElement, { attributes: true, attributeFilter: ['data-theme','data-wallpaper','style'] });
-window.addEventListener('pagehide', () => { themeObserver.disconnect(); stopWordFit(); }, { once: true });
+window.addEventListener('pagehide', () => { themeObserver.disconnect(); stopDocumentFit(); }, { once: true });

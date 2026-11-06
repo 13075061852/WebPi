@@ -20,6 +20,7 @@ import { createArtifactFileInspector } from './artifact-files.mjs';
 import { createCompletionNotifications } from './completion-notifications.mjs';
 import { windowsAppUserModelId } from './app-identity.mjs';
 import { previewDocument } from "./document-preview.mjs";
+import { previewAttachment, attachmentFileMetadata } from './attachment-preview.mjs';
 /**
  * Pi Halo — Electron main process
  * splash (launch animation) -> main window (three-panel celestial console)
@@ -903,6 +904,9 @@ function bootstrap() {
     await fs.promises.rm(abs, { recursive: true });
     return { deleted: abs };
   });
+
+  handle('halo:attachment-preview', ({ file, page }) => previewAttachment(file, page, bridge.snapshotMessages()));
+  handle('halo:attachment-files', files => attachmentFileMetadata(files, bridge.snapshotMessages()));
 
   handle("halo:document-preview", async ({ file, page }) => {
     const abs = path.resolve(bridge.cwd || ".", file);
