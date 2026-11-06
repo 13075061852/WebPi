@@ -107,6 +107,7 @@ Var PiHaloInstallSeconds
 !include "${BUILD_RESOURCES_DIR}\installer-ui.nsh"
 
 !macro customInstall
+  !insertmacro PiHaloProgress 980
   !insertmacro PiHaloStage "即将完成" "检查启动程序、应用资源与卸载程序是否就绪。"
   ${IfNot} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
   ${OrIfNot} ${FileExists} "$INSTDIR\resources\app.asar"
@@ -125,6 +126,7 @@ Var PiHaloInstallSeconds
   IntOp $PiHaloInstallSeconds $0 - $PiHaloStartedAt
   IntOp $PiHaloInstallSeconds $PiHaloInstallSeconds / 1000
   !insertmacro PiHaloStage "安装完成" "应用已就绪，实际安装耗时 $PiHaloInstallSeconds 秒。"
+  !insertmacro PiHaloProgress 1000
   ${If} $PiHaloLog != ""
     FileClose $PiHaloLog
     StrCpy $PiHaloLog ""

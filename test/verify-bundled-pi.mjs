@@ -74,6 +74,24 @@ try {
   assert.equal(bridge.services.settingsManager.getGlobalSettings().defaultTools, undefined, 'Windows defaults must not overwrite shared Pi settings');
 
   const tools = new Map(bridge.session.agent.state.tools.map(tool => [tool.name, tool]));
+  // Validate the actual registered schemas through Pi's production validator:
+  // direct execute() calls below bypass the argument-validation boundary.
+  const { validateToolArguments } = await import('@earendil-works/pi-ai');
+  const validate = (name, args) => validateToolArguments(tools.get(name), {
+    type: 'toolCall', id: 'schema-fixture', name, arguments: args,
+  });
+  assert.deepEqual(validate('write', { path: 'fixture.txt', content: 'bundled SDK works\n' }),
+    { path: 'fixture.txt', content: 'bundled SDK works\n' });
+  const readArgs = { path: 'fixture.txt', offset: '1', limit: '2' };
+  assert.deepEqual(validate('read', readArgs), { path: 'fixture.txt', offset: 1, limit: 2 });
+  assert.equal(readArgs.limit, '2', 'Validation must not mutate persisted model arguments');
+  assert.throws(() => validate('write', { content: 'missing path' }), /path/);
+  assert.throws(() => validate('video_generate', { action: 'not-an-action' }), /action/);
+  assert.deepEqual(validate('video_generate', { action: 'list' }), { action: 'list' });
+  if (process.platform === 'win32') {
+    assert.equal(validate('powershell', { command: 'Write-Output fixture', timeout: '15' }).timeout, 15);
+  }
+  console.log('PASS real Pi tool schemas: built-in and custom tools, coercion, invalid arguments and transcript isolation');
   assert.ok(tools.has('video_generate'), 'Video generation must be available to the actual Pi agent');
   bridge.video = { run: async (_id, args, cwd) => ({ status: 'fixture', action: args.action, cwd }) };
   const video = await tools.get('video_generate').execute('video-fixture', { action: 'list' });

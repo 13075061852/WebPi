@@ -28,14 +28,14 @@ function prepareInstaller() {
     if (count !== expected) throw new Error(`NSIS template changed: expected ${expected} occurrence(s) of ${JSON.stringify(needle)}, found ${count}.`);
     return source.split(needle).join(replacement);
   };
-  const stage = (title, text) => `!insertmacro PiHaloStage "${title}" "${text}"`;
+  const stage = (title, text, progress) => `!insertmacro PiHaloProgress ${progress}\n!insertmacro PiHaloStage "${title}" "${text}"`;
   let section = read('installSection.nsh');
   section = replace(section, '!include installer.nsh', '!include "${BUILD_RESOURCES_DIR}\\generated\\installer-files.nsh"');
   section = replace(section, '  SetDetailsPrint none', '  SetDetailsPrint textonly');
-  section = replace(section, 'StrCpy $appExe', `${stage('1 / 9  检查安装环境', '检测正在运行的 Pi Halo，确认目标目录。')}\nStrCpy $appExe`);
-  section = replace(section, '!insertmacro uninstallOldVersion SHELL_CONTEXT', `${stage('2 / 9  准备安装目录', '检测并移除已有程序文件，保留用户设置与工作数据。')}\n!insertmacro uninstallOldVersion SHELL_CONTEXT`);
-  section = replace(section, '!insertmacro registryAddInstallInfo', `${stage('7 / 9  注册应用', '写入版本、安装位置和卸载信息。')}\n!insertmacro registryAddInstallInfo`);
-  section = replace(section, '!insertmacro addStartMenuLink $keepShortcuts', `${stage('8 / 9  配置快捷方式', '按原有偏好设置开始菜单与桌面快捷方式。')}\n!insertmacro addStartMenuLink $keepShortcuts`);
+  section = replace(section, 'StrCpy $appExe', `${stage('1 / 9  检查安装环境', '检测正在运行的 Pi Halo，确认目标目录。', 0)}\nStrCpy $appExe`);
+  section = replace(section, '!insertmacro uninstallOldVersion SHELL_CONTEXT', `${stage('2 / 9  准备安装目录', '检测并移除已有程序文件，保留用户设置与工作数据。', 30)}\n!insertmacro uninstallOldVersion SHELL_CONTEXT`);
+  section = replace(section, '!insertmacro registryAddInstallInfo', `${stage('7 / 9  注册应用', '写入版本、安装位置和卸载信息。', 940)}\n!insertmacro registryAddInstallInfo`);
+  section = replace(section, '!insertmacro addStartMenuLink $keepShortcuts', `${stage('8 / 9  配置快捷方式', '按原有偏好设置开始菜单与桌面快捷方式。', 960)}\n!insertmacro addStartMenuLink $keepShortcuts`);
 
   let files = read('include/installer.nsh');
   // The same asynchronous launch path must also cover silent --force-run
@@ -43,13 +43,14 @@ function prepareInstaller() {
   files = '!macroundef StartApp\n!macro StartApp\n  Call PiHaloStartApp\n!macroend\n\n' + files;
   files = replace(files, '!include "extractAppPackage.nsh"', '!include "${BUILD_RESOURCES_DIR}\\generated\\extractAppPackage.nsh"');
   const cacheCopy = '      !insertmacro copyFile "$EXEPATH" "$LOCALAPPDATA\\${APP_INSTALLER_STORE_FILE}"';
-  files = replace(files, cacheCopy, `      ${stage('6 / 9  准备自动更新', '缓存本次安装包，供后续差分更新使用。')}\n${cacheCopy}`);
+  files = replace(files, cacheCopy, `      ${stage('6 / 9  准备自动更新', '缓存本次安装包，供后续差分更新使用。', 900)}\n${cacheCopy}`);
   files = replace(files, '  File "/oname=${UNINSTALL_FILENAME}" "${UNINSTALLER_OUT_FILE}"', '  !insertmacro PiHaloDetail "写入卸载程序。"\n  File "/oname=${UNINSTALL_FILENAME}" "${UNINSTALLER_OUT_FILE}"');
 
   let extract = read('include/extractAppPackage.nsh');
-  extract = replace(extract, '  !insertmacro compute_files_for_current_arch', `  ${stage('3 / 9  读取安装数据', '从安装包释放应用压缩数据到临时目录。')}\n  !insertmacro compute_files_for_current_arch`);
-  extract = replace(extract, '  !insertmacro decompress', `  ${stage('4 / 9  解压应用文件', '正在解压运行环境、界面资源和应用依赖。')}\n  !insertmacro decompress`);
-  extract = replace(extract, '  # Retry counter', `  ${stage('5 / 9  写入程序文件', '将已解压的应用写入所选安装目录。')}\n\n  # Retry counter`);
+  extract = replace(extract, '  !insertmacro compute_files_for_current_arch', `  ${stage('3 / 9  读取安装数据', '从安装包释放应用压缩数据到临时目录。', 80)}\n  !insertmacro compute_files_for_current_arch`);
+  extract = replace(extract, '  !insertmacro decompress', `  ${stage('4 / 9  解压应用文件', '正在解压运行环境、界面资源和应用依赖。', 150)}\n  !insertmacro decompress`);
+  extract = replace(extract, 'Nsis7z::Extract "\u0024{FILE}"', 'GetFunctionAddress $PiHaloExtractCallback PiHaloExtractProgress\n    Nsis7z::ExtractWithCallback "\u0024{FILE}" $PiHaloExtractCallback', 2);
+  extract = replace(extract, '  # Retry counter', `  ${stage('5 / 9  写入程序文件', '将已解压的应用写入所选安装目录。', 850)}\n\n  # Retry counter`);
   const fastMove = [
     '  ; Per-user, empty, same-volume targets can take ownership of the already',
     '  ; extracted directory instead of copying every dependency a second time.',

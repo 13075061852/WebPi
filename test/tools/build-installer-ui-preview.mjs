@@ -108,10 +108,10 @@ FunctionEnd
 
 Section "Preview only"
 ${finishOnly ? '  ; Empty mandatory section: this fixture starts on Finish.' : String.raw`  SendMessage $PiHaloStatus ${'${WM_SETTEXT}'} 0 "STR:正在安装…"
-  SendMessage $mui.InstFilesPage.ProgressBar 0x0401 0 0x00640000
   StrCpy $PreviewCounter 0
   ${'${Do}'}
-    SendMessage $mui.InstFilesPage.ProgressBar 0x0402 $PreviewCounter 0
+    IntOp $0 $PreviewCounter * 10
+    !insertmacro PiHaloProgress $0
     Sleep 40
     IntOp $PreviewCounter $PreviewCounter + 1
   ${'${LoopUntil}'} $PreviewCounter > 100

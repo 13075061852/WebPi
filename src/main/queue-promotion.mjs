@@ -1,4 +1,4 @@
-// Pi 1.4.0 still has no public queue move operation. Isolate its two
+// Pi 1.5.0 still has no public queue move operation. Isolate its two
 // synchronous queue writers here, retaining already expanded input and images.
 export async function promoteQueuedMessage(session, index, expected, beforeQueue = () => {}) {
   const pending = [...session.getFollowUpMessages()];
@@ -35,7 +35,7 @@ export async function promoteQueuedMessage(session, index, expected, beforeQueue
   await Promise.all(tasks);
 }
 
-// Pi 1.4.0 exposes only whole-queue clearing. Rebuild the affected queue
+// Pi 1.5.0 exposes only whole-queue clearing. Rebuild the affected queue
 // synchronously so the running agent cannot consume a different item midway.
 export function removeQueuedMessage(session, kind, index, expected, beforeEmit = () => {}) {
   if (kind !== 'steering' && kind !== 'followUp') throw new Error('无效的队列类型');

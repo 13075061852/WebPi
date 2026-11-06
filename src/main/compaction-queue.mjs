@@ -1,4 +1,4 @@
-// Pi 1.4.0 has no public operation to start an idle follow-up queue. Keep this
+// Pi 1.5.0 has no public operation to start an idle follow-up queue. Keep this
 // adapter beside queue-promotion: inputs here already passed SDK handlers and
 // skill/template expansion, so starting them must not process that input twice.
 export async function startCompactionQueue(session) {

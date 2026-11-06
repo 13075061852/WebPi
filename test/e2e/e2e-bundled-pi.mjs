@@ -1,4 +1,5 @@
-// Cold start the actual packaged app without global Pi, Node, Bash or accounts.
+// Cold start the packaged app (or source with --electron) without global Pi,
+// Node, Bash or accounts.
 // A local mock provider drives real SDK write/PowerShell tools and streamed UI.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,7 +11,10 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { spawnPi } from '../../src/main/pi-command.mjs';
 
-const exe = path.resolve(process.env.HALO_PACKAGED_EXE || 'dist/win-unpacked/Pi Halo.exe');
+const useElectron = process.argv.includes('--electron');
+const mode = useElectron ? 'source' : 'packaged';
+const exe = path.resolve(useElectron ? 'node_modules/electron/dist/electron.exe' : process.env.HALO_PACKAGED_EXE || 'dist/win-unpacked/Pi Halo.exe');
+const fileContent = 'bundled-pi-ok\n' + '中文与转义 " \\ 🍉\n'.repeat(2048);
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'halo-bundled-pi-'));
 const workspace = path.join(dir, 'workspace'), agentDir = path.join(dir, 'agent'), userData = path.join(dir, 'user-data');
 for (const p of [workspace, agentDir, userData]) fs.mkdirSync(p, { recursive: true });
@@ -22,12 +26,18 @@ const server = http.createServer(async (req, res) => {
   let raw = ''; for await (const chunk of req) raw += chunk;
   const body = JSON.parse(raw); calls.push(body);
   const completed = body.messages.filter(m => m.role === 'tool').length;
-  const action = completed === 0 ? { name: 'write', arguments: JSON.stringify({ path: 'engine-check.txt', content: 'bundled-pi-ok' }) }
-    : completed === 1 ? { name: 'powershell', arguments: JSON.stringify({ command: "Get-Content -LiteralPath './engine-check.txt'" }) } : null;
+  const action = completed === 0 ? { name: 'write', arguments: JSON.stringify({ path: 'engine-check.txt', content: fileContent }) }
+    : completed === 1 ? { name: 'powershell', arguments: JSON.stringify({ command: "Get-Content -LiteralPath './engine-check.txt' -TotalCount 1" }) } : null;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const chunk = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
   if (action) {
-    chunk({ role: 'assistant', tool_calls: [{ index: 0, id: `tool-${completed}`, type: 'function', function: action }] });
+    chunk({ role: 'assistant', tool_calls: [{ index: 0, id: `tool-${completed}`, type: 'function', function: { name: action.name, arguments: '' } }] });
+    // Split in the middle of strings, escapes and surrogate pairs. Exercise the
+    // real provider parser and agent loop, rather than invoking tools directly.
+    for (let offset = 0; offset < action.arguments.length; offset += 137) {
+      chunk({ tool_calls: [{ index: 0, function: { arguments: action.arguments.slice(offset, offset + 137) } }] });
+      if (offset % (137 * 32) === 0) await sleep(1);
+    }
     chunk({}, 'tool_calls');
   } else { chunk({ role: 'assistant', content: 'BUNDLED_PI_READY' }); chunk({}, 'stop'); }
   res.end('data: [DONE]\n\n');
@@ -55,7 +65,7 @@ try {
     USERPROFILE: dir, HOME: dir, APPDATA: path.join(dir, 'roaming'), LOCALAPPDATA: path.join(dir, 'local'),
     TEMP: dir, TMP: dir, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', NO_PROXY: '*',
   };
-  child = spawn(exe, [`--user-data-dir=${userData}`, `--remote-debugging-port=${port}`], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  child = spawn(exe, [...(useElectron ? ['.'] : []), `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { output = (output + chunk).slice(-5000); });
   let page;
   for (let n = 0; n < 120 && !page; n++) {
@@ -98,8 +108,8 @@ try {
   const promptStartedAt = performance.now();
   const result = await evaluate('window.halo.prompt("Run the offline engine verification")', promptDeadline);
   assert.equal(result.ok, true, JSON.stringify(result));
-  console.log(`PASS packaged write/PowerShell turn in ${Math.round(performance.now() - promptStartedAt)}ms (deadline ${promptDeadline}ms)`);
-  assert.equal(fs.readFileSync(path.join(workspace, 'engine-check.txt'), 'utf8'), 'bundled-pi-ok');
+  console.log(`PASS ${mode} write/PowerShell turn in ${Math.round(performance.now() - promptStartedAt)}ms (deadline ${promptDeadline}ms)`);
+  assert.equal(fs.readFileSync(path.join(workspace, 'engine-check.txt'), 'utf8'), fileContent);
   assert.equal(calls.length, 3, 'Real SDK must execute both local tools before the final answer');
   assert.ok(calls[0].tools.some(t => t.function.name === 'powershell'));
   assert.ok(!calls[0].tools.some(t => t.function.name === 'bash'));
@@ -117,20 +127,22 @@ try {
     for (const skill of skills) assert.ok(prompt.includes(skill), `Packaged ${skill} must remain exposed`);
   }
   fs.mkdirSync('test/results', { recursive: true });
-  fs.writeFileSync('test/results/packaged-kernel-prompts.json', JSON.stringify({
+  fs.writeFileSync(`test/results/${mode}-kernel-prompts.json`, JSON.stringify({
     passed: true, sdkVersion: JSON.parse(fs.readFileSync('package.json', 'utf8')).dependencies['@earendil-works/pi-coding-agent'],
     provider: 'local-fixture', requests: calls.length, verbatimPolicy: true, customAgent: true, projectRules: true, skills,
   }, null, 2));
-  console.log('PASS packaged provider payload preserves delivery policy, custom agent, project rules and all six bundled skills');
+  console.log(`PASS ${mode} provider payload preserves delivery policy, custom agent, project rules and all six bundled skills`);
   const toolResults = calls.at(-1).messages.filter(m => m.role === 'tool');
   assert.ok(toolResults.some(m => String(m.content).includes('bundled-pi-ok')), 'Native PowerShell read must succeed');
   await sleep(300);
   assert.ok(await evaluate('document.querySelector("#messages").textContent.includes("BUNDLED_PI_READY")'), 'Streamed response should render');
-  const cliPath = path.join(path.dirname(exe), 'resources/app.asar.unpacked/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
+  const cliPath = useElectron
+    ? path.resolve('node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')
+    : path.join(path.dirname(exe), 'resources/app.asar.unpacked/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
   const cli = await spawnPi(['--version'], { executable: exe, cliPath, env, cwd: workspace, timeout: 15000 });
   assert.equal(cli.ok, true, JSON.stringify(cli));
   assert.ok(cli.output.includes(JSON.parse(fs.readFileSync('package.json', 'utf8')).dependencies['@earendil-works/pi-coding-agent']));
-  console.log('PASS packaged Pi cold start, provider loading, real write/PowerShell tools, streamed conversation and bundled CLI without global Pi/Node/Bash');
+  console.log(`PASS ${mode} Pi cold start, provider loading, chunked large Unicode write/PowerShell tools, streamed conversation and bundled CLI without global Pi/Node/Bash`);
 } finally {
   ws?.close();
   if (child && child.exitCode === null) {

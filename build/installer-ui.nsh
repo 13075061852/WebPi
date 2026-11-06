@@ -14,6 +14,64 @@ Var PiHaloAttach
 Var PiHaloRefresh
 Var PiHaloStyleDirectory
 Var PiHaloLaunchPending
+Var PiHaloProgressBar
+Var PiHaloProgressValue
+Var PiHaloExtractCallback
+Var PiHaloExtractCompleted
+Var PiHaloExtractTotal
+Var PiHaloExtractPosition
+
+; The stock control (1004) is shared by NSIS instruction counting and Nsis7z.
+; Keep it hidden and give the user a separate, monotonic overall progress bar.
+!macro PiHaloProgress VALUE
+  ${IfNot} ${Silent}
+  ${AndIf} ${VALUE} > $PiHaloProgressValue
+  ${AndIf} ${VALUE} <= 1000
+    StrCpy $PiHaloProgressValue ${VALUE}
+    SendMessage $PiHaloProgressBar 0x0402 $PiHaloProgressValue 0
+  ${EndIf}
+!macroend
+
+!macro PiHaloCreateProgress PAGE X Y W H
+  StrCpy $PiHaloProgressValue 0
+  System::Call 'user32::CreateWindowExW(i 0,w "msctls_progress32",w "",i 0x50000001,i ${X},i ${Y},i ${W},i ${H},p ${PAGE},p 0,p 0,p 0)p.s'
+  Pop $PiHaloProgressBar
+  System::Call 'uxtheme::SetWindowTheme(p $PiHaloProgressBar,w "",w "")'
+  SendMessage $PiHaloProgressBar 0x0406 0 1000
+  SendMessage $PiHaloProgressBar 0x0409 0 0x00262120
+  SendMessage $PiHaloProgressBar 0x2001 0 0x00EDEBE8
+!macroend
+
+!macro PiHaloProgressFunctions
+Function PiHaloExtractProgress
+  ; The plugin pushes completed then total byte counts. Consume both even in
+  ; silent mode, without changing its caller's registers or return stack.
+  Pop $PiHaloExtractCompleted
+  Pop $PiHaloExtractTotal
+  ${IfNot} ${Silent}
+    ; Some plugin versions initially report an unknown (-1) total. Ignore it,
+    ; zero totals and overflowed counters rather than jumping to completion.
+    System::Int64Op $PiHaloExtractTotal > 0
+    Pop $PiHaloExtractPosition
+    ${If} $PiHaloExtractPosition == 1
+      System::Int64Op $PiHaloExtractCompleted < 0
+      Pop $PiHaloExtractPosition
+      ${If} $PiHaloExtractPosition == 0
+        System::Int64Op $PiHaloExtractCompleted > $PiHaloExtractTotal
+        Pop $PiHaloExtractPosition
+        ${If} $PiHaloExtractPosition == 0
+          System::Int64Op $PiHaloExtractCompleted * 700
+          Pop $PiHaloExtractPosition
+          System::Int64Op $PiHaloExtractPosition / $PiHaloExtractTotal
+          Pop $PiHaloExtractPosition
+          IntOp $PiHaloExtractPosition $PiHaloExtractPosition + 150
+          !insertmacro PiHaloProgress $PiHaloExtractPosition
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+!macroend
 
 !macro PiHaloMove CONTROL X Y W H
   System::Call 'user32::MoveWindow(p ${CONTROL}, i ${X}, i ${Y}, i ${W}, i ${H}, i 1)'
@@ -37,6 +95,7 @@ Var PiHaloLaunchPending
 ; Pixel geometry is scaled from the window's DPI. Keep the stock page handlers
 ; and navigation buttons as the authority for validation, UAC and cancellation.
 !macro PiHaloInstFilesFunctions
+!insertmacro PiHaloProgressFunctions
 Function PiHaloGuiInit
   StrCpy $PiHaloLaunchPending 0
   System::Call 'user32::GetDpiForWindow(p $HWNDPARENT) i.r0'
@@ -165,16 +224,8 @@ Function PiHaloInstFilesShow
   IntOp $3 $3 / 96
   IntOp $4 5 * $PiHaloDpi
   IntOp $4 $4 / 96
-  System::Call 'uxtheme::SetWindowTheme(p $mui.InstFilesPage.ProgressBar,w "",w "")'
-  System::Call 'user32::GetWindowLongW(p $mui.InstFilesPage.ProgressBar,i -16)i.r0'
-  IntOp $0 $0 & 0xFF7FFFFF
-  System::Call 'user32::SetWindowLongW(p $mui.InstFilesPage.ProgressBar,i -16,i r0)'
-  System::Call 'user32::GetWindowLongW(p $mui.InstFilesPage.ProgressBar,i -20)i.r0'
-  IntOp $0 $0 & 0xFFFDFDFF
-  System::Call 'user32::SetWindowLongW(p $mui.InstFilesPage.ProgressBar,i -20,i r0)'
-  SendMessage $mui.InstFilesPage.ProgressBar 0x0409 0 0x00262120
-  SendMessage $mui.InstFilesPage.ProgressBar 0x2001 0 0x00EDEBE8
-  !insertmacro PiHaloMove $mui.InstFilesPage.ProgressBar $1 $3 $2 $4
+  ShowWindow $mui.InstFilesPage.ProgressBar 0
+  !insertmacro PiHaloCreateProgress $PiHaloPage $1 $3 $2 $4
   IntOp $4 24 * $PiHaloDpi
   IntOp $4 $4 / 96
   IntOp $3 $3 + $4
